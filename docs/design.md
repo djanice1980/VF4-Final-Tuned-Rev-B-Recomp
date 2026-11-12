@@ -635,6 +635,9 @@ possible cross-check for the timing details, if they ever matter.
   - the mailbox comparisons against VF4debug still match.
   The DSP costs about 0.3 ms of host time a frame: its program is decoded
   when written, not every sample.
+- **Listened to** in the game (2026-11-12): it sounds fine, and the reverb
+  can be heard on the coin and start sounds, where silence follows a
+  short sound. Under the music it blends in.
 - **Level, an estimate.** A channel's send is scaled into MIXS so that a
   full-scale 16-bit sample is full scale for the DSP (MIXS's 20 bits are
   read into bits 23-4 of its 24-bit word). The game sends at IMXL 6
