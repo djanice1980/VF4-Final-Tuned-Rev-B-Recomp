@@ -638,33 +638,48 @@ possible cross-check for the timing details, if they ever matter.
 - **Listened to** in the game (2026-11-12): it sounds fine, and the reverb
   can be heard on the coin and start sounds, where silence follows a
   short sound. Under the music it blends in.
-- **Level, an estimate.** A channel's send is scaled into MIXS so that a
-  full-scale 16-bit sample is full scale for the DSP (MIXS's 20 bits are
-  read into bits 23-4 of its 24-bit word). The game sends at IMXL 6
-  against a direct level of 15: 27 dB down, at 3 dB a step. So the reverb
-  is a quiet room under the dry sound, about 31 dB below it in a match.
-  If the chip scales the send differently, the reverb is louder or
-  quieter by the same factor; a capture from the board or Flycast of the
-  same scene would settle it.
-- **Compared against a board capture (2026-11-12), without a result.**
-  A playthrough captured from a real NAOMI 2 (YouTube "Virtua Fighter 4
-  Final Tuned Playthrough (Real Arcade PCB Capture)", ulNHQDq29Sk, by Yo-O,
-  through a Micomsoft SC-580N1) is an analog capture: its silences sit at
-  -68 to -70 dBFS, not at digital zero. (The "By Urien84" longplays have
-  digital-zero silences: emulator captures.) Its music runs about -22 dBFS
-  RMS with peaks at -5, close to ours, though the capture's gain is not
-  known. The reverb level could not be measured from it:
-  - the two runs never play the same sounds at the same moments: the
-    attract's pieces start up to a second apart, and the music and the
-    effects shift separately;
-  - the reverb rides on certain effects and voices, not the music, about
-    25 dB under music that is not aligned with them;
-  - look-alike sounds before the capture's quiet gaps do not match ours
-    at the sample level (correlation under 0.1).
-  The way to do it is a scene that plays the same in both, such as a
-  round intro of the same match-up, rendered by a script.
-  Scratch tools for this (findmatch, speed, fitrev, event) were not kept
-  in the repository.
+- **The level, checked against the board (2026-11-12).** A channel's send
+  is scaled into MIXS so that a full-scale 16-bit sample is full scale for
+  the DSP (MIXS's 20 bits are read into bits 23-4 of its 24-bit word).
+  The game sends at IMXL 6 against a direct level of 15: 27 dB down, at
+  3 dB a step. So the reverb is a quiet room under the dry sound, about
+  31 dB below it in a match.
+
+  The reference is a playthrough captured from a real NAOMI 2 (YouTube
+  ulNHQDq29Sk, "Virtua Fighter 4 Final Tuned Playthrough (Real Arcade PCB
+  Capture)" by Yo-O, through a Micomsoft SC-580N1). It is an analog
+  capture: its silences sit at -68 to -70 dBFS, not at digital zero. (The
+  "By Urien84" longplays have digital-zero silences, so they are emulator
+  captures.) The two runs never play the same thing at the same moment,
+  so the check works sound by sound:
+  1. A temporary build wrote our output as separate streams: the sounds
+     that send to the DSP, everything else, the DSP's output, and MIXS0.
+  2. 18 of the sounds that send were searched for in the capture by
+     waveform correlation (200-4000 Hz). They were found at about 21
+     places, with correlation 0.75 to 0.90; several of our sounds match
+     the same places. The capture's polarity is inverted.
+  3. Each sound's own reverb was made by running the game's program
+     offline on that sound's MIXS0 alone, from an empty ring. Run on the
+     whole MIXS0, the offline DSP reproduces the run's DSP output exactly.
+  4. At each place, the capture was fitted as a x sound + b x its reverb
+     (150-2500 Hz), with the capture's clock corrected.
+
+  Averaged over the places in the capture, b/a = 1.0 +- 0.2. With
+  our reverb shifted out of time by 0.75, 1.25 and 1.75 s, the same fit
+  gives -0.06, 0.09 and 0.31: noise around zero. So the board's reverb
+  matches ours in waveform, not only in level, and its level is ours to
+  within about 2 dB. That checks the DSP model and the send scaling
+  together.
+- **The pitch, checked against the board.** The same attract music in both
+  recordings, compared on a log-frequency spectrum, differs by 0.14 cents
+  (80 parts per million): the capture's clock, not the chip model's pitch.
+- **Why the first comparison failed.** Before the separate streams, the
+  whole mix was compared, and that gave no result. The attract's pieces
+  start up to a second apart on the board, the music and the effects
+  shift separately, and the reverb rides on certain effects and voices,
+  about 25 dB under music that is not aligned with them. The scratch
+  tools are not in the repository; the steps above are enough to redo
+  the check.
 - **A word of 0 in the ring decodes to +0.5 full scale** (silence is
   0x6000). Until the DSP's own writes have swept the ring (1.5 s), parts
   of it read as a constant. The start-up's sound is dropped, so this is
