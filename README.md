@@ -32,6 +32,56 @@ Planning. Nothing runs yet. The plan, with its milestones:
 4. You play the resulting `vf4ft.exe` on Windows, or add it to Steam as a
    non-Steam game and run it with Proton.
 
+## Development build (CachyOS / Arch)
+
+There is no game in it yet: milestone M0 is the platform layer alone, a
+window drawn through SDL_GPU that reads keyboard and gamepads and writes
+what it sees to `vf4ft.log` beside the program.
+
+1. Tools. Each prints a version line:
+
+   ```bash
+   pacman -Q cmake ninja curl sdl3
+   ```
+
+   If any is missing:
+
+   ```bash
+   sudo pacman -S --needed cmake ninja curl sdl3
+   ```
+
+2. The Windows cross toolchain (llvm-mingw 20261104) and SDL3 3.4.20 built
+   with it, into `toolchain/` (about 400 MB, SHA-256 checked):
+
+   ```bash
+   tools/fetch_toolchain.sh
+   ```
+
+3. Build the Windows program (`build/win64/vf4ft.exe` + `SDL3.dll`):
+
+   ```bash
+   cmake -S . -B build/win64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/llvm-mingw-x86_64.cmake -DCMAKE_BUILD_TYPE=Release && cmake --build build/win64
+   ```
+
+4. Build the native Linux program (`build/linux/vf4ft`):
+
+   ```bash
+   cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build/linux
+   ```
+
+5. Run the Windows program under Proton without Steam. This needs
+   `umu-launcher` (`sudo pacman -S umu-launcher`) and Steam's "Proton -
+   Experimental" installed (Steam: Library, search "Proton Experimental",
+   Install). The prefix is kept in `build/proton-prefix`:
+
+   ```bash
+   cd build/win64 && WINEPREFIX="$PWD/../proton-prefix" GAMEID=umu-default PROTONPATH="$HOME/.steam/steam/steamapps/common/Proton - Experimental" umu-run ./vf4ft.exe --frames 300
+   ```
+
+   Then read `build/win64/vf4ft.log`. Options: `--frames N` (stop after N
+   frames), `--gpu direct3d12|vulkan`, `--log FILE`. Keys: arrows/WASD,
+   J K L (Guard Punch Kick), Enter (Start), 5 (Coin), Esc quits.
+
 ## License
 
 MIT, for this project's own work: see [LICENSE](LICENSE). The game and

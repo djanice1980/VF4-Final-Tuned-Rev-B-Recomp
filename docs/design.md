@@ -69,9 +69,8 @@ same executable with its own dispatch table: it loads at the same address as
   as an SDL gamepad), audio output, and SDL_GPU for drawing (Direct3D 12 or
   Vulkan on Windows; under Proton, vkd3d-proton or Wine's Vulkan, with a
   setting to force one).
-- A native Linux build of the runtime is kept working for development (gdb,
-  sanitizers, no Wine in the loop). It is not a release target unless the
-  maintainer decides otherwise.
+- A native Linux build is kept working for development (gdb, sanitizers,
+  no Wine in the loop) and is also a release (section 11).
 
 ## 4. Translation
 
@@ -212,8 +211,8 @@ Command line first, a window later:
    <install folder>` rebuilds after a new release, keeping `user/`.
 2. Then a small builder program (Windows exe, and a Linux build for Steam
    Deck / desktop Linux): finds or asks for the set, downloads the pinned
-   llvm-mingw and an embeddable Python, runs step 1, offers to add the game
-   to Steam as a non-Steam game with Proton, and acts as the launcher with
+   llvm-mingw and an embeddable Python, runs step 1, adds the game to Steam
+   (section 11), and acts as the launcher with
    **Play** and **Update**.
 
 The set is read in place and never changed. The install folder holds only
@@ -246,13 +245,19 @@ players never to share it.
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton |
 | M4 | Sound | music, voices and effects; then the DSP |
 | M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs |
-| M6 | Polish | resolution scaling, settings menu, cards, free play, test mode; widescreen considered |
+| M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered |
 
-## 11. Open questions for the maintainer
+## 11. Decided 2026-11-12
 
-- Whether a native Linux build should ever be a release (it is kept working
-  for development either way).
-- Coin and free play: insert coins from a key/button, or default the
-  operator settings to free play.
-- Whether the builder should add the Steam shortcut itself (writing Steam's
-  `shortcuts.vdf`) or show the steps.
+- **Native Linux is a release target too**, beside the Windows exe (which
+  stays the one for Proton). Same runtime, built with the system's clang and
+  SDL3.
+- **Free play by default, arcade coins as an option.** A setting (saved in
+  `user/`) switches between free play and "arcade" (coins from a key or
+  button, with the game's own operator coin settings). It is applied by
+  writing the game's own operator settings in backup memory, not by changing
+  game code, so arcade mode behaves exactly as the board does.
+- **The builder adds the game to Steam itself**: it writes a non-Steam
+  shortcut to each Steam user's `shortcuts.vdf` (with Steam closed, after
+  asking), and on Linux sets Proton as its compatibility tool for the Windows
+  exe, or no tool for the Linux build.
