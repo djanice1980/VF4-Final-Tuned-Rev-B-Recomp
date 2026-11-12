@@ -16,8 +16,12 @@ emulator runs at play time.
 
 ## Status
 
-Planning. Nothing runs yet. The plan, with its milestones:
-[docs/design.md](docs/design.md).
+No game yet. The plan, with its milestones: [docs/design.md](docs/design.md).
+
+| Milestone | State |
+|---|---|
+| M0: cross build, window, input, Steam/Proton | Done 2026-11-12. `vf4ft.exe` runs under Proton Experimental from Steam (Direct3D 12 through vkd3d-proton by default, Vulkan too) and natively on Linux; with Steam Input on it sees exactly one controller (Steam's virtual pad) and reads stick, D-pad and buttons |
+| M1: translator | Next |
 
 ## How it works
 
@@ -80,7 +84,8 @@ what it sees to `vf4ft.log` beside the program.
 
    Then read `build/win64/vf4ft.log`. Options: `--frames N` (stop after N
    frames), `--gpu direct3d12|vulkan`, `--log FILE`. Keys: arrows/WASD,
-   J K L (Guard Punch Kick), Enter (Start), 5 (Coin), Esc quits.
+   J K L (Guard Punch Kick), Enter (Start), 5 (Coin). Quit with Esc, or
+   hold View + Menu (Back + Start) on a controller for a second.
 
 6. Run it from Steam (Steam Input). Close Steam first (Steam menu, Exit),
    then add the program as a non-Steam game set to Proton Experimental:

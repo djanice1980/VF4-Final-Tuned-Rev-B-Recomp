@@ -8,6 +8,8 @@
  *   --frames N        present N frames, then exit (0 = until the window closes)
  *   --gpu NAME        SDL_GPU driver: direct3d12 (or d3d12) or vulkan (default: SDL's choice)
  *   --log FILE        log somewhere else
+ *
+ * Quit: Esc, closing the window, or holding View + Menu on a controller.
  */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -124,8 +126,11 @@ int main(int argc, char **argv)
         const char *ignore = SDL_getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
         const char *appid = SDL_getenv("SteamAppId");
         const char *deck = SDL_getenv("SteamDeck");
-        logf_("steam: SteamAppId=%s SteamDeck=%s ignore-devices=%s",
-              appid ? appid : "-", deck ? deck : "-", ignore ? ignore : "-");
+        int hidden = 0;
+        for (const char *p = ignore; p && *p; p++) hidden += *p == ',';
+        if (ignore && *ignore) hidden++;
+        logf_("steam: SteamAppId=%s SteamDeck=%s ignore-devices: %d entries",
+              appid ? appid : "-", deck ? deck : "-", hidden);
     }
 
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -147,6 +152,7 @@ int main(int argc, char **argv)
     long frames = 0;
     Uint64 t0 = SDL_GetTicksNS();
     unsigned last_buttons = 0;
+    Uint64 quit_held_since = 0;
     bool running = true;
     while (running) {
         SDL_Event ev;
@@ -198,6 +204,20 @@ int main(int argc, char **argv)
         if (in.buttons != last_buttons) {
             logf_("inputs: buttons %08x stick %.2f %.2f", in.buttons, in.x, in.y);
             last_buttons = in.buttons;
+        }
+        /* Quit from a controller alone (Steam Deck, couch): hold View and
+         * Menu (Back + Start) for a second. */
+        {
+            const unsigned chord = (1u << SDL_GAMEPAD_BUTTON_BACK) | (1u << SDL_GAMEPAD_BUTTON_START);
+            if ((in.buttons & chord) == chord) {
+                if (!quit_held_since) quit_held_since = SDL_GetTicks();
+                else if (SDL_GetTicks() - quit_held_since >= 1000) {
+                    logf_("quit: View + Menu held");
+                    running = false;
+                }
+            } else {
+                quit_held_since = 0;
+            }
         }
 
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
