@@ -8,6 +8,9 @@
  */
 #ifndef VF4RT_SH4_H
 #define VF4RT_SH4_H
+/* VF4debug's own sh4.h (runtime/machine/sh4.h) describes the same state:
+ * code that includes it first (the runtime's seam) gets that one */
+#ifndef VF4_SH4_H
 
 #include <stdint.h>
 
@@ -82,4 +85,5 @@ typedef struct sh4 {
     int in_slot;      /* executing a delay slot (interpreter only) */
 } sh4;
 
+#endif
 #endif

@@ -127,19 +127,19 @@ def decode(op, addr):
                 i.slot_ok = False
                 return i
             if m == 8:
-                _simple(i, f"pref @r{n}", f"op_pref(c, {n});")
+                _simple(i, f"pref @r{n}", f"op_pref(c, ATK, {n});")
                 return i
             if m in (9, 10, 11):
                 _simple(i, f"{('ocbi', 'ocbp', 'ocbwb')[m - 9]} @r{n}", "/* no cache */")
                 return i
             if m == 12:
-                _simple(i, f"movca.l r0,@r{n}", f"mem_w32(c, {R(n)}, {R(0)});")
+                _simple(i, f"movca.l r0,@r{n}", f"rt_w32(c, ATK, {R(n)}, {R(0)});")
                 return i
             return ill()
         if low in (0x4, 0x5, 0x6):
             w = {4: "8", 5: "16", 6: "32"}[low]
             sfx = {4: "b", 5: "w", 6: "l"}[low]
-            _simple(i, f"mov.{sfx} r{m},@(r0,r{n})", f"mem_w{w}(c, {R(0)} + {R(n)}, {R(m)});")
+            _simple(i, f"mov.{sfx} r{m},@(r0,r{n})", f"rt_w{w}(c, ATK, {R(0)} + {R(n)}, {R(m)});")
             return i
         if low == 0x7:
             _simple(i, f"mul.l r{m},r{n}", f"c->macl = {R(n)} * {R(m)};")
@@ -185,31 +185,31 @@ def decode(op, addr):
             return ill()
         if low in (0xc, 0xd, 0xe):
             if low == 0xc:
-                _simple(i, f"mov.b @(r0,r{m}),r{n}", f"{R(n)} = (u32)(s32)(s8)mem_r8(c, {R(0)} + {R(m)});", [n])
+                _simple(i, f"mov.b @(r0,r{m}),r{n}", f"{R(n)} = (u32)(s32)(s8)rt_r8(c, ATK, {R(0)} + {R(m)});", [n])
             elif low == 0xd:
-                _simple(i, f"mov.w @(r0,r{m}),r{n}", f"{R(n)} = (u32)(s32)(s16)mem_r16(c, {R(0)} + {R(m)});", [n])
+                _simple(i, f"mov.w @(r0,r{m}),r{n}", f"{R(n)} = (u32)(s32)(s16)rt_r16(c, ATK, {R(0)} + {R(m)});", [n])
             else:
-                _simple(i, f"mov.l @(r0,r{m}),r{n}", f"{R(n)} = mem_r32(c, {R(0)} + {R(m)});", [n])
+                _simple(i, f"mov.l @(r0,r{m}),r{n}", f"{R(n)} = rt_r32(c, ATK, {R(0)} + {R(m)});", [n])
             return i
         if low == 0xf:
-            _simple(i, f"mac.l @r{m}+,@r{n}+", f"op_macl(c, {n}, {m});", [n, m])
+            _simple(i, f"mac.l @r{m}+,@r{n}+", f"op_macl(c, ATK, {n}, {m});", [n, m])
             return i
         return ill()
 
     if top == 0x1:
         d = (op & 15) << 2
-        _simple(i, f"mov.l r{m},@({d},r{n})", f"mem_w32(c, {R(n)} + {d}u, {R(m)});")
+        _simple(i, f"mov.l r{m},@({d},r{n})", f"rt_w32(c, ATK, {R(n)} + {d}u, {R(m)});")
         return i
 
     if top == 0x2:
         if low in (0, 1, 2):
             w, sfx = {0: ("8", "b"), 1: ("16", "w"), 2: ("32", "l")}[low]
-            _simple(i, f"mov.{sfx} r{m},@r{n}", f"mem_w{w}(c, {R(n)}, {R(m)});")
+            _simple(i, f"mov.{sfx} r{m},@r{n}", f"rt_w{w}(c, ATK, {R(n)}, {R(m)});")
             return i
         if low in (4, 5, 6):
             w, sfx, k = {4: ("8", "b", 1), 5: ("16", "w", 2), 6: ("32", "l", 4)}[low]
             _simple(i, f"mov.{sfx} r{m},@-r{n}",
-                    f"{{ u32 v = {R(m)}; {R(n)} -= {k}; mem_w{w}(c, {R(n)}, v); }}", [n])
+                    f"{{ u32 v = {R(m)}; {R(n)} -= {k}; rt_w{w}(c, ATK, {R(n)}, v); }}", [n])
             return i
         t = {7: (f"div0s r{m},r{n}", f"op_div0s(c, {n}, {m});", []),
              8: (f"tst r{m},r{n}", f"c->t = ({R(n)} & {R(m)}) == 0;", []),
@@ -273,21 +273,21 @@ def decode(op, addr):
             if src is None:
                 return ill()
             _simple(i, f"sts.l {src[0]},@-r{n}",
-                    f"{{ u32 v = {src[1]}; {R(n)} -= 4; mem_w32(c, {R(n)}, v); }}", [n])
+                    f"{{ u32 v = {src[1]}; {R(n)} -= 4; rt_w32(c, ATK, {R(n)}, v); }}", [n])
             i.fpscr_save = (m == 6 and n == 15)
             return i
         if low == 0x3:
             if op & 0x80:
                 b = (op >> 4) & 7
                 _simple(i, f"stc.l r{b}_bank,@-r{n}",
-                        f"{{ u32 v = c->r_bank[{b}]; {R(n)} -= 4; mem_w32(c, {R(n)}, v); }}", [n])
+                        f"{{ u32 v = c->r_bank[{b}]; {R(n)} -= 4; rt_w32(c, ATK, {R(n)}, v); }}", [n])
                 return i
             src = {0: ("sr", "rt_get_sr(c)"), 1: ("gbr", "c->gbr"), 2: ("vbr", "c->vbr"),
                    3: ("ssr", "c->ssr"), 4: ("spc", "c->spc")}.get(m)
             if src is None:
                 return ill()
             _simple(i, f"stc.l {src[0]},@-r{n}",
-                    f"{{ u32 v = {src[1]}; {R(n)} -= 4; mem_w32(c, {R(n)}, v); }}", [n])
+                    f"{{ u32 v = {src[1]}; {R(n)} -= 4; rt_w32(c, ATK, {R(n)}, v); }}", [n])
             return i
         if low == 0x4:
             t = {0: (f"rotl r{n}", f"c->t = {R(n)} >> 31; {R(n)} = ({R(n)} << 1) | c->t;"),
@@ -312,7 +312,7 @@ def decode(op, addr):
             if dst is None:
                 return ill()
             _simple(i, f"lds.l @r{n}+,{dst[0]}",
-                    f"{{ u32 v = mem_r32(c, {R(n)}); {R(n)} += 4; {dst[1]} }}", [n])
+                    f"{{ u32 v = rt_r32(c, ATK, {R(n)}); {R(n)} += 4; {dst[1]} }}", [n])
             if m == 6:
                 i.fpscr_write = ("pop", n)
             return i
@@ -320,14 +320,14 @@ def decode(op, addr):
             if op & 0x80:
                 b = (op >> 4) & 7
                 _simple(i, f"ldc.l @r{n}+,r{b}_bank",
-                        f"{{ u32 v = mem_r32(c, {R(n)}); {R(n)} += 4; c->r_bank[{b}] = v; }}", [n])
+                        f"{{ u32 v = rt_r32(c, ATK, {R(n)}); {R(n)} += 4; c->r_bank[{b}] = v; }}", [n])
                 return i
             dst = {0: ("sr", "rt_set_sr(c, v);"), 1: ("gbr", "c->gbr = v;"), 2: ("vbr", "c->vbr = v;"),
                    3: ("ssr", "c->ssr = v;"), 4: ("spc", "c->spc = v;")}.get(m)
             if dst is None:
                 return ill()
             _simple(i, f"ldc.l @r{n}+,{dst[0]}",
-                    f"{{ u32 v = mem_r32(c, {R(n)}); {R(n)} += 4; {dst[1]} }}", "all" if m == 0 else [n])
+                    f"{{ u32 v = rt_r32(c, ATK, {R(n)}); {R(n)} += 4; {dst[1]} }}", "all" if m == 0 else [n])
             if m == 0:
                 i.writes = "all"
                 i.slot_ok = False
@@ -359,7 +359,7 @@ def decode(op, addr):
                 i.kind, i.text, i.reg, i.writes, i.slot_ok = JSR, f"jsr @r{n}", n, set(), False
                 return i
             if m == 1:
-                _simple(i, f"tas.b @r{n}", f"op_tas(c, {n});")
+                _simple(i, f"tas.b @r{n}", f"op_tas(c, ATK, {n});")
                 return i
             if m == 2:
                 i.kind, i.text, i.reg, i.writes, i.slot_ok = JMP, f"jmp @r{n}", n, set(), False
@@ -387,19 +387,19 @@ def decode(op, addr):
                 i.slot_ok = False
             return i
         if low == 0xf:
-            _simple(i, f"mac.w @r{m}+,@r{n}+", f"op_macw(c, {n}, {m});", [n, m])
+            _simple(i, f"mac.w @r{m}+,@r{n}+", f"op_macw(c, ATK, {n}, {m});", [n, m])
             return i
         return ill()
 
     if top == 0x5:
         d = (op & 15) << 2
-        _simple(i, f"mov.l @({d},r{m}),r{n}", f"{R(n)} = mem_r32(c, {R(m)} + {d}u);", [n])
+        _simple(i, f"mov.l @({d},r{m}),r{n}", f"{R(n)} = rt_r32(c, ATK, {R(m)} + {d}u);", [n])
         return i
 
     if top == 0x6:
-        t = {0x0: (f"mov.b @r{m},r{n}", f"{R(n)} = (u32)(s32)(s8)mem_r8(c, {R(m)});", [n]),
-             0x1: (f"mov.w @r{m},r{n}", f"{R(n)} = (u32)(s32)(s16)mem_r16(c, {R(m)});", [n]),
-             0x2: (f"mov.l @r{m},r{n}", f"{R(n)} = mem_r32(c, {R(m)});", [n]),
+        t = {0x0: (f"mov.b @r{m},r{n}", f"{R(n)} = (u32)(s32)(s8)rt_r8(c, ATK, {R(m)});", [n]),
+             0x1: (f"mov.w @r{m},r{n}", f"{R(n)} = (u32)(s32)(s16)rt_r16(c, ATK, {R(m)});", [n]),
+             0x2: (f"mov.l @r{m},r{n}", f"{R(n)} = rt_r32(c, ATK, {R(m)});", [n]),
              0x3: (f"mov r{m},r{n}", f"{R(n)} = {R(m)};", [n]),
              0x7: (f"not r{m},r{n}", f"{R(n)} = ~{R(m)};", [n]),
              0x8: (f"swap.b r{m},r{n}",
@@ -419,7 +419,7 @@ def decode(op, addr):
             w, sfx, k, ext = {4: ("8", "b", 1, "(u32)(s32)(s8)"), 5: ("16", "w", 2, "(u32)(s32)(s16)"),
                               6: ("32", "l", 4, "")}[low]
             inc = f" {R(m)} += {k};" if n != m else ""
-            _simple(i, f"mov.{sfx} @r{m}+,r{n}", f"{{ u32 v = {ext}mem_r{w}(c, {R(m)});{inc} {R(n)} = v; }}",
+            _simple(i, f"mov.{sfx} @r{m}+,r{n}", f"{{ u32 v = {ext}rt_r{w}(c, ATK, {R(m)});{inc} {R(n)} = v; }}",
                     [n, m])
             return i
         return ill()
@@ -431,17 +431,17 @@ def decode(op, addr):
     if top == 0x8:
         d4 = op & 15
         if n == 0x0:
-            _simple(i, f"mov.b r0,@({d4},r{m})", f"mem_w8(c, {R(m)} + {d4}u, {R(0)});")
+            _simple(i, f"mov.b r0,@({d4},r{m})", f"rt_w8(c, ATK, {R(m)} + {d4}u, {R(0)});")
             return i
         if n == 0x1:
-            _simple(i, f"mov.w r0,@({d4 * 2},r{m})", f"mem_w16(c, {R(m)} + {d4 * 2}u, {R(0)});")
+            _simple(i, f"mov.w r0,@({d4 * 2},r{m})", f"rt_w16(c, ATK, {R(m)} + {d4 * 2}u, {R(0)});")
             return i
         if n == 0x4:
-            _simple(i, f"mov.b @({d4},r{m}),r0", f"{R(0)} = (u32)(s32)(s8)mem_r8(c, {R(m)} + {d4}u);", [0])
+            _simple(i, f"mov.b @({d4},r{m}),r0", f"{R(0)} = (u32)(s32)(s8)rt_r8(c, ATK, {R(m)} + {d4}u);", [0])
             return i
         if n == 0x5:
             _simple(i, f"mov.w @({d4 * 2},r{m}),r0",
-                    f"{R(0)} = (u32)(s32)(s16)mem_r16(c, {R(m)} + {d4 * 2}u);", [0])
+                    f"{R(0)} = (u32)(s32)(s16)rt_r16(c, ATK, {R(m)} + {d4 * 2}u);", [0])
             return i
         if n == 0x8:
             _simple(i, f"cmp/eq #{s8(imm8)},r0", f"c->t = {R(0)} == {h32(s8(imm8))};")
@@ -473,23 +473,23 @@ def decode(op, addr):
 
     if top == 0xc:
         g = imm8
-        t = {0x0: (f"mov.b r0,@({g},gbr)", f"mem_w8(c, c->gbr + {g}u, {R(0)});", []),
-             0x1: (f"mov.w r0,@({g * 2},gbr)", f"mem_w16(c, c->gbr + {g * 2}u, {R(0)});", []),
-             0x2: (f"mov.l r0,@({g * 4},gbr)", f"mem_w32(c, c->gbr + {g * 4}u, {R(0)});", []),
-             0x4: (f"mov.b @({g},gbr),r0", f"{R(0)} = (u32)(s32)(s8)mem_r8(c, c->gbr + {g}u);", [0]),
-             0x5: (f"mov.w @({g * 2},gbr),r0", f"{R(0)} = (u32)(s32)(s16)mem_r16(c, c->gbr + {g * 2}u);", [0]),
-             0x6: (f"mov.l @({g * 4},gbr),r0", f"{R(0)} = mem_r32(c, c->gbr + {g * 4}u);", [0]),
+        t = {0x0: (f"mov.b r0,@({g},gbr)", f"rt_w8(c, ATK, c->gbr + {g}u, {R(0)});", []),
+             0x1: (f"mov.w r0,@({g * 2},gbr)", f"rt_w16(c, ATK, c->gbr + {g * 2}u, {R(0)});", []),
+             0x2: (f"mov.l r0,@({g * 4},gbr)", f"rt_w32(c, ATK, c->gbr + {g * 4}u, {R(0)});", []),
+             0x4: (f"mov.b @({g},gbr),r0", f"{R(0)} = (u32)(s32)(s8)rt_r8(c, ATK, c->gbr + {g}u);", [0]),
+             0x5: (f"mov.w @({g * 2},gbr),r0", f"{R(0)} = (u32)(s32)(s16)rt_r16(c, ATK, c->gbr + {g * 2}u);", [0]),
+             0x6: (f"mov.l @({g * 4},gbr),r0", f"{R(0)} = rt_r32(c, ATK, c->gbr + {g * 4}u);", [0]),
              0x8: (f"tst #{g},r0", f"c->t = ({R(0)} & {g}u) == 0;", []),
              0x9: (f"and #{g},r0", f"{R(0)} &= {g}u;", [0]),
              0xa: (f"xor #{g},r0", f"{R(0)} ^= {g}u;", [0]),
              0xb: (f"or #{g},r0", f"{R(0)} |= {g}u;", [0]),
-             0xc: (f"tst.b #{g},@(r0,gbr)", f"c->t = (mem_r8(c, c->gbr + {R(0)}) & {g}u) == 0;", []),
+             0xc: (f"tst.b #{g},@(r0,gbr)", f"c->t = (rt_r8(c, ATK, c->gbr + {R(0)}) & {g}u) == 0;", []),
              0xd: (f"and.b #{g},@(r0,gbr)",
-                   f"{{ u32 a = c->gbr + {R(0)}; mem_w8(c, a, mem_r8(c, a) & {g}u); }}", []),
+                   f"{{ u32 a = c->gbr + {R(0)}; rt_w8(c, ATK, a, rt_r8(c, ATK, a) & {g}u); }}", []),
              0xe: (f"xor.b #{g},@(r0,gbr)",
-                   f"{{ u32 a = c->gbr + {R(0)}; mem_w8(c, a, mem_r8(c, a) ^ {g}u); }}", []),
+                   f"{{ u32 a = c->gbr + {R(0)}; rt_w8(c, ATK, a, rt_r8(c, ATK, a) ^ {g}u); }}", []),
              0xf: (f"or.b #{g},@(r0,gbr)",
-                   f"{{ u32 a = c->gbr + {R(0)}; mem_w8(c, a, mem_r8(c, a) | {g}u); }}", [])}.get(n)
+                   f"{{ u32 a = c->gbr + {R(0)}; rt_w8(c, ATK, a, rt_r8(c, ATK, a) | {g}u); }}", [])}.get(n)
         if t is not None:
             _simple(i, t[0], t[1], t[2])
             return i
@@ -522,11 +522,11 @@ def decode(op, addr):
 def _fmov_load(n, addr_expr, post_inc_reg=None):
     def fn(sz):
         if sz:
-            out = [f"{{ u32 a = {addr_expr}; fpreg *d = FPAIR(c, {n}); d[0].u = mem_r32(c, a); "
-                   f"d[1].u = mem_r32(c, a + 4);" + (f" {R(post_inc_reg)} = a + 8;" if post_inc_reg is not None
+            out = [f"{{ u32 a = {addr_expr}; fpreg *d = FPAIR(c, {n}); d[0].u = rt_r32(c, ATK, a); "
+                   f"d[1].u = rt_r32(c, ATK, a + 4);" + (f" {R(post_inc_reg)} = a + 8;" if post_inc_reg is not None
                                                      else "") + " }"]
         else:
-            out = [f"{{ u32 a = {addr_expr}; {FR(n)}.u = mem_r32(c, a);" +
+            out = [f"{{ u32 a = {addr_expr}; {FR(n)}.u = rt_r32(c, ATK, a);" +
                    (f" {R(post_inc_reg)} = a + 4;" if post_inc_reg is not None else "") + " }"]
         return out
     return fn
@@ -535,9 +535,9 @@ def _fmov_load(n, addr_expr, post_inc_reg=None):
 def _fmov_store(m, addr_expr):
     def fn(sz):
         if sz:
-            return [f"{{ u32 a = {addr_expr}; fpreg *s = FPAIR(c, {m}); mem_w32(c, a, s[0].u); "
-                    f"mem_w32(c, a + 4, s[1].u); }}"]
-        return [f"mem_w32(c, {addr_expr}, {FR(m)}.u);"]
+            return [f"{{ u32 a = {addr_expr}; fpreg *s = FPAIR(c, {m}); rt_w32(c, ATK, a, s[0].u); "
+                    f"rt_w32(c, ATK, a + 4, s[1].u); }}"]
+        return [f"rt_w32(c, ATK, {addr_expr}, {FR(m)}.u);"]
     return fn
 
 
@@ -572,9 +572,9 @@ def _fpu(i, op, n, m, at, ill):
     if low == 0xb:
         def fn(sz):
             if sz:
-                return [f"{{ u32 a = {R(n)} - 8; fpreg *s = FPAIR(c, {m}); mem_w32(c, a, s[0].u); "
-                        f"mem_w32(c, a + 4, s[1].u); {R(n)} = a; }}"]
-            return [f"{{ u32 a = {R(n)} - 4; mem_w32(c, a, {FR(m)}.u); {R(n)} = a; }}"]
+                return [f"{{ u32 a = {R(n)} - 8; fpreg *s = FPAIR(c, {m}); rt_w32(c, ATK, a, s[0].u); "
+                        f"rt_w32(c, ATK, a + 4, s[1].u); {R(n)} = a; }}"]
+            return [f"{{ u32 a = {R(n)} - 4; rt_w32(c, ATK, a, {FR(m)}.u); {R(n)} = a; }}"]
         _fpu_mode(i, "sz", f"fmov fr{m},@-r{n}", fn, [n])
         return i
     if low == 0xc:

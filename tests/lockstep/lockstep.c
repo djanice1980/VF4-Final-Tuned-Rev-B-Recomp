@@ -112,16 +112,68 @@ void rt_trapa(sh4 *c, u32 imm, u32 at);
 void rt_trapa(sh4 *c, u32 imm, u32 at) { rt_host_fault(c, 100, at, imm); }
 void rt_sleep(sh4 *c, u32 at);
 void rt_sleep(sh4 *c, u32 at) { rt_host_fault(c, 101, at, 0); }
-/* the only event in these tests: the translated run's cycle budget is spent */
+
+/* the only event in these tests: the translated run's cycle budget is spent
+ * (a block that would pass next_event goes to rt_slow) */
 static jmp_buf escape;
 static int escape_set;
-void rt_event(sh4 *c, u32 at);
-void rt_event(sh4 *c, u32 at)
+int rt_slow(sh4 *c);
+int rt_slow(sh4 *c)
 {
-    (void)at;
-    if (escape_set && c->cycles >= c->next_event)
+    if (escape_set)
         longjmp(escape, 1);
+    rt_host_fault(c, 105, c->pc, 0);
+    return 1;
 }
+void rt_continue(sh4 *c);
+void rt_continue(sh4 *c) { rt_host_fault(c, 106, c->pc, 0); }
+/* code that is not a translated routine's start: VF4debug's interpreter
+ * would run it, the harness cannot */
+void rt_host_outside(sh4 *c, u32 target, u32 from, int is_call);
+void rt_host_outside(sh4 *c, u32 target, u32 from, int is_call)
+{
+    (void)is_call;
+    rt_host_fault(c, 1, from, target);
+}
+void rt_rte(sh4 *c);
+void rt_rte(sh4 *c) { (void)c; }
+
+/* the device models' slow path, with the clock put back to the instruction's
+ * own as the runtime does (runtime/native/rt_native.c) */
+u32 rt_io_read(sh4 *c, u64 atk, u32 addr, int size);
+u32 rt_io_read(sh4 *c, u64 atk, u32 addr, int size)
+{
+    u32 k = (u32)(atk >> 32);
+    c->pc = (u32)atk + 2;
+    c->cycles -= k; c->insns -= k;
+    u32 v = io_read(c, addr, size);
+    c->cycles += k; c->insns += k;
+    return v;
+}
+void rt_io_write(sh4 *c, u64 atk, u32 addr, u32 val, int size);
+void rt_io_write(sh4 *c, u64 atk, u32 addr, u32 val, int size)
+{
+    u32 k = (u32)(atk >> 32);
+    c->pc = (u32)atk + 2;
+    c->cycles -= k; c->insns -= k;
+    io_write(c, addr, val, size);
+    c->cycles += k; c->insns += k;
+}
+void rt_sq_write(sh4 *c, u64 atk, u32 dst, const u32 *words);
+void rt_sq_write(sh4 *c, u64 atk, u32 dst, const u32 *words)
+{
+    u32 k = (u32)(atk >> 32);
+    c->pc = (u32)atk + 2;
+    c->cycles -= k; c->insns -= k;
+    io_sq_write(c, dst, words);
+    c->cycles += k; c->insns += k;
+}
+
+/* the runtime's changed-code tables: nothing here changes code, so stores
+ * use the interpreter's page table and no block is ever changed */
+u8 *mem_wpage[65536];
+#define RT_CODE_SLOTS 0xff0000u
+u8 rt_code_changed[RT_CODE_SLOTS];
 
 /* routines the translated side entered (RT_ENTRY, lockstep_hooks.h) */
 static unsigned char *entered;
@@ -457,6 +509,7 @@ int main(int argc, char **argv)
         return 2;
     machine_init();
     hw_init(&cpu);
+    memcpy(mem_wpage, mem_page, sizeof mem_wpage);   /* as hw_init left the page table */
     ram_init = malloc(RAM_SIZE);
     ram_interp = malloc(RAM_SIZE);
     if (!ram_init || !ram_interp)

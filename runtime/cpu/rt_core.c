@@ -1,7 +1,8 @@
 /* What translated code calls when it leaves its own static flow: calls and
  * jumps whose target is only known at run time, and the ways a routine can
  * go wrong. Everything that depends on the machine around the CPU (events,
- * exceptions, sleep) is the host's: see rt_host_* in rt_dispatch.h. */
+ * exceptions, code that is not translated) is the host's: see rt_host_* in
+ * rt_dispatch.h. */
 #include "rt_dispatch.h"
 
 const rt_routine *rt_table;
@@ -29,11 +30,14 @@ static u32 canon(u32 a)
     return (region == 4 || region == 5) ? (a & 0x1fffffffu) : a;
 }
 
+/* A target through P1 or P2 (the cache routines run themselves uncached)
+ * is the host's too: the code there sees its own PC in that region (in PR,
+ * in mova), which the translation, made for P0, does not reproduce. */
 void rt_call(sh4 *c, u32 target, u32 from)
 {
-    const rt_routine *r = rt_find(rt_table, rt_table_count, canon(target));
+    const rt_routine *r = canon(target) == target ? rt_find(rt_table, rt_table_count, target) : NULL;
     if (RT_UNLIKELY(r == NULL)) {
-        rt_host_fault(c, RT_FAULT_NO_CODE, from, target);
+        rt_host_outside(c, target, from, 1);
         return;
     }
     r->fn(c);
@@ -43,9 +47,9 @@ void rt_jump(sh4 *c, u32 target, u32 from)
 {
     /* a jump to the start of a routine is a tail call: the routine returns
      * to whatever called this one, through c->pr */
-    const rt_routine *r = rt_find(rt_table, rt_table_count, canon(target));
+    const rt_routine *r = canon(target) == target ? rt_find(rt_table, rt_table_count, target) : NULL;
     if (RT_UNLIKELY(r == NULL)) {
-        rt_host_fault(c, RT_FAULT_NO_CODE, from, target);
+        rt_host_outside(c, target, from, 0);
         return;
     }
     r->fn(c);
@@ -61,6 +65,13 @@ void rt_bad_return(sh4 *c, u32 expected, u32 from)
 void rt_illegal(sh4 *c, u32 op, u32 at)
 {
     rt_host_fault(c, RT_FAULT_ILLEGAL, at, op);
+}
+
+/* FPSCR changed outside translated code (the interpreter ran): the host
+ * rounding mode translated code keeps in step with it */
+void rt_fpscr_loaded(sh4 *c)
+{
+    rt_set_mxcsr_for(c->fpscr);
 }
 
 /* for harnesses that link this code next to another description of the

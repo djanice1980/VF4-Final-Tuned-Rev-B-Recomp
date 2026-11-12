@@ -22,7 +22,8 @@ No game yet. The plan, with its milestones: [docs/design.md](docs/design.md).
 |---|---|
 | M0: cross build, window, input, Steam/Proton | Done 2026-11-12. `vf4ft.exe` runs under Proton Experimental from Steam (Direct3D 12 through vkd3d-proton by default, Vulkan too) and natively on Linux; with Steam Input on it sees exactly one controller (Steam's virtual pad) and reads stick, D-pad and buttons |
 | M1: translator | Done 2026-11-12. Both programs translate to C (6,632 + 2,120 routines) that compiles with no warnings for Windows and Linux; 1.8 million checks against VF4debug's interpreter, none failed ([details](docs/design.md#12-m1-results-2026-11-12)) |
-| M2: runtime with the hardware models, headless | Next |
+| M2: runtime with the hardware models, headless | Done 2026-11-12. The translated game boots to attract and plays CPU vs CPU matches on VF4debug's hardware models, instruction for instruction the same run as VF4debug's (36,000 attract frames and two whole matches compared hash for hash); about 4 times the real hardware's speed with no picture yet ([details](docs/design.md#13-m2-results-2026-11-12)) |
+| M3: picture, input, real time | Next |
 
 ## How it works
 
@@ -144,6 +145,54 @@ made from your copy of the game: never commit or share it.
    ```bash
    make -C tests/lockstep -j16 test
    ```
+
+## Running the game headless (development, M2)
+
+`build/linux/vf4ft_headless` (built by step 4 above once `work/gen/` exists)
+is the translated game on VF4debug's hardware models, with no window. It
+runs on virtual time and is driven by VF4debug's controller scripts. It
+needs the [VF4debug](https://github.com/djanice1980/VF4debug) checkout at
+`../VF4debug` (only its `tools/gen_tables.py` is run, at build time) and the
+decompilation checkout at `../vf4ft-decomp` (the program image, the DIMM
+image and the routine tables). Other places: `cmake -S . -B build/linux
+-DVF4DEBUG_DIR=<path> -DVF4_DECOMP=<path>`.
+
+1. Boot to the attract loop: 9,000 frames, then where the game is. The
+   closing lines also count what ran on the interpreter instead of the
+   translation:
+
+   ```bash
+   build/linux/vf4ft_headless --frames 9000
+   ```
+
+2. Draw what it shows into PNG files (`view/f<frame>.png`, every 600th
+   frame):
+
+   ```bash
+   build/linux/vf4ft_headless --frames 9000 --view view --view-every 600
+   ```
+
+3. Check that a run is VF4debug's run. The script's `hash` lines fingerprint
+   all of main RAM and the registers; this builds VF4debug's own binary
+   from its checkout (into `build/vf4debug-ref`, needs gcc with 32-bit
+   support as in "Translating the game" step 3), runs both on the script,
+   and prints `same` or the first frame where they differ. A script that
+   boots and hashes every 100 frames to frame 9000, then a check:
+
+   ```bash
+   python3 -c "open('build/every100.txt','w').write('run 100\nhash\n' * 90)"
+   ```
+
+   ```bash
+   python3 -I tools/compare_runs.py build/every100.txt
+   ```
+
+   VF4debug's `scripts/` (a CPU vs CPU match, a two-player intrude match)
+   work the same way once `hash` lines are added after their commands.
+
+`--interp` runs the same binary on VF4debug's interpreter instead of the
+translation (for comparisons; slower). `--help` lists the rest: they are
+VF4debug's options.
 
 `meta/` holds the routine list and FPU modes taken from the decompilation
 (addresses and names only). After the decompilation changes, refresh it with

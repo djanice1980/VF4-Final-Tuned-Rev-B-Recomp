@@ -64,11 +64,13 @@ def main():
         else:
             variants = [(0, (T.UNK, 0)), (1, (T.UNK, 1)), (2, (T.UNK, T.UNK))]
         for v, mode in variants:
-            lines = T.emit_insn(prog, i, mode)
+            # one instruction is one block: counted at its start, its memory
+            # accesses at RT_ATK(CODE, 0) (translate.py's emit_func)
+            lines = [ln.replace("ATK", f"RT_ATK(0x{CODE:08x}u, 0)") for ln in T.emit_insn(prog, i, mode)]
             if any("rt_illegal" in ln for ln in lines):
                 continue        # an instruction the chip does not define in this mode
             name = f"x_{op:04x}_{v + 1}"
-            funcs.append(f"static void {name}(sh4 *restrict c)  /* {i.text} */\n{{\n    RT_COUNT(c, 1);\n"
+            funcs.append(f"static void {name}(sh4 *restrict c)  /* {i.text} */\n{{\n    c->cycles += 1; c->insns += 1;\n"
                          + "".join(f"    {ln}\n" for ln in lines) + "}\n")
             mem = "@" in i.text
             idx = "@(r0," in i.text

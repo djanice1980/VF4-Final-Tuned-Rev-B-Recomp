@@ -52,6 +52,8 @@ class Program:
                     sys.exit(f"fpu_context.tsv: cannot read the mode of {row}")
                 self.fpu_meta.setdefault(int(row["address"], 16), {})[row["field"]] = int(mt.group(2))
         self.decoded = {}
+        self.written = set()        # image bytes stores with known addresses write (analyze_all)
+        self.aliased = set()        # calls and jumps to the program through P1/P2 (left to run time)
         self.hints = read_hints(os.path.join(ROOT, "translator", "hints.tsv"), name, self.routines)
 
     def index(self):
@@ -87,6 +89,8 @@ class Program:
     def literal(self, a, size):
         if not self.in_image(a) or not self.in_image(a + max(size, 1) - 1):
             return None
+        if size in (2, 4) and any(b in self.written for b in range(a, a + size)):
+            return None             # a pool word the program writes: read it from memory
         if size == 4:
             return self.u32(a)
         if size == 2:
@@ -240,13 +244,25 @@ def build_flow(prog, f, noreturn, hints):
     """Follow f from its entry; then, while that finds more, resolve calls and
     jumps through registers that hold constants, and switch tables, and
     follow again from scratch (a call found not to return drops its
-    continuation)."""
+    continuation). What constants decided is checked again every round: a
+    path found later can make a register that was constant at a branch no
+    longer so, and the decision must then go."""
     calls, jumps, decided = {}, {}, {}
-    for _ in range(16):
+    from_const = set()          # calls / jumps resolved from a constant register
+    for _ in range(24):
         reset_flow(f)
         rebuild(prog, f, noreturn, calls, jumps, decided)
         f.consts = const_prop(prog, f)
         changed = False
+        for a in list(decided):
+            if a not in f.insns:
+                continue            # not reached this round: keep, it may be again
+            i = f.insns[a]
+            t = t_known(f, a)
+            now = None if t is None else (i.target if t == (((i.op >> 8) & 15) == 9) else a + 2)
+            if now != decided[a]:
+                del decided[a]
+                changed = True
         for a, i in f.insns.items():
             if i.kind == D.CBR and a not in decided:
                 t = t_known(f, a)
@@ -257,19 +273,35 @@ def build_flow(prog, f, noreturn, hints):
             if i.kind not in (D.JSR, D.JMP, D.BRAF, D.BSRF):
                 continue
             st = f.consts.get(a, {})
+            target = None
             if i.reg in st:
                 v = st[i.reg]
-                t = canon((a + 4 + v) & 0xFFFFFFFF if i.kind in (D.BRAF, D.BSRF) else v)
-                if not prog.in_image(t):
-                    continue        # outside the program: rt_call / rt_jump at run time
+                raw = (a + 4 + v) & 0xFFFFFFFF if i.kind in (D.BRAF, D.BSRF) else v
+                t = canon(raw)
+                if prog.in_image(t) and t != raw:
+                    # through the P1/P2 alias (the cache routines run uncached): the
+                    # code there sees its own PC in that region (PR, mova), so it runs
+                    # on the interpreter at its real address: rt_call / rt_jump
+                    prog.aliased.add(a)
+                elif prog.in_image(t):
+                    target = t
+                # else outside the program: rt_call / rt_jump at run time
+            if target is not None:
+                from_const.add(a)
                 if i.kind in (D.JSR, D.BSRF):
-                    if calls.get(a) != t:
-                        calls[a] = t
+                    if calls.get(a) != target:
+                        calls[a] = target
                         changed = True
-                elif jumps.get(a) != [t]:
-                    jumps[a] = [t]
+                elif jumps.get(a) != [target]:
+                    jumps[a] = [target]
                     changed = True
-            elif i.kind in (D.BRAF, D.JMP) and a not in jumps:
+                continue
+            if a in from_const:
+                from_const.discard(a)
+                calls.pop(a, None)
+                jumps.pop(a, None)
+                changed = True
+            if i.kind in (D.BRAF, D.JMP) and a not in jumps:
                 tg = hints.get(a)
                 if isinstance(tg, tuple):
                     tg = [prog.u32(tg[1] + 4 * n) for n in range(tg[2])]
@@ -743,21 +775,16 @@ def emit_insn(prog, i, mode):
         reg, a, size = i.pcload
         v = prog.literal(a, size)
         if v is None:
-            rd = f"mem_r32(c, 0x{a:08x}u)" if size == 4 else f"(u32)(s32)(s16)mem_r16(c, 0x{a:08x}u)"
+            rd = f"rt_r32(c, ATK, 0x{a:08x}u)" if size == 4 else f"(u32)(s32)(s16)rt_r16(c, ATK, 0x{a:08x}u)"
             return [f"c->r[{reg}] = {rd};"]
         return [f"c->r[{reg}] = 0x{v:08x}u;"]
     return i.emit(sz, pr)
 
 
-def emit_func(prog, f, modes, funcs, noreturn, out):
-    name = cname(prog, f.entry)
-    out.append(f"/* {prog.routines.get(f.entry, 'secondary entry')} at 0x{f.entry:08x}"
-               f"{' (shared code followed outside its extent)' if f.outside else ''} */")
-    out.append(f"void {name}(sh4 *restrict c)")
-    out.append("{")
-    out.append(f"    RT_ENTRY(c, 0x{f.entry:08x}u);")
-    addrs = sorted(f.insns)
-    # block starts
+def local_starts(prog, f):
+    """Block starts f's own flow asks for: its entry, branch targets, the
+    instruction after a conditional branch, a call, a sleep or a trapa, and
+    routine entries it holds."""
     starts = {f.entry}
     for a, ss in f.succ.items():
         i = f.insns[a]
@@ -769,49 +796,162 @@ def emit_func(prog, f, modes, funcs, noreturn, out):
         for s in ss:
             if s in f.insns and s != a + 2:
                 starts.add(s)
-    # straight-line runs
+    addrs = sorted(f.insns)
+    for idx, a in enumerate(addrs):
+        if idx == 0 or addrs[idx - 1] != a - 2:
+            starts.add(a)
+        if a in prog.routines:
+            starts.add(a)
+    return starts
+
+
+def block_len(f, a, starts):
+    """Instructions in the block at a (a delay slot counts as one)."""
+    n = 0
+    b = a
+    while b in f.insns:
+        bi = f.insns[b]
+        n += 1
+        if bi.kind in D.DELAYED:
+            n += 1
+        if bi.kind != D.NORMAL:
+            break
+        b += 2
+        if b in starts:
+            break
+    return n
+
+
+def global_blocks(prog, funcs):
+    """Block starts as a property of the address (the same in every routine
+    that holds the code) and the length of each block; a length two routines
+    disagree on is an error of the translator."""
+    starts = set()
+    for f in funcs.values():
+        starts |= local_starts(prog, f)
+    lens = {}
+    for f in funcs.values():
+        for a in f.insns:
+            if a not in starts:
+                continue
+            n = block_len(f, a, starts)
+            if lens.setdefault(a, n) != n:
+                sys.exit(f"translate: the block at {a:08x} is {lens[a]} instructions long in one routine and "
+                         f"{n} in {cname(prog, f.entry)}")
+    return starts, lens
+
+
+RAM_LO, RAM_HI = 0x0C000000, 0x0E000000
+MEM_RE = re.compile(r"@(?:\(([^)]*)\)|(-?r\d+\+?))")
+SYNC_RE = re.compile(r"\brt_[rw](?:8|16|32)\(|\bop_(?:macl|macw|tas|pref)\(")
+
+
+def surely_ram(i, consts):
+    """True when every memory operand of i is the stack, a literal of the
+    program, or an address constant propagation knows to be in RAM: such an
+    access cannot reach a device, so nothing can change under it."""
+    for m in MEM_RE.finditer(i.text):
+        inner = m.group(1) if m.group(1) is not None else m.group(2)
+        if re.fullmatch(r"0x[0-9a-f]+", inner):
+            continue                                    # pc-relative: the program's own literal
+        if "gbr" in inner or "pc" in inner:
+            return False
+        regs = [int(x) for x in re.findall(r"\br(\d+)\b", inner)]
+        if regs and regs[-1] == 15:
+            continue                                    # the stack ((r0,r15) included)
+        disp = re.match(r"\s*(-?\d+)\s*,", inner)
+        a = int(disp.group(1)) if disp else 0
+        for r in regs:
+            if r not in consts:
+                return False
+            a += consts[r]
+        if not RAM_LO <= (a & 0x1FFFFFFF) < RAM_HI:
+            return False
+    return True
+
+
+def atk(lines, at, k):
+    return [ln.replace("ATK", f"RT_ATK(0x{at:08x}u, {k})") for ln in lines]
+
+
+def emit_func(prog, f, modes, funcs, noreturn, out, gstarts, blens, lits):
+    name = cname(prog, f.entry)
+    out.append(f"/* {prog.routines.get(f.entry, 'secondary entry')} at 0x{f.entry:08x}"
+               f"{' (shared code followed outside its extent)' if f.outside else ''} */")
+    out.append(f"void {name}(sh4 *restrict c)")
+    out.append("{")
+    addrs = sorted(f.insns)
+    starts = {a for a in addrs if a in gstarts}
+    entries = {a for a in starts if a in prog.routines}
     labels_used = set()
 
-    def go(target, at, backward_ok=True):
+    def label_of(a, skip_entry):
+        return f"L_{a:08x}_n" if a in entries and skip_entry else f"L_{a:08x}"
+
+    def go(target, at, fall=False):
+        """C for control reaching target from the instruction at at: by bra,
+        jmp, braf or a call, the hooks of an entry there run; falling in, a
+        conditional branch or a return do not (the interpreter's X(go))."""
         if target in f.insns:
-            labels_used.add(target)
-            poll = f"RT_POLL(c, 0x{at:08x}u); " if target <= at else ""
-            return f"{poll}goto L_{target:08x};"
+            lab = label_of(target, fall)
+            labels_used.add(lab)
+            return f"goto {lab};"
         if target in prog.routines:
-            nr = target in noreturn
-            return f"{cname(prog, target)}(c); return;" + (" /* noreturn */" if nr else "")
+            nr = " /* noreturn */" if target in noreturn else ""
+            if fall:
+                return f"RT_FALL(c, {cname(prog, target)}, 0x{target:08x}u); return;{nr}"
+            return f"{cname(prog, target)}(c); return;{nr}"
         return f"rt_jump(c, 0x{target:08x}u, 0x{at:08x}u); return; /* not translated */"
 
     body = []
+    if addrs[0] != f.entry:
+        lab = label_of(f.entry, False)
+        labels_used.add(lab)
+        body.append(("code", f"goto {lab};"))
+    n = j = 0
+    cur = addrs[0]
+
+    def note_literal(ins):
+        # a pool word compiled in as a constant: the block reading it goes
+        # to the interpreter if the word changes (the runtime, M_lits)
+        if ins.pcload is not None and ins.pcload[2] in (2, 4) and prog.literal(ins.pcload[1], ins.pcload[2]) is not None:
+            lits.add((ins.pcload[1] | (ins.pcload[2] == 4), cur))
+
     for idx, a in enumerate(addrs):
         i = f.insns[a]
         mode = modes.get(a, (UNK, UNK))
-        if a in starts or idx == 0 or (idx > 0 and addrs[idx - 1] != a - 2):
-            # instruction count of this block
-            n = 0
-            b = a
-            while b in f.insns:
-                bi = f.insns[b]
-                n += 1
-                if bi.kind in D.DELAYED:
-                    n += 1
-                if bi.kind != D.NORMAL:
-                    break
-                b += 2
-                if b in starts:
-                    break
-            body.append(("label", a))
-            body.append(("code", f"RT_COUNT(c, {n});"))
+        if a in starts:
+            if a in entries:
+                if body:
+                    lab = label_of(a, True)
+                    labels_used.add(lab)
+                    body.append(("code", f"goto {lab};"))
+                body.append(("label", f"L_{a:08x}"))
+                body.append(("code", f"RT_ENTRY(c, 0x{a:08x}u);"))
+                body.append(("label", f"L_{a:08x}_n"))
+            else:
+                body.append(("label", f"L_{a:08x}"))
+            n = blens[a]
+            j = 0
+            cur = a
+            body.append(("code", f"RT_BLOCK(c, 0x{a:08x}u, {n});  /* {a:08x} */"))
         txt = f"/* {a:08x}: {i.text} */"
         k = i.kind
+        note_literal(i)
         if k == D.NORMAL:
-            lines = emit_insn(prog, i, mode)
+            lines = atk(emit_insn(prog, i, mode), a, n - j - 1)
             body.append(("code", lines[0] + "  " + txt))
             for ln in lines[1:]:
                 body.append(("code", ln))
+            j += 1
             nxt = a + 2
-            if nxt not in f.insns or (idx + 1 < len(addrs) and addrs[idx + 1] != nxt) or idx + 1 == len(addrs):
-                body.append(("code", go(nxt, a)))
+            sequential = nxt in f.insns and idx + 1 < len(addrs) and addrs[idx + 1] == nxt
+            joined = " ".join(lines)
+            if sequential and nxt not in starts and ("rt_set_sr(" in joined or (
+                    SYNC_RE.search(joined) and not surely_ram(i, f.consts.get(a, {})))):
+                body.append(("code", f"RT_SYNC(c, 0x{nxt:08x}u, {n - j});"))
+            if not sequential:
+                body.append(("code", go(nxt, a, fall=True)))
             continue
         slot = f.slots.get(a)
         slot_code = []
@@ -819,20 +959,21 @@ def emit_func(prog, f, modes, funcs, noreturn, out):
             if slot.kind in D.CONTROL or not slot.slot_ok:
                 slot_code = [f"rt_illegal(c, 0x{slot.op:04x}, 0x{a + 2:08x}u); return; /* slot: {slot.text} */"]
             else:
-                slot_code = [ln for ln in emit_insn(prog, slot, mode)]
+                note_literal(slot)
+                slot_code = atk(emit_insn(prog, slot, mode), a + 2, n - j - 2)
                 slot_code[0] += f"  /* {a + 2:08x}: {slot.text} (slot) */"
         if k == D.CBR:
             cond = "c->t" if (i.op >> 8) & 15 == 9 else "!c->t"
-            body.append(("code", f"if ({cond}) {{ {go(i.target, a)} }}  {txt}"))
-            body.append(("code", go(a + 2, a)) if (idx + 1 >= len(addrs) or addrs[idx + 1] != a + 2)
+            body.append(("code", f"if ({cond}) {{ {go(i.target, a, fall=True)} }}  {txt}"))
+            body.append(("code", go(a + 2, a, fall=True)) if (idx + 1 >= len(addrs) or addrs[idx + 1] != a + 2)
                         else ("code", ""))
         elif k == D.CBR_S:
             cond = "c->t" if (i.op >> 8) & 15 == 0xD else "!c->t"
             body.append(("code", f"{{ int take = {cond};  {txt}"))
             for ln in slot_code:
                 body.append(("code", "    " + ln))
-            body.append(("code", f"    if (take) {{ {go(i.target, a)} }} }}"))
-            body.append(("code", go(a + 4, a)))
+            body.append(("code", f"    if (take) {{ {go(i.target, a, fall=True)} }} }}"))
+            body.append(("code", go(a + 4, a, fall=True)))
         elif k == D.BRA:
             body.append(("code", f"{{  {txt}"))
             for ln in slot_code:
@@ -849,24 +990,30 @@ def emit_func(prog, f, modes, funcs, noreturn, out):
             for ln in slot_code:
                 body.append(("code", "    " + ln))
             tgt = f.calls.get(a)
+            # a target known from a constant register is checked: the code
+            # that set the register may have been changed (the runtime's
+            # changed code, docs/design.md)
+            checked = tgt is not None and k != D.BSR
             if tgt is not None and tgt in prog.routines:
-                if k != D.BSR:
-                    body.append(("code", "    (void)t;"))
-                body.append(("code", f"    {cname(prog, tgt)}(c);"))
-            elif tgt is not None:
+                if checked:
+                    body.append(("code", f"    if (RT_UNLIKELY(t != 0x{tgt:08x}u)) rt_call(c, t, 0x{a:08x}u);"))
+                    body.append(("code", f"    else {cname(prog, tgt)}(c);"))
+                else:
+                    body.append(("code", f"    {cname(prog, tgt)}(c);"))
+            elif tgt is not None and not checked:
                 body.append(("code", f"    rt_call(c, 0x{tgt:08x}u, 0x{a:08x}u); /* not a routine entry */"))
             else:
                 body.append(("code", f"    rt_call(c, t, 0x{a:08x}u);"))
             if tgt is not None and tgt in noreturn:
+                if checked:
+                    body.append(("code", f"    if (RT_UNLIKELY(t != 0x{tgt:08x}u) && c->pc == 0x{ret:08x}u) {{ "
+                                         f"rt_continue(c); return; }}"))
                 body.append(("code", f"    rt_bad_return(c, 0x{ret:08x}u, 0x{a:08x}u); return; /* noreturn */ }}"))
             else:
                 body.append(("code", f"    if (RT_UNLIKELY(c->pc != 0x{ret:08x}u)) {{ rt_bad_return(c, 0x{ret:08x}u, "
-                                     f"0x{a:08x}u); return; }}"))
-                body.append(("code", f"    RT_POLL(c, 0x{ret:08x}u); }}"))
-                if ret in f.insns and (idx + 1 >= len(addrs) or addrs[idx + 1] != ret):
-                    body.append(("code", go(ret, a)))
-                elif ret not in f.insns:
-                    body.append(("code", go(ret, a)))
+                                     f"0x{a:08x}u); return; }} }}"))
+                if ret not in f.insns or idx + 1 >= len(addrs) or addrs[idx + 1] != ret:
+                    body.append(("code", go(ret, a, fall=True)))
         elif k in (D.BRAF, D.JMP):
             body.append(("code", "{  " + txt))
             if k == D.JMP:
@@ -877,7 +1024,8 @@ def emit_func(prog, f, modes, funcs, noreturn, out):
                 body.append(("code", "    " + ln))
             tg = f.jumps.get(a)
             if tg and len(tg) == 1:
-                body.append(("code", f"    (void)t; {go(tg[0], a)} }}"))
+                body.append(("code", f"    if (RT_UNLIKELY(t != 0x{tg[0]:08x}u)) {{ rt_jump(c, t, 0x{a:08x}u); return; }}"))
+                body.append(("code", f"    {go(tg[0], a)} }}"))
             elif tg:
                 body.append(("code", "    switch (t) {"))
                 for t in sorted(set(tg)):
@@ -900,14 +1048,30 @@ def emit_func(prog, f, modes, funcs, noreturn, out):
         elif k in (D.SLEEP, D.TRAPA):
             body.append(("code", emit_insn(prog, i, mode)[0] + "  " + txt))
             if a + 2 not in f.insns or idx + 1 >= len(addrs) or addrs[idx + 1] != a + 2:
-                body.append(("code", go(a + 2, a)))
+                body.append(("code", go(a + 2, a, fall=True)))
         else:
             body.append(("code", f"rt_illegal(c, 0x{i.op:04x}, 0x{a:08x}u); return;  {txt}"))
+        j += 2 if k in D.DELAYED else 1
+    # where the interpreter hands the routine back: any block of its own
+    resume = []
+    for a in sorted(starts):
+        lab = label_of(a, True)
+        labels_used.add(lab)
+        resume.append(f"    case 0x{a:08x}u: goto {lab};")
     for kind, v in body:
         if kind == "label":
-            out.append(f"L_{v:08x}:;" if v in labels_used else f"    /* {v:08x} */")
+            if v in labels_used:
+                out.append(f"{v}:;")
         elif v:
             out.append("    " + v)
+    out.append("    return;")
+    out.append("rt_slow:")
+    out.append("    if (rt_slow(c))")
+    out.append("        return;")
+    out.append("    switch (c->pc) {")
+    out.extend(resume)
+    out.append("    default: rt_continue(c); return;")
+    out.append("    }")
     out.append("}")
     out.append("")
 
@@ -945,8 +1109,71 @@ def analyze(prog):
     return funcs, noreturn, entry_modes, mode_in, summaries
 
 
+def store_target(i, st):
+    """(address, bytes) a store instruction writes when constant propagation
+    knows the address (st: register values before it), else None."""
+    op = i.op
+    n, m, top, lo = (op >> 8) & 15, (op >> 4) & 15, op >> 12, op & 15
+    size = {0: 1, 1: 2, 2: 4}
+    if top == 0x2 and lo in (0, 1, 2) and n in st:                 # mov.x rm,@rn
+        return st[n], size[lo]
+    if top == 0x2 and lo in (4, 5, 6) and n in st:                 # mov.x rm,@-rn
+        return (st[n] - size[lo - 4]) & 0xFFFFFFFF, size[lo - 4]
+    if top == 0x1 and n in st:                                     # mov.l rm,@(d,rn)
+        return (st[n] + 4 * lo) & 0xFFFFFFFF, 4
+    if (op >> 8) in (0x80, 0x81) and m in st:                      # mov.b/w r0,@(d,rn)
+        w = 1 if (op >> 8) == 0x80 else 2
+        return (st[m] + w * lo) & 0xFFFFFFFF, w
+    if top == 0x0 and lo in (4, 5, 6) and n in st and 0 in st:     # mov.x rm,@(r0,rn)
+        return (st[n] + st[0]) & 0xFFFFFFFF, size[lo - 4]
+    if top == 0x0 and lo == 3 and m == 0xC and n in st:            # movca.l r0,@rn
+        return st[n], 4
+    if top == 0x4 and lo in (2, 3) and n in st:                    # sts.l / stc.l ...,@-rn
+        return (st[n] - 4) & 0xFFFFFFFF, 4
+    if top == 0x4 and (op & 0xFF) == 0x1B and n in st:             # tas.b @rn
+        return st[n], 1
+    if top == 0xF and lo in (0xA, 0xB, 0x7):                       # fmov stores (8 bytes covers both sizes)
+        if lo == 0xA and n in st:
+            return st[n], 8
+        if lo == 0xB and n in st:
+            return (st[n] - 8) & 0xFFFFFFFF, 8
+        if lo == 0x7 and n in st and 0 in st:
+            return (st[n] + st[0]) & 0xFFFFFFFF, 8
+    return None
+
+
+def written_words(prog, funcs):
+    """Bytes of the image that stores with known addresses write."""
+    out = set()
+    for f in funcs.values():
+        for a, i in f.insns.items():
+            for ins in (i, f.slots.get(a)):
+                if ins is None or ins.kind != D.NORMAL:
+                    continue
+                t = store_target(ins, f.consts.get(a, {}))
+                if t is None:
+                    continue
+                ta, size = t
+                ta = canon(ta)
+                if prog.in_image(ta):
+                    out.update(range(ta, ta + size))
+    return out
+
+
+def analyze_all(prog):
+    """analyze(), again while it finds literal pool words the program writes
+    (they must be read from memory, and that can change what is constant)."""
+    while True:
+        res = analyze(prog)
+        w = written_words(prog, res[0])
+        if w <= prog.written:
+            return res
+        prog.written |= w
+
+
 def translate(prog, out_dir):
-    funcs, noreturn, entry_modes, mode_in, summaries = analyze(prog)
+    funcs, noreturn, entry_modes, mode_in, summaries = analyze_all(prog)
+    report_written = sorted({a & ~3 for a in prog.written})
 
     # mode per instruction (and per slot, which runs in its branch's mode)
     report = {"program": prog.name, "routines": len(funcs), "noreturn": sorted(cname(prog, a) for a in noreturn)}
@@ -1007,6 +1234,8 @@ def translate(prog, out_dir):
         if f.outside:
             lists["shared_code"].append(f"{cname(prog, a)}: {len(f.outside)} instructions past its extent")
     lists["discovered_entries"] = [f"{a:08x}" for a in sorted(prog.discovered)]
+    lists["written_words"] = [f"{a:08x}" for a in report_written]
+    lists["aliased_calls_and_jumps"] = [f"{a:08x}" for a in sorted(prog.aliased)]
     lists["hinted_jumps"] = [f"{a:08x} in {cname(prog, f.entry)}" for f in funcs.values()
                              for a in f.jumps if a in prog.hints]
     report["stats"] = dict(stats)
@@ -1022,13 +1251,16 @@ def translate(prog, out_dir):
     hdr.append("#endif")
     write(os.path.join(out_dir, f"{pfx}_funcs.h"), "\n".join(hdr) + "\n")
 
+    gstarts, blens = global_blocks(prog, funcs)
+    report["blocks"] = len(blens)
+    lits = set()
     per_file = 120
     files = []
     for k in range(0, len(prog.entries), per_file):
         out = [f"/* Generated by translator/translate.py ({prog.name}, part {k // per_file}): do not edit. */",
                f'#include "{pfx}_funcs.h"', ""]
         for a in prog.entries[k:k + per_file]:
-            emit_func(prog, funcs[a], final_modes[a], funcs, noreturn, out)
+            emit_func(prog, funcs[a], final_modes[a], funcs, noreturn, out, gstarts, blens, lits)
         name = f"{pfx}_{k // per_file:02d}.c"
         write(os.path.join(out_dir, name), "\n".join(out) + "\n")
         files.append(name)
@@ -1040,6 +1272,23 @@ def translate(prog, out_dir):
         disp.append(f'    {{ 0x{a:08x}u, {cname(prog, a)}, "{prog.routines[a]}" }},')
     disp.append("};")
     disp.append(f"const unsigned {pfx}_routine_count = {len(prog.entries)};")
+    disp.append("")
+    disp.append("/* every block start and its length in instructions (the interpreter's side")
+    disp.append(" * of the block protocol: where it may hand control back) */")
+    disp.append(f"const rt_block {pfx}_blocks[] = {{")
+    for a in sorted(blens):
+        disp.append(f"    {{ 0x{a:08x}u, {blens[a]} }},")
+    disp.append("};")
+    disp.append(f"const unsigned {pfx}_block_count = {len(blens)};")
+    disp.append("")
+    disp.append("/* every pool word compiled in as a constant (bit 0: a 4-byte word, else 2)")
+    disp.append(" * and the block that reads it, sorted: the runtime's changed code */")
+    disp.append(f"const rt_lit {pfx}_lits[] = {{")
+    for w, b in sorted(lits):
+        disp.append(f"    {{ 0x{w:08x}u, 0x{b:08x}u }},")
+    disp.append("};")
+    disp.append(f"const unsigned {pfx}_lit_count = {len(lits)};")
+    report["literal_readers"] = len(lits)
     write(os.path.join(out_dir, f"{pfx}_dispatch.c"), "\n".join(disp) + "\n")
     files.append(f"{pfx}_dispatch.c")
     report["files"] = files
@@ -1055,9 +1304,11 @@ def translate(prog, out_dir):
              f"{len(lists['bad_slots'])}",
              f"  FPU mode: {agree} agree with the decomp, {disagree} disagree, {mine_unknown} tested at run time",
              f"  routines found as call targets, not in the decomp's list: {len(lists['discovered_entries'])}; "
-             f"jumps resolved by translator/hints.tsv: {len(lists['hinted_jumps'])}"]
+             f"jumps resolved by translator/hints.tsv: {len(lists['hinted_jumps'])}",
+             f"  blocks: {len(blens)}; literal pool words the program writes (read from memory): "
+             f"{len(report_written)}"]
     for k in ("unresolved_jumps", "calls_to_non_entries", "illegal_reached", "bad_slots", "discovered_entries",
-              "hinted_jumps", "shared_code"):
+              "hinted_jumps", "written_words", "aliased_calls_and_jumps", "shared_code"):
         if lists[k]:
             lines.append(f"{k} ({len(lists[k])}):")
             lines += ["  " + x for x in lists[k][:400]]
@@ -1065,7 +1316,7 @@ def translate(prog, out_dir):
         lines.append("FPU mode disagreements:")
         lines += ["  " + x for x in disagreements[:200]]
     write(os.path.join(out_dir, "report.txt"), "\n".join(lines) + "\n")
-    print("\n".join(lines[:9]))
+    print("\n".join(lines[:10]))
     return report
 
 

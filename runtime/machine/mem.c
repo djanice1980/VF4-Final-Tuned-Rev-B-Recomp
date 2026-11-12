@@ -1,0 +1,336 @@
+/* The address space: RAM areas mapped at their own addresses, a page table
+ * for the interpreter, watchpoints, host-side accessors. */
+#define _GNU_SOURCE
+#include "mem.h"
+#include "machine.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+u8 *mem_page[65536];
+u8 *mem_page_ram[65536];
+u8 mem_always_slow[65536];
+u8 *mem_wpage[65536];                   /* recomp: see mem.h */
+u8 mem_code_page[65536];                /* recomp */
+void (*mem_code_store)(u32 addr, u32 n, const void *bytes);    /* recomp */
+
+/* recomp: mem_wpage from mem_page and the code pages */
+void mem_wpage_sync(void)
+{
+    for (u32 p = 0; p < 65536; p++)
+        mem_wpage[p] = mem_code_page[p] ? NULL : mem_page[p];
+}
+
+/* recomp: a store mem_wpage sends to the slow path: a code page that is
+ * plain RAM here (mem_page has it) is written as the fast path would, after
+ * mem_code_store has seen the bytes; anything else is io_write's */
+void mem_code_write(sh4 *c, u32 a, u32 v, int size)
+{
+    u8 *p = mem_page[a >> 16];
+    if (!p) {
+        io_write(c, a, v, size);
+        return;
+    }
+    mem_code_note(a, (u32)size, &v);    /* the host is little-endian: v's low bytes first */
+    p += a & 0xffff;
+    if (size == 4)
+        *(u32 *)p = v;
+    else if (size == 2)
+        *(u16 *)p = (u16)v;
+    else
+        *p = (u8)v;
+}
+mem_area mem_areas[MEM_MAX_AREAS];
+int mem_area_count;
+mem_watch mem_watches[MEM_MAX_WATCH];
+int mem_watch_count;
+
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
+
+int mem_init(void)
+{
+    memset(mem_page, 0, sizeof mem_page);
+    memset(mem_page_ram, 0, sizeof mem_page_ram);
+    mem_area_count = 0;
+    mem_watch_count = 0;
+    mem_wpage_sync();                   /* recomp */
+    return 0;
+}
+
+static u8 *map_at(int fd, u32 addr, u32 size)
+{
+    void *p = mmap((void *)(uintptr_t)addr, size, PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
+    if (p == MAP_FAILED)
+        return NULL;
+    if ((uintptr_t)p != addr) {      /* an old kernel ignoring the flag */
+        munmap(p, size);
+        return NULL;
+    }
+    return p;
+}
+
+/* A page of the host's own after the end of a mapping, where nothing else
+ * is. The interpreter moves a word or a long word with one host access at
+ * the page table's pointer; a guest access that is not aligned and starts
+ * in the last bytes of an area would run past the host mapping's end. The
+ * game never does that (the processor would take an address error); a
+ * routine the harness calls with made-up arguments can. With the page
+ * there the bytes that spill over go nowhere, and the harness lives. */
+static void guard_after(u8 *end)
+{
+    void *p = mmap(end, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (p != MAP_FAILED && p != (void *)end)
+        munmap(p, 4096);
+}
+
+/* once every area is there (an area's place must not be taken by its neighbour's guard) */
+void mem_guards(void)
+{
+    for (int i = 0; i < mem_area_count; i++)
+        guard_after(mem_areas[i].host + mem_areas[i].size);
+}
+
+int mem_add_ram(const char *name, u32 phys, u32 size)
+{
+    if (mem_area_count >= MEM_MAX_AREAS || (phys & 0xffff) || (size & 0xffff))
+        return -1;
+    mem_area *a = &mem_areas[mem_area_count];
+    a->name = name;
+    a->phys = phys;
+    a->size = size;
+    a->fd = memfd_create(name, 0);
+    if (a->fd < 0 || ftruncate(a->fd, size) < 0) {
+        fprintf(stderr, "mem: cannot make %s: %s\n", name, strerror(errno));
+        return -1;
+    }
+    a->host = NULL;
+    if (phys >= 0x10000)
+        a->host = map_at(a->fd, phys, size);
+    if (!a->host) {
+        void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, a->fd, 0);
+        if (p == MAP_FAILED) {
+            fprintf(stderr, "mem: cannot map %s: %s\n", name, strerror(errno));
+            return -1;
+        }
+        a->host = p;
+        if (phys >= 0x10000)
+            fprintf(stderr, "mem: %s could not be mapped at its own address %08x (host has %p there); "
+                    "the interpreter is not affected\n", name, phys, (void *)a->host);
+    }
+    /* the mirrors that also are host mappings: P1 and P2 */
+    if (!map_at(a->fd, 0x80000000u | phys, size) || !map_at(a->fd, 0xa0000000u | phys, size))
+        fprintf(stderr, "mem: a mirror of %s could not be mapped; the interpreter is not affected\n", name);
+    /* the page table: every mirror of the 29-bit physical address below P3 */
+    for (u32 top = 0; top < 6; top++) {
+        u32 base = (top << 29) | phys;
+        for (u32 off = 0; off < size; off += 0x10000) {
+            mem_page[(base + off) >> 16] = a->host + off;
+            mem_page_ram[(base + off) >> 16] = a->host + off;
+        }
+    }
+    mem_area_count++;
+    mem_wpage_sync();                   /* recomp */
+    return 0;
+}
+
+int mem_alias(u32 phys_alias, u32 phys_src, u32 size)
+{
+    mem_area *a = NULL;
+    for (int i = 0; i < mem_area_count; i++)
+        if (mem_areas[i].phys == phys_src && mem_areas[i].size >= size)
+            a = &mem_areas[i];
+    if (!a)
+        return -1;
+    /* host mappings of the same memory, where the host allows */
+    map_at(a->fd, phys_alias, size);
+    map_at(a->fd, 0x80000000u | phys_alias, size);
+    map_at(a->fd, 0xa0000000u | phys_alias, size);
+    for (u32 top = 0; top < 6; top++) {
+        u32 base = (top << 29) | phys_alias;
+        for (u32 off = 0; off < size; off += 0x10000) {
+            mem_page[(base + off) >> 16] = a->host + off;
+            mem_page_ram[(base + off) >> 16] = a->host + off;
+        }
+    }
+    mem_wpage_sync();                   /* recomp */
+    return 0;
+}
+
+int mem_load_file(const char *path, u32 addr, u32 max, u32 *loaded)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "mem: cannot open %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    u8 *p = mem_ptr(addr);
+    if (!p) {
+        fclose(f);
+        return -1;
+    }
+    size_t n = fread(p, 1, max, f);
+    fclose(f);
+    if (loaded)
+        *loaded = (u32)n;
+    return 0;
+}
+
+/* ---- watchpoints ---- */
+
+static void watch_pages(u32 addr, u32 len, int hole)
+{
+    u32 phys = addr & 0x1fffffffu;
+    for (u32 top = 0; top < 6; top++) {
+        u32 first = ((top << 29) | phys) >> 16;
+        u32 last = (((top << 29) | phys) + len - 1) >> 16;
+        for (u32 p = first; p <= last; p++)
+            mem_page[p] = (hole || mem_always_slow[p]) ? NULL : mem_page_ram[p];
+    }
+    mem_wpage_sync();                   /* recomp */
+}
+
+int mem_watch_add(u32 addr, u32 len, int on_read, int on_write, int stop, const char *name)
+{
+    if (mem_watch_count >= MEM_MAX_WATCH || !mem_ptr(addr) || len == 0)
+        return -1;
+    mem_watch *w = &mem_watches[mem_watch_count++];
+    w->addr = addr & 0x1fffffffu;
+    w->len = len;
+    w->on_read = on_read;
+    w->on_write = on_write;
+    w->stop = stop;
+    snprintf(w->name, sizeof w->name, "%s", name ? name : "");
+    watch_pages(addr, len, 1);
+    return 0;
+}
+
+void mem_watch_clear(void)
+{
+    for (int i = 0; i < mem_watch_count; i++)
+        watch_pages(mem_watches[i].addr, mem_watches[i].len, 0);
+    mem_watch_count = 0;
+}
+
+/* ---- host-side access ---- */
+
+u32 g_r32(u32 a) { u8 *p = mem_ptr(a); return p ? *(u32 *)p : 0; }
+u32 g_r16(u32 a) { u8 *p = mem_ptr(a); return p ? *(u16 *)p : 0; }
+u32 g_r8(u32 a) { u8 *p = mem_ptr(a); return p ? *p : 0; }
+void (*mem_host_store)(u32 addr, u32 n);
+int mem_planting;
+#define HOST_STORE(a, n) do { \
+        if (__builtin_expect(mem_host_store != NULL, 0)) mem_host_store(a, n); \
+        if (__builtin_expect(mem_planting, 0)) mem_plant(a, n); \
+        else if (__builtin_expect(mem_plant_near(a), 0)) mem_unplant(a, n); \
+    } while (0)
+
+/* ---- planted values ---- */
+
+u8 mem_plant_page[8192];
+static u8 plant_bits[PLANT_PAGES][0x10000 / 8];
+static u32 plant_pages;
+
+void mem_plant(u32 addr, u32 len)
+{
+    for (u32 i = 0; i < len; i++) {
+        u32 a = (addr + i) & 0x1fffffffu;
+        u8 ix = mem_plant_page[a >> 16];
+        if (!ix) {
+            if (plant_pages >= PLANT_PAGES)
+                return;
+            ix = mem_plant_page[a >> 16] = (u8)++plant_pages;
+        }
+        plant_bits[ix - 1][(a & 0xffff) >> 3] |= (u8)(1u << (a & 7));
+    }
+}
+
+void mem_unplant(u32 addr, u32 len)
+{
+    for (u32 i = 0; i < len; i++) {
+        u32 a = (addr + i) & 0x1fffffffu;
+        u8 ix = mem_plant_page[a >> 16];
+        if (ix)
+            plant_bits[ix - 1][(a & 0xffff) >> 3] &= (u8)~(1u << (a & 7));
+    }
+}
+
+int mem_planted(u32 addr, u32 len)
+{
+    for (u32 i = 0; i < len; i++) {
+        u32 a = (addr + i) & 0x1fffffffu;
+        u8 ix = mem_plant_page[a >> 16];
+        if (ix && (plant_bits[ix - 1][(a & 0xffff) >> 3] & (1u << (a & 7))))
+            return 1;
+    }
+    return 0;
+}
+
+void mem_plant_register(void)
+{
+    snapshot_register("planted-pages", mem_plant_page, sizeof mem_plant_page);
+    snapshot_register("planted-bytes", plant_bits, sizeof plant_bits);
+    snapshot_register("planted-count", &plant_pages, sizeof plant_pages);
+}
+/* recomp: mem_code_note in each */
+void g_w32(u32 a, u32 v) { u8 *p = mem_ptr(a); if (p) { HOST_STORE(a, 4); mem_code_note(a, 4, &v); *(u32 *)p = v; } }
+void g_w16(u32 a, u32 v) { u8 *p = mem_ptr(a); if (p) { HOST_STORE(a, 2); mem_code_note(a, 2, &v); *(u16 *)p = (u16)v; } }
+void g_w8(u32 a, u32 v) { u8 *p = mem_ptr(a); if (p) { HOST_STORE(a, 1); mem_code_note(a, 1, &v); *p = (u8)v; } }
+
+int g_read(u32 a, void *dst, u32 n)
+{
+    u8 *d = dst;
+    while (n) {
+        u8 *p = mem_ptr(a);
+        u32 chunk = 0x10000 - (a & 0xffff);
+        if (chunk > n)
+            chunk = n;
+        if (!p) {
+            memset(d, 0, n);
+            return -1;
+        }
+        memcpy(d, p, chunk);
+        d += chunk;
+        a += chunk;
+        n -= chunk;
+    }
+    return 0;
+}
+
+int g_write(u32 a, const void *src, u32 n)
+{
+    const u8 *s = src;
+    while (n) {
+        u8 *p = mem_ptr(a);
+        u32 chunk = 0x10000 - (a & 0xffff);
+        if (chunk > n)
+            chunk = n;
+        if (!p)
+            return -1;
+        HOST_STORE(a, chunk);
+        mem_code_note(a, chunk, s);     /* recomp */
+        memcpy(p, s, chunk);
+        s += chunk;
+        a += chunk;
+        n -= chunk;
+    }
+    return 0;
+}
+
+void g_str(u32 a, char *buf, size_t n)
+{
+    size_t i = 0;
+    while (i + 1 < n) {
+        u8 *p = mem_ptr(a + i);
+        if (!p || !*p)
+            break;
+        buf[i] = (char)*p;
+        i++;
+    }
+    buf[i] = 0;
+}

@@ -1,0 +1,572 @@
+/* The seam between the translated game and VF4debug's machine
+ * (runtime/machine): docs/design.md, "Interrupts and timing".
+ *
+ * Translated code runs block by block on the C stack and adds each block's
+ * instruction count at its start. Everything that is about time or about
+ * code the translator did not cover comes here:
+ *
+ *   rt_slow      an event falls inside a block, or a device brought it
+ *                forward: serve the events at the exact instruction, run the
+ *                rest of the block on VF4debug's interpreter, hand back at
+ *                the next block start;
+ *   rt_event     what VF4debug's machine_run does between two runs of the
+ *                interpreter (events, the controller's stops, interrupts),
+ *                an interrupt's handler run as a nested call that must come
+ *                back to where it was taken;
+ *   rt_drive     run whatever is at c->pc until it returns: translated
+ *                routines as C, anything else (the BIOS stand-in's vector
+ *                code, code outside the image) on the interpreter;
+ *   rt_io_*      the device models' slow path, with the clock and PC put
+ *                back to the instruction's own (RT_ATK);
+ *   rt_code_store a store into a page that holds translated code: a block
+ *                whose bytes (or a pool word it compiled in) it changes runs
+ *                on the interpreter from then on (rt_code_changed).
+ *
+ * So the machine sees exactly what it sees under VF4debug's interpreter:
+ * the same instruction counts at every device access and every event, the
+ * same interrupt points. The run is VF4debug's run, state for state.
+ */
+#include "sh4.h"            /* VF4debug's (runtime/machine): first, see runtime/cpu/sh4.h */
+#include "mem.h"
+#include "hw.h"
+#include "dispatch.h"
+#include "machine.h"
+#include "control.h"
+#include "rt_dispatch.h"
+#include "rt_native.h"
+
+#include <setjmp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void events_fire(sh4 *c);  /* machine.c (recomp: made visible) */
+
+rt_native_stats rt_stats;
+
+int rt_skip_entry;
+
+static u16 *blk;            /* per halfword of the image: the block's length at a block start, else 0 */
+static u32 blk_slots;
+
+/* ---- code the game changes (docs/design.md, "Code the game changes") ---- */
+
+u8 rt_code_changed[RT_CODE_SLOTS];
+static u16 *code_back;      /* per halfword: 0, or 1 + how far into the first block holding it it is */
+static u8 *code_flags;      /* per halfword: CODE_LIT, CODE_START */
+enum { CODE_LIT = 1,        /* part of a pool word compiled in as a constant */
+       CODE_START = 2 };    /* a block starts here (a delay slot can also start a block of its own) */
+static u8 *code_host;       /* the host address of 0x0c020000 */
+static u32 code_slots;      /* halfwords from 0x0c020000 the two tables cover */
+static u32 rt_store_at;     /* the translated store being made (rt_io_write), else 0 */
+static sh4 *rt_cpu;
+
+static void block_changed(u32 s, u32 why)
+{
+    if (rt_code_changed[s])
+        return;
+    u32 n = blk[s];
+    u32 at = 0x0c020000u + 2 * s;
+    if (rt_store_at && rt_cpu && rt_store_at >= at && rt_store_at + 2 < at + 2 * n)
+        /* the store is in the block it changes, and instructions of the
+         * block after it would run as they were: not handled */
+        rt_host_fault(rt_cpu, 104, rt_store_at, why);
+    rt_code_changed[s] = 1;
+    blk[s] = 0;
+    rt_stats.changed_blocks++;
+    if (rt_stats.changed_blocks <= 16)
+        fprintf(stderr, "vf4ft: the game changed %08x: the block at %08x runs on the interpreter from now on\n",
+                why, at);
+    else if (rt_stats.changed_blocks == 17)
+        fprintf(stderr, "vf4ft: (more changed blocks: see the count at the end)\n");
+}
+
+/* a byte of the image at 0x0c020000 + off is about to change */
+static void code_byte_changed(u32 off)
+{
+    u32 s = off >> 1, addr = 0x0c020000u + off;
+    if (code_back[s])
+        block_changed(s - (code_back[s] - 1u), addr);
+    if (code_flags[s] & CODE_START)
+        block_changed(s, addr);
+    if (code_flags[s] & CODE_LIT) {
+        /* the blocks that read a pool word holding the byte */
+        unsigned lo = 0, hi = M_lit_count;
+        u32 from = (addr - 3u) & ~1u;
+        while (lo < hi) {
+            unsigned mid = (lo + hi) / 2;
+            if ((M_lits[mid].word & ~1u) < from)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        for (unsigned k = lo; k < M_lit_count && (M_lits[k].word & ~1u) <= addr; k++) {
+            u32 base = M_lits[k].word & ~1u, size = M_lits[k].word & 1u ? 4 : 2;
+            if (addr < base + size)
+                block_changed((M_lits[k].block - 0x0c020000u) >> 1, addr);
+        }
+    }
+}
+
+/* the halfwords [h, h + n) of the host's memory hold nothing translated */
+static inline int code_untouched(const u8 *h, u32 n)
+{
+    uintptr_t off = (uintptr_t)(h - code_host);
+    if (off >= 2u * (uintptr_t)code_slots)
+        return 1;
+    u32 s = (u32)(off >> 1), e = (u32)((off + n - 1) >> 1);
+    if (e >= code_slots)
+        e = code_slots - 1;
+    for (; s <= e; s++)
+        if (code_back[s] | code_flags[s])
+            return 0;
+    return 1;
+}
+
+/* mem_code_store (runtime/machine/mem.h): every store into a page that holds
+ * translated code, before it is made */
+static void rt_code_store(u32 addr, u32 n, const void *bytes)
+{
+    rt_stats.code_page_stores++;
+    const u8 *b = bytes;
+    for (u32 i = 0; i < n; i++) {
+        u8 *h = mem_ptr(addr + i);
+        if (!h || *h == b[i])
+            continue;
+        uintptr_t off = (uintptr_t)(h - code_host);
+        if (off < 2u * (uintptr_t)code_slots)
+            code_byte_changed((u32)off);
+    }
+}
+
+/* the bytes the translation was made from (the image file) against memory:
+ * whatever already differs (made before the run, or by a snapshot) */
+static int code_compare(const char *image)
+{
+    FILE *f = fopen(image, "rb");
+    if (!f) {
+        fprintf(stderr, "vf4ft: cannot read %s\n", image);
+        return 1;
+    }
+    u32 len = 2 * code_slots;
+    u8 *orig = malloc(len);
+    if (!orig || fread(orig, 1, len, f) != len) {
+        fprintf(stderr, "vf4ft: %s is shorter than the translated code\n", image);
+        fclose(f);
+        free(orig);
+        return 1;
+    }
+    fclose(f);
+    for (u32 off = 0; off < len; off++)
+        if (orig[off] != code_host[off])
+            code_byte_changed(off);
+    free(orig);
+    return 0;
+}
+
+static int code_watch_init(const char *image)
+{
+    u32 hi = 0;
+    for (unsigned i = 0; i < M_block_count; i++)
+        if ((M_blocks[i].addr + 2 * M_blocks[i].n) > hi)
+            hi = M_blocks[i].addr + 2 * M_blocks[i].n;
+    for (unsigned i = 0; i < M_lit_count; i++)
+        if ((M_lits[i].word & ~1u) + 4 > hi)
+            hi = (M_lits[i].word & ~1u) + 4;
+    code_slots = (hi - 0x0c020000u + 1) / 2;
+    if (code_slots > RT_CODE_SLOTS || code_slots > blk_slots) {
+        fprintf(stderr, "vf4ft: the translated code reaches %08x, past the image\n", hi);
+        return 1;
+    }
+    code_back = calloc(code_slots, sizeof *code_back);
+    code_flags = calloc(code_slots, 1);
+    code_host = mem_ptr(0x0c020000u);
+    if (!code_back || !code_flags || !code_host) {
+        fprintf(stderr, "vf4ft: out of memory for the code tables\n");
+        return 1;
+    }
+    /* Blocks split the code (translator/translate.py, global_blocks), but for
+     * a delay slot that is also a branch target: it ends one block and starts
+     * the next (CODE_START). Anything else in two blocks is not this
+     * translator's. */
+    for (unsigned i = 0; i < M_block_count; i++) {
+        u32 s = (M_blocks[i].addr - 0x0c020000u) >> 1;
+        code_flags[s] |= CODE_START;
+        for (u32 k = 0; k < M_blocks[i].n; k++) {
+            if (!code_back[s + k])
+                code_back[s + k] = (u16)(k + 1);
+            else if (k != 0) {
+                fprintf(stderr, "vf4ft: %08x is inside two blocks: the translation is not of this runtime\n",
+                        M_blocks[i].addr + 2 * k);
+                return 1;
+            }
+        }
+    }
+    for (unsigned i = 0; i < M_lit_count; i++) {
+        u32 s = ((M_lits[i].word & ~1u) - 0x0c020000u) >> 1;
+        code_flags[s] |= CODE_LIT;
+        if (M_lits[i].word & 1u)
+            code_flags[s + 1] |= CODE_LIT;
+    }
+    /* every page (at every address it has) that holds translated code */
+    for (u32 p = 0; p < 65536; p++) {
+        u8 *h = mem_page_ram[p];
+        mem_code_page[p] = h && h + 0x10000 > code_host && h < code_host + 2 * code_slots;
+    }
+    mem_wpage_sync();
+    mem_code_store = rt_code_store;
+    return code_compare(image);
+}
+
+static jmp_buf rt_end;
+static int rt_end_code;
+
+int rt_native_init(const char *image)
+{
+    rt_table = M_routines;
+    rt_table_count = M_routine_count;
+    blk_slots = disp_slots;
+    blk = calloc(blk_slots, sizeof *blk);
+    if (!blk) {
+        fprintf(stderr, "vf4ft: out of memory for the block table\n");
+        return 1;
+    }
+    for (unsigned i = 0; i < M_block_count; i++) {
+        u32 s = disp_slot(M_blocks[i].addr);
+        if (s >= blk_slots || M_blocks[i].n == 0 || M_blocks[i].n > 0xffff) {
+            fprintf(stderr, "vf4ft: block %08x (%u instructions) does not fit the image: the translation is "
+                    "not of this program\n", M_blocks[i].addr, M_blocks[i].n);
+            return 1;
+        }
+        blk[s] = (u16)M_blocks[i].n;
+    }
+    return code_watch_init(image);
+}
+
+/* the block starting at pc, run as C: only at the program's own (P0)
+ * addresses; through P1/P2 the code runs on the interpreter (rt_call) */
+static inline u32 blk_len(u32 pc)
+{
+    u32 s = pc - 0x0c020000u;
+    return (s >> 1) < blk_slots && !(s & 1) ? blk[s >> 1] : 0;
+}
+
+static u32 canon(u32 a)
+{
+    u32 region = a >> 29;
+    return (region == 4 || region == 5) ? (a & 0x1fffffffu) : a;
+}
+
+/* ---- ends ------------------------------------------------------------------ */
+
+static void __attribute__((noreturn)) rt_finish(int code)
+{
+    rt_end_code = code;
+    longjmp(rt_end, 1);
+}
+
+void rt_host_fault(sh4 *c, int what, u32 at, u32 detail)
+{
+    if (what == 104) {
+        machine_stop(c, STOP_FATAL, "translated code: a store at %08x (%s) changed %08x, in the block it runs in",
+                     at, addr_text(at), detail);
+        rt_finish(STOP_FATAL);
+    }
+    static const char *const why[] = { "?", "a call or jump to an address no routine starts at",
+                                       "a routine came back somewhere other than after its call",
+                                       "an illegal instruction" };
+    const char *w = what >= 1 && what <= 3 ? why[what] : what == 100 ? "an FPU exception that traps"
+                  : what == 101 ? "sleep" : what == 102 ? "an interrupt's handler came back somewhere else"
+                  : what == 103 ? "the boot routine returned" : "?";
+    machine_stop(c, STOP_FATAL, "translated code: %s, at %08x (%s), %08x", w, at, addr_text(at), detail);
+    rt_finish(STOP_FATAL);
+}
+
+void rt_fpu_trap(sh4 *c, u32 at)
+{
+    /* the game runs with no FPU exception enabled; one that traps would
+     * need the C of the instruction stopped half way */
+    rt_host_fault(c, 100, at, c->fpscr);
+}
+
+void rt_sleep(sh4 *c, u32 at)
+{
+    rt_host_fault(c, 101, at, 0);
+}
+
+/* ---- the controller ----------------------------------------------------------- */
+
+/* the machine stopped (c->stop): what VF4debug's main loop does with
+ * machine_run's return, then its next machine_run's start */
+static void rt_stopped(sh4 *c)
+{
+    int code = c->stop;
+    if (code == STOP_SLEEP)
+        rt_host_fault(c, 101, c->pc, 0);
+    if (!control_stopped(c, code) || machine_interrupted)
+        rt_finish(code);
+    if (!control_next(c))
+        rt_finish(code);
+    c->stop = 0;
+}
+
+/* ---- the interpreter's part ----------------------------------------------------- */
+
+enum { K_PLAIN, K_CALL, K_RETURN, K_TRAPA, K_SLEEP };
+
+static int step_kind(u32 op)
+{
+    if ((op & 0xf0ff) == 0x400b || (op & 0xf000) == 0xb000 || (op & 0xf0ff) == 0x0003)
+        return K_CALL;                  /* jsr, bsr, bsrf */
+    if (op == 0x000b || op == 0x002b)
+        return K_RETURN;                /* rts, rte */
+    if ((op & 0xff00) == 0xc300)
+        return K_TRAPA;
+    if (op == 0x001b)
+        return K_SLEEP;
+    return K_PLAIN;
+}
+
+static void rt_drive(sh4 *c);
+static void rt_event(sh4 *c, u32 at);
+
+/* one instruction on the interpreter, exactly as VF4debug's run loop takes
+ * it (the caller has checked for events); a call or an exception it starts
+ * runs to its return. Returns 1 when the instruction was a return. */
+static int interp_step(sh4 *c)
+{
+    u32 pc = c->pc;
+    if (!mem_ptr(pc)) {
+        machine_stop(c, STOP_BADPC, "the processor went to %08x, where there is no memory", pc);
+        c->stop_arg = pc;
+        return 0;
+    }
+    u32 op = g_r16(pc);
+    int kind = step_kind(op);
+    if (kind == K_SLEEP)
+        rt_host_fault(c, 101, pc, 0);
+    sh4_step(c);
+    rt_fpscr_loaded(c);
+    rt_stats.interp_insns++;
+    if (kind == K_CALL && c->pc != c->pr && !c->stop) {
+        rt_drive(c);                    /* the callee, to its return */
+    } else if (kind == K_TRAPA) {
+        rt_stats.exceptions++;
+        rt_drive(c);                    /* the handler, to its rte */
+        if (c->pc != pc + 2)
+            rt_host_fault(c, 102, pc, c->pc);
+    }
+    return kind == K_RETURN;
+}
+
+/* Runs from c->pc until the code there returns (an rts or rte at this
+ * level), leaving c->pc where it returned to. A translated routine's start
+ * runs as C; its hooks already ran where the interpreter branched to it
+ * (X(go)), or it was fallen or returned into: no entry either way. */
+static void rt_drive(sh4 *c)
+{
+    for (;;) {
+        u32 pc = c->pc;
+        const rt_routine *r = blk_len(pc) ? rt_find(rt_table, rt_table_count, canon(pc)) : NULL;
+        if (r) {
+            if (disp_flags[disp_slot(pc)])
+                rt_skip_entry = 1;
+            r->fn(c);
+            rt_skip_entry = 0;
+            return;
+        }
+        if (c->cycles >= c->next_event) {
+            rt_event(c, pc);
+            continue;
+        }
+        if (interp_step(c))
+            return;
+    }
+}
+
+void rt_continue(sh4 *c)
+{
+    rt_stats.outside_calls++;
+    rt_drive(c);
+}
+
+int rt_slow(sh4 *c)
+{
+    rt_stats.slow_blocks++;
+    for (;;) {
+        if (c->cycles >= c->next_event) {
+            rt_event(c, c->pc);
+            continue;
+        }
+        u32 n = blk_len(c->pc);
+        if (n && c->cycles + n <= c->next_event)
+            return 0;                   /* the block fits: back to C */
+        if (interp_step(c))
+            return 1;
+    }
+}
+
+/* ---- events, stops, interrupts ------------------------------------------------ */
+
+/* VF4debug's machine_run between two runs of its interpreter, at the
+ * instruction boundary c->pc = at with the clock exact */
+static void rt_event(sh4 *c, u32 at)
+{
+    c->pc = at;
+    for (;;) {
+        if (c->stop)
+            rt_stopped(c);
+        events_fire(c);
+        if (c->stop)
+            continue;
+        u32 code;
+        int level = hw_irq_pending(c, &code);
+        int taken = level && !(c->sr & SR_BL) && (u32)level > ((c->sr & SR_IMASK) >> 4);
+        if (taken) {
+            hw.intevt = code;
+            sh4_exception(c, 0x600);
+        }
+        if (cfg.max_insns && c->insns >= cfg.max_insns) {
+            machine_stop(c, STOP_LIMIT, "instruction limit (%llu)", (unsigned long long)cfg.max_insns);
+            continue;
+        }
+        u64 next = event_next();
+        if (cfg.max_insns && cfg.max_insns - c->insns < next - c->cycles)
+            next = c->cycles + (cfg.max_insns - c->insns);
+        c->next_event = next;
+        if (taken) {
+            rt_stats.exceptions++;
+            rt_drive(c);                /* the handler, to its rte */
+            if (c->pc != at)
+                rt_host_fault(c, 102, at, c->pc);
+        }
+        if (c->cycles < c->next_event)
+            return;
+    }
+}
+
+void rt_trapa(sh4 *c, u32 imm, u32 at)
+{
+    /* trapa ends its block, so the clock is exact here */
+    c->pc = at + 2;
+    disp_trapa(c, imm);
+    rt_stats.exceptions++;
+    rt_drive(c);
+    if (c->pc != at + 2)
+        rt_host_fault(c, 102, at, c->pc);
+}
+
+void rt_rte(sh4 *c)
+{
+    disp_leave_exception(c);
+}
+
+/* ---- entries and code that is not translated -------------------------------------- */
+
+int rt_entry(sh4 *c, u32 addr)
+{
+    if (rt_skip_entry) {
+        rt_skip_entry = 0;
+        return 0;
+    }
+    c->pc = addr;
+    disp_enter(c, addr, DISP_CALL);
+    return c->pc != addr;
+}
+
+void rt_host_outside(sh4 *c, u32 target, u32 from, int is_call)
+{
+    (void)from;
+    rt_stats.outside_calls++;
+    c->pc = target;
+    /* what the interpreter's branch does on arrival (X(go)) */
+    u32 s = disp_slot(target);
+    if (s >= disp_slots) {
+        /* the BIOS stand-in's services and firmware notes answer at once */
+        disp_outside(c, target, is_call ? DISP_CALL : DISP_JUMP);
+        if (c->pc != target)
+            return;
+    } else if (disp_flags[s]) {
+        disp_enter(c, target, is_call ? DISP_CALL : DISP_JUMP);
+        if (c->pc != target)
+            return;                     /* a host replacement ran */
+    }
+    rt_drive(c);
+}
+
+/* ---- the device models' slow path ------------------------------------------------- */
+
+u32 rt_io_read(sh4 *c, u64 atk, u32 addr, int size)
+{
+    u32 k = (u32)(atk >> 32);
+    c->pc = (u32)atk + 2;
+    c->cycles -= k;
+    c->insns -= k;
+    u32 v = io_read(c, addr, size);
+    c->cycles += k;
+    c->insns += k;
+    return v;
+}
+
+void rt_io_write(sh4 *c, u64 atk, u32 addr, u32 val, int size)
+{
+    /* most stores into code pages are not into code: the interrupt
+     * handler's stack, for one, is inside the program's .text */
+    u8 *p = mem_page[addr >> 16];
+    if (p && mem_code_page[addr >> 16] && code_untouched(p + (addr & 0xffff), (u32)size)) {
+        rt_stats.code_page_stores++;
+        p += addr & 0xffff;
+        if (size == 4)
+            memcpy(p, &val, 4);
+        else if (size == 2)
+            { u16 h = (u16)val; memcpy(p, &h, 2); }
+        else
+            *p = (u8)val;
+        return;
+    }
+    u32 k = (u32)(atk >> 32);
+    c->pc = (u32)atk + 2;
+    c->cycles -= k;
+    c->insns -= k;
+    rt_store_at = (u32)atk;
+    mem_code_write(c, addr, val, size);     /* io_write, or a store into a code page */
+    rt_store_at = 0;
+    c->cycles += k;
+    c->insns += k;
+}
+
+void rt_sq_write(sh4 *c, u64 atk, u32 dst, const u32 *words)
+{
+    u32 k = (u32)(atk >> 32);
+    c->pc = (u32)atk + 2;
+    c->cycles -= k;
+    c->insns -= k;
+    u8 *p = mem_page[dst >> 16];
+    if (p) {                                /* a code page (mem_wpage) */
+        rt_store_at = (u32)atk;
+        mem_code_note(dst, 32, words);
+        rt_store_at = 0;
+        memcpy(p + (dst & 0xffff), words, 32);
+    } else {
+        io_sq_write(c, dst, words);
+    }
+    c->cycles += k;
+    c->insns += k;
+}
+
+/* ---- the run ---------------------------------------------------------------------- */
+
+int rt_native_run(sh4 *c)
+{
+    rt_cpu = c;
+    if (setjmp(rt_end))
+        return rt_end_code;
+    if (!control_next(c))
+        return STOP_NONE;
+    c->stop = 0;
+    rt_fpscr_loaded(c);
+    rt_event(c, c->pc);
+    rt_drive(c);
+    rt_host_fault(c, 103, c->pc, 0);
+    return STOP_FATAL;
+}

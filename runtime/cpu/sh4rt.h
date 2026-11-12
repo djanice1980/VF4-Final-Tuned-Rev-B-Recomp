@@ -7,8 +7,8 @@
  * interpreter was written from the SH-4 software manual; nothing here comes
  * from an emulator. tests/ checks the two against each other.
  *
- * Memory, io_read/io_write/io_sq_write and mem_page keep VF4debug's names
- * and calling conventions on purpose, so translated code links into either.
+ * mem_page keeps VF4debug's name and layout on purpose, so translated code
+ * links into either the runtime or the lockstep harness.
  */
 #ifndef VF4RT_SH4RT_H
 #define VF4RT_SH4RT_H
@@ -24,59 +24,69 @@
 
 /* ---- guest memory ---------------------------------------------------- */
 
-/* host address of each 64 KiB page of the 4 GiB space, or NULL where the
- * device models answer (io_read / io_write) */
-extern u8 *mem_page[65536];
-u32 io_read(sh4 *c, u32 addr, int size);
-void io_write(sh4 *c, u32 addr, u32 val, int size);
-void io_sq_write(sh4 *c, u32 dst, const u32 *words);
+/* Every access names its instruction: RT_ATK(address, k), where k is how
+ * many instructions of the block the clock has already been moved past it
+ * (a block adds its whole count at its start). The fast path ignores it;
+ * the slow path (the device models) uses it to show them the clock and PC
+ * VF4debug's interpreter would: see rt_io_read in the runtime. */
+#define RT_ATK(at, k) ((((u64)(k)) << 32) | (u64)(at))
 
-RT_INLINE u32 mem_r32(sh4 *c, u32 a)
+/* host address of each 64 KiB page of the 4 GiB space, or NULL where the
+ * device models answer; stores look in mem_wpage, which is also NULL where a
+ * page holds translated code, so a store there goes to the runtime, which
+ * sees whether it changes the code (docs/design.md, "Code the game
+ * changes") */
+extern u8 *mem_page[65536];
+extern u8 *mem_wpage[65536];
+u32 rt_io_read(sh4 *c, u64 atk, u32 addr, int size);
+void rt_io_write(sh4 *c, u64 atk, u32 addr, u32 val, int size);
+void rt_sq_write(sh4 *c, u64 atk, u32 dst, const u32 *words);
+
+RT_INLINE u32 rt_r32(sh4 *c, u64 atk, u32 a)
 {
     u8 *p = mem_page[a >> 16];
     if (RT_LIKELY(p != NULL)) { u32 v; memcpy(&v, p + (a & 0xffff), 4); return v; }
-    return io_read(c, a, 4);
+    return rt_io_read(c, atk, a, 4);
 }
-RT_INLINE u32 mem_r16(sh4 *c, u32 a)
+RT_INLINE u32 rt_r16(sh4 *c, u64 atk, u32 a)
 {
     u8 *p = mem_page[a >> 16];
     if (RT_LIKELY(p != NULL)) { u16 v; memcpy(&v, p + (a & 0xffff), 2); return v; }
-    return io_read(c, a, 2);
+    return rt_io_read(c, atk, a, 2);
 }
-RT_INLINE u32 mem_r8(sh4 *c, u32 a)
+RT_INLINE u32 rt_r8(sh4 *c, u64 atk, u32 a)
 {
     u8 *p = mem_page[a >> 16];
     if (RT_LIKELY(p != NULL)) return p[a & 0xffff];
-    return io_read(c, a, 1);
+    return rt_io_read(c, atk, a, 1);
 }
-RT_INLINE void mem_w32(sh4 *c, u32 a, u32 v)
+RT_INLINE void rt_w32(sh4 *c, u64 atk, u32 a, u32 v)
 {
-    u8 *p = mem_page[a >> 16];
+    u8 *p = mem_wpage[a >> 16];
     if (RT_LIKELY(p != NULL)) memcpy(p + (a & 0xffff), &v, 4);
-    else io_write(c, a, v, 4);
+    else rt_io_write(c, atk, a, v, 4);
 }
-RT_INLINE void mem_w16(sh4 *c, u32 a, u32 v)
+RT_INLINE void rt_w16(sh4 *c, u64 atk, u32 a, u32 v)
 {
-    u8 *p = mem_page[a >> 16];
+    u8 *p = mem_wpage[a >> 16];
     u16 h = (u16)v;
     if (RT_LIKELY(p != NULL)) memcpy(p + (a & 0xffff), &h, 2);
-    else io_write(c, a, v, 2);
+    else rt_io_write(c, atk, a, v, 2);
 }
-RT_INLINE void mem_w8(sh4 *c, u32 a, u32 v)
+RT_INLINE void rt_w8(sh4 *c, u64 atk, u32 a, u32 v)
 {
-    u8 *p = mem_page[a >> 16];
+    u8 *p = mem_wpage[a >> 16];
     if (RT_LIKELY(p != NULL)) p[a & 0xffff] = (u8)v;
-    else io_write(c, a, v, 1);
+    else rt_io_write(c, atk, a, v, 1);
 }
 
 /* ---- the runtime's side (runtime/cpu/sh4rt.c, or a test harness) ------ */
 
 typedef void (*rt_fn)(sh4 *c);
 
-/* a call or jump whose target is only known at run time */
+/* a call or jump whose target is only known at run time; a target that is
+ * not the start of a translated routine is the host's (rt_host_outside) */
 void rt_call(sh4 *c, u32 target, u32 from);
-/* a computed jump the translator could not resolve: only the start of a
- * routine can be its target (a tail call) */
 void rt_jump(sh4 *c, u32 target, u32 from);
 /* a callee came back somewhere other than the instruction after the call */
 void rt_bad_return(sh4 *c, u32 expected, u32 from);
@@ -85,24 +95,55 @@ void rt_sleep(sh4 *c, u32 at);
 void rt_illegal(sh4 *c, u32 op, u32 at);
 /* an FPU exception whose enable bit is set, or an FPU error */
 void rt_fpu_trap(sh4 *c, u32 at);
-/* cycles reached next_event: interrupts and device events */
-void rt_event(sh4 *c, u32 at);
 
-/* Hooks around every routine and loop, for the runtime to define (or the
- * build to set with -D). The defaults: count instructions as VF4debug's
- * virtual clock does, and look for events at loop back edges and after
- * calls. */
+/* The block protocol (docs/design.md, "Interrupts and timing"). Each block
+ * start checks whether the next event falls inside the block; each
+ * instruction in the middle of a block that can bring the next event
+ * forward checks after itself. Either way, rt_slow takes over with c->pc
+ * and the clock exact for the instruction boundary: it serves the events
+ * and runs the rest of the block on the interpreter. It returns 1 when that
+ * ended the routine (a return), else 0 with c->pc at a block start the
+ * routine's closing switch goes on from. rt_continue runs whatever is at
+ * c->pc (another routine, code the routine does not hold) until it returns. */
+int rt_slow(sh4 *c);
+void rt_continue(sh4 *c);
+/* A block whose code the game has changed since the translation (a byte of
+ * it, or a pool word it reads as a constant) runs on the interpreter: its
+ * byte here is set (one per halfword of the image, by the block's start). */
+#define RT_CODE_SLOTS 0xff0000u     /* 0x0c020000 to the end of the 32 MiB of RAM */
+extern u8 rt_code_changed[RT_CODE_SLOTS];
+#ifndef RT_BLOCK
+#define RT_BLOCK(c, at, n) do { \
+        if (RT_UNLIKELY((c)->cycles + (n) > (c)->next_event || rt_code_changed[RT_SLOT(at)])) { \
+            (c)->pc = (at); goto rt_slow; } \
+        (c)->cycles += (n); (c)->insns += (n); } while (0)
+#endif
+#ifndef RT_SYNC
+#define RT_SYNC(c, next, k) do { \
+        if (RT_UNLIKELY((c)->next_event < (c)->cycles)) { \
+            (c)->pc = (next); (c)->cycles -= (k); (c)->insns -= (k); goto rt_slow; } } while (0)
+#endif
+
+/* Routine entries: VF4debug's dispatch byte for each halfword of the image
+ * (hooks, host replacements, breakpoints, first entries); an entry reached
+ * by a call or a jump with a non-zero byte goes to rt_entry, which returns 1
+ * when a host replacement ran instead of the routine (c->pc is then where it
+ * returned to). Falling into a routine, or returning to one, is no entry
+ * (as in the interpreter): RT_FALL. */
+extern u8 *disp_flags;
+int rt_entry(sh4 *c, u32 addr);
+extern int rt_skip_entry;
+#define RT_SLOT(a) ((((a) & 0x1fffffffu) - 0x0c020000u) >> 1)
 #ifndef RT_ENTRY
-#define RT_ENTRY(c, addr) ((void)0)
+#define RT_ENTRY(c, a) do { if (RT_UNLIKELY(disp_flags[RT_SLOT(a)]) && rt_entry((c), (a))) return; } while (0)
 #endif
-#ifndef RT_COUNT
-#define RT_COUNT(c, n) ((c)->cycles += (n), (c)->insns += (n))
+#ifndef RT_FALL
+#define RT_FALL(c, fn, a) do { if (RT_UNLIKELY(disp_flags[RT_SLOT(a)])) rt_skip_entry = 1; fn(c); } while (0)
 #endif
+/* after an rte: the exception's bookkeeping */
+void rt_rte(sh4 *c);
 #ifndef RT_RTE
-#define RT_RTE(c) ((void)0)
-#endif
-#ifndef RT_POLL
-#define RT_POLL(c, at) do { if (RT_UNLIKELY((c)->cycles >= (c)->next_event)) rt_event((c), (at)); } while (0)
+#define RT_RTE(c) rt_rte(c)
 #endif
 
 /* ---- state helpers ------------------------------------------------------- */
@@ -244,11 +285,11 @@ RT_INLINE void op_shld(sh4 *c, int n, int m)
     else c->r[n] >>= ((~s & 31) + 1);
 }
 
-RT_INLINE void op_macl(sh4 *c, int n, int m)
+RT_INLINE void op_macl(sh4 *c, u64 atk, int n, int m)
 {
-    s64 a = (s32)mem_r32(c, c->r[n]);
+    s64 a = (s32)rt_r32(c, atk, c->r[n]);
     c->r[n] += 4;
-    s64 b = (s32)mem_r32(c, c->r[m]);
+    s64 b = (s32)rt_r32(c, atk, c->r[m]);
     c->r[m] += 4;
     s64 mac = (s64)(((u64)c->mach << 32) | c->macl);
     s64 prod = a * b;
@@ -267,11 +308,11 @@ RT_INLINE void op_macl(sh4 *c, int n, int m)
     c->macl = (u32)mac;
 }
 
-RT_INLINE void op_macw(sh4 *c, int n, int m)
+RT_INLINE void op_macw(sh4 *c, u64 atk, int n, int m)
 {
-    s32 a = (s16)mem_r16(c, c->r[n]);
+    s32 a = (s16)rt_r16(c, atk, c->r[n]);
     c->r[n] += 2;
-    s32 b = (s16)mem_r16(c, c->r[m]);
+    s32 b = (s16)rt_r16(c, atk, c->r[m]);
     c->r[m] += 2;
     s64 prod = (s64)a * b;
     if (c->sr & SR_S) {
@@ -286,27 +327,27 @@ RT_INLINE void op_macw(sh4 *c, int n, int m)
     }
 }
 
-RT_INLINE void op_tas(sh4 *c, int n)
+RT_INLINE void op_tas(sh4 *c, u64 atk, int n)
 {
-    u32 v = mem_r8(c, c->r[n]);
+    u32 v = rt_r8(c, atk, c->r[n]);
     c->t = v == 0;
-    mem_w8(c, c->r[n], v | 0x80);
+    rt_w8(c, atk, c->r[n], v | 0x80);
 }
 
 /* pref to the store queue area sends a queue's 32 bytes */
-RT_INLINE void op_pref(sh4 *c, int n)
+RT_INLINE void op_pref(sh4 *c, u64 atk, int n)
 {
     u32 addr = c->r[n];
     if ((addr & 0xfc000000u) != 0xe0000000u)
         return;
     int q = (addr >> 5) & 1;
-    u32 qacr = io_read(c, q ? 0xff00003cu : 0xff000038u, 4);
+    u32 qacr = rt_io_read(c, atk, q ? 0xff00003cu : 0xff000038u, 4);
     u32 dst = (addr & 0x03ffffe0u) | ((qacr & 0x1c) << 24);
-    u8 *p = mem_page[dst >> 16];
+    u8 *p = mem_wpage[dst >> 16];
     if (p)
         memcpy(p + (dst & 0xffff), c->sq[q], 32);
     else
-        io_sq_write(c, dst, c->sq[q]);
+        rt_sq_write(c, atk, dst, c->sq[q]);
 }
 
 /* ---- the FPU --------------------------------------------------------------- */

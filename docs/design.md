@@ -112,6 +112,10 @@ follows branches and delay slots, and emits C with labels and `goto`.
   computed jump) runs on the interpreter until it returns to a known routine
   entry. In a correct build this never happens after boot; the log says when
   it does.
+- **Literal pool words the code writes** (an interrupt entry parks r0 in
+  its own pool, `irq_entry_via_firmware`) are loaded from memory, not folded
+  in as constants: every store whose address constant propagation knows
+  marks the words it covers, to a fixed point with the propagation itself.
 
 ### Registers, flags and the FPU
 
@@ -150,23 +154,83 @@ follows branches and delay slots, and emits C with labels and `goto`.
 ### Interrupts and timing
 
 - The game runs on interrupts (vertical blank, render end, DMA end, Maple,
-  DIMM). Translated code polls a single pending flag at loop back edges and
-  routine entries. When an interrupt is pending and SR allows it, the poll
-  does what the hardware does at an exception (SPC, SSR, SR.BL/MD/RB, the
-  register bank) and calls the handler at VBR as a translated routine; its
-  `rte` returns to the poll.
-- **Real time instead of virtual time.** VF4debug moves a virtual clock;
+  DIMM). Translated code takes them **at the same instruction VF4debug's
+  interpreter does** (decided in M2, below), so a run of the translation and
+  a run of VF4debug on the same inputs are the same run, state for state.
+- **Blocks.** Block starts are a property of the address, the same in every
+  routine that holds the code (shared code included). Each block start
+  checks once whether the next device event falls inside the block
+  (`cycles + n > next_event`); if not, the block runs as C and adds its n
+  instructions to the clock at once. If it does, the runtime runs that one
+  block on the interpreter, which takes the event at its exact instruction,
+  then the routine carries on in C from the block it reaches (every routine
+  ends in a `switch` over its own block addresses for that).
+- **Mid-block changes.** An access that leaves RAM (the slow path into the
+  device models) is told its instruction's address and how far the block's
+  count runs ahead of it, so device models see the exact clock and PC the
+  interpreter would show them. A device can bring the next event forward
+  (an interrupt raised by a write, an SR write unmasking one, a stop); the
+  instructions that can do that check after themselves and finish the block
+  on the interpreter when they did.
+- **Exceptions nest.** When an interrupt or `trapa` is taken, the handler
+  runs from VBR (the vector code is the BIOS stand-in's own few
+  instructions, run by the interpreter) as a nested call: its `rte` returns
+  to the instruction where it was taken, checked, and the C code carries on.
+  The controller's stops (frame counts, `hash`, presses) are served the same
+  way, in the middle of the C stack; only the end of a run unwinds it.
+- **Real time instead of virtual time** (M3). VF4debug moves a virtual clock;
   here the clock is the host's. The 3D library's empty wait routine
   (`busy_wait_hook_noop`) and the stopwatch wait at the end of a frame become
   host waits for the next device event. The vertical blank comes from the
   host's frame timing (60 Hz, the Naomi's 59.94 by default and selectable).
-- A first search (2026-11-12) found no context switching and no code
-  generated at run time; M1 checks this properly. If either turns up, the
-  interpreter fallback covers it.
+- There is no context switching. There is code the game changes at run
+  time (below).
+
+### Code the game changes
+
+M2 found one: at boot (vertical blank 9) `stage_screens_boot` calls
+`code_jump_patch`, which copies a 12-byte jump stub over the start of the
+3D library's `ta_input_finish`, so every later call goes to the game's own
+`list_input_end_with_passes`. The translation of the original bytes would
+still run. So the runtime watches for it in general:
+
+- **Stores into code pages take a slow path.** Stores look up a second page
+  table, `mem_wpage`, which leaves out the 64 KiB pages that hold translated
+  code. Reads are unchanged. A store there that does not touch a translated
+  halfword (the interrupt handler's own stack is inside `.text`, about 1,200
+  stores a frame) is made at once. Every other store, from translated code,
+  the interpreter, host code or DMA (`g_w*`), is compared with what is in
+  memory first.
+- **A changed block runs on the interpreter.** If a store changes a byte
+  of a block, or of a pool word that a block compiled in as a constant (the
+  translator lists those pairs: `M_lits`, about 49,000), that block is marked
+  for good (`rt_code_changed`). Its `RT_BLOCK` check then sends it to the
+  interpreter, and the routine carries on in C from the next block that is
+  unchanged. The runtime also compares memory with the image file once at
+  start, so changes made before the run (or by a snapshot) count too.
+- **Targets taken from constants are checked.** A call or jump that the
+  translator resolved from a constant register (`mov.l @(pool),r1; jsr
+  @r1`) compares the register with that constant at run time and falls back
+  to the run-time lookup if they differ. Code that set the register in
+  another block may have been changed.
+- **Not handled, and stopped with an error:** a store that changes
+  instructions later in its own block. Also not covered: constant
+  propagation's view of which accesses are plain RAM, which only decides
+  where blocks check the clock, and the FPU modes found from pool words.
+- Cost: about 1% for the per-block check (measured by removing it).
 
 ## 5. Runtime devices
 
 Copied from VF4debug and adapted; each keeps its documentation section.
+`runtime/machine/` is VF4debug's `src/` (all of it but `main.c`: the
+interpreter, the memory map, the devices, the BIOS stand-in, the run loop,
+the controller and its observer) as of the commit named in
+`runtime/machine/ORIGIN.md`, changed only where marked `recomp:`, so a
+later VF4debug fix can be carried over with a diff. M2 runs it in virtual
+time, exactly as VF4debug does; the changes for play come in M3. Its routine
+and global tables (names, addresses, argument shapes) are made at build time
+by VF4debug's `tools/gen_tables.py` from the decompilation in development
+builds; the player's build will make them from `meta/` instead (M5).
 
 | Device | Source | Change for play |
 |---|---|---|
@@ -246,11 +310,19 @@ players never to share it.
   `tests/lockstep/routines.txt`) are called both ways, comparing the state
   and all of RAM. A broken instruction is caught on its first state (checked
   by planting one).
-- **Lockstep against the interpreter**: a development mode runs the game in
-  the translated build and records each routine entry and exit with the
-  registers; the same recording from VF4debug on the same inputs must be
-  identical for a boot to attract, a CPU vs CPU match and the 158 scenarios.
-  Real-time waits are switched off in this mode (virtual time, as VF4debug).
+- **Lockstep against the interpreter**: `vf4ft_headless` (the translated
+  game on VF4debug's machine, virtual time) runs the same controller scripts
+  as VF4debug. Because interrupts and device accesses happen at the same
+  instruction (section 4), the two runs are the same run. That is checked
+  with the controller's `hash` (all of main RAM, the general registers, PC,
+  PR and the instruction count) at fixed frames, compared with VF4debug's own
+  binary built from its checkout. Where they part, snapshots (`save`,
+  VF4debug's `tools/snapdiff.py`), the IRQ and IO order, and watchpoints
+  find the first difference. `--interp` runs the same binary on the
+  interpreter. Its runs agree with VF4debug's, but the reference is always
+  VF4debug's own binary: an old output file once passed for one and hid a
+  divergence for a while. Per-routine recordings were the first plan; hashes
+  of the whole machine at every compared frame cover more.
 - **Pictures**: the GPU renderer's frames against `view.c`'s at the same
   moments, compared at 1:1.
 - **Under Proton**: every milestone that changes the window, input, audio or
@@ -263,7 +335,7 @@ players never to share it.
 |---|---|---|
 | M0 | Repository, llvm-mingw cross build from CachyOS, SDL3, an empty window exe | the exe opens a window and reads a gamepad under Proton |
 | M1 | Translator for all of `main.bin` and `test.bin` | every routine translates and compiles with no warnings; instruction tests pass (done 2026-11-12, section 12) |
-| M2 | Runtime with the device models, headless | boots to attract and plays CPU vs CPU matches; lockstep recording identical to VF4debug's |
+| M2 | Runtime with the device models, headless | boots to attract and plays CPU vs CPU matches; lockstep recording identical to VF4debug's (section 13) |
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton |
 | M4 | Sound | music, voices and effects; then the DSP |
 | M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs |
@@ -305,3 +377,50 @@ players never to share it.
   a routine does not stop the routine's C code (the game runs with no
   enables and DN set, so none should); `rt_jump` only reaches routine starts;
   interrupts are not modelled yet (`rt_event` is the host's).
+- The translator numbers above are M1's. M2 changed them: see section 13.
+
+## 13. M2 results (2026-11-12)
+
+- **Headless runtime**: `vf4ft_headless` (Linux) is the translated main
+  program on `runtime/machine/` (VF4debug c3b2abb, with the `recomp:`
+  changes listed in its `ORIGIN.md`) and `runtime/native/rt_native.c`, the
+  seam that implements section 4's block protocol, nested exceptions and
+  changed code.
+- **Same run as VF4debug**, checked against VF4debug's own binary with
+  `tools/compare_runs.py` (all of main RAM, registers, PC, PR and the
+  instruction count at every hash):
+  - boot and attract, hashed every 100 frames to frame 9,000: 90 of 90 the same;
+  - attract for 36,000 frames (three rounds of title, character
+    demonstrations and rankings), hashed every 1,000: 36 of 36 the same,
+    33.3 billion instructions;
+  - VF4debug's `scripts/cpu_vs_cpu.txt` (a whole match with the game's AI on
+    both sides) with a hash after each command: 18 of 18 the same, to frame
+    15,601;
+  - VF4debug's `scripts/versus.txt` (a second player joins and the AI plays
+    both sides of the two-player match): 29 of 29 the same, to frame 21,141.
+- **Bugs this found in the translation**, all fixed:
+  - code reached through the P2 alias (`0xac...`) has to run at its real PC,
+    so it is left to run time;
+  - `ldc rN,sr` needs a clock check after it, so every SR write gets one;
+  - the control flow analysis kept call targets resolved in an earlier
+    round (a stale `jsr @r1` target), so constant targets and decided
+    branches are now checked again every round;
+  - `ta_input_finish` is patched by the game at boot ("Code the game
+    changes", section 4).
+- **Translator now** (`main.bin`): 6,632 routines, 432,253 instructions;
+  16,787 static calls, 3,853 through a register; 312 computed jumps
+  resolved (11 by hint), 5 left to run time (`_start`, the two exception
+  relays, the hook pointer, `int_break_handler`); 71,234 blocks; 701 pool
+  words the program writes; 49,385 pool word readers (`M_lits`).
+- **Speed** (virtual time, this machine, one core): 850 million guest
+  instructions a second for the attract loop, about 4 times the real
+  SH-4's 200 MHz. Per 9,000 frames, 17 million blocks have an event fall
+  inside them and finish on the interpreter (92 million instructions).
+  That is most of the remaining cost, and M3's work if real time needs it.
+  VF4debug's interpreter runs the same loop at 215 million.
+- **Lockstep tests** (`tests/lockstep`) on the new block protocol:
+  1,804,564 checks, 0 failed.
+- **Not done in M2**: the 158 VF4debug harness scenarios were not run
+  against the translation. Many call routines with made-up arguments
+  through the controller's `call`, which has not been tried on the native
+  runtime. Real time, picture, input and sound are M3 and M4.
