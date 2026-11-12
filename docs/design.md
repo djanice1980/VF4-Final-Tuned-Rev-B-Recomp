@@ -346,7 +346,7 @@ players never to share it.
 | M0 | Repository, llvm-mingw cross build from CachyOS, SDL3, an empty window exe | the exe opens a window and reads a gamepad under Proton |
 | M1 | Translator for all of `main.bin` and `test.bin` | every routine translates and compiles with no warnings; instruction tests pass (done 2026-11-12, section 12) |
 | M2 | Runtime with the device models, headless | boots to attract and plays CPU vs CPU matches; lockstep recording identical to VF4debug's (section 13) |
-| M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton |
+| M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton (done 2026-11-12, section 15) |
 | M4 | Sound | music, voices and effects; then the DSP |
 | M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs |
 | M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered |
@@ -494,3 +494,24 @@ machine as possible.
   game reads the image and the DIMM file from the same places as the headless
   build (`--decomp`, `--image`, `--dimm`, or the environment), until M5's
   install layout.
+
+## 15. M3 results (2026-11-12)
+
+- **Played** by hand on Linux with a DualSense: coin, start, character select
+  and a match, with every button working; it felt right. The window
+  showed every 600 frames in 10.0 s of real time and never fell behind.
+- **Same run as VF4debug.** With no input, frame 9,000 has the same
+  instruction count (4,431,349,708) in the window on Linux, in the Windows
+  exe under Proton (Direct3D 12) and in the headless build. The M2
+  comparisons against VF4debug's binary still match after the machine's M3
+  changes: 90/90, 36/36, 18/18 (`cpu_vs_cpu`) and 29/29 (`versus`).
+- **Cost per frame** (machine and software picture, on this machine: the
+  view's pool caps at 8 threads): 8 to 9 ms on average while playing, 14.3
+  ms at the worst, against 16.7 ms. The attract demo runs about 7 ms a
+  frame, and the picture of a fight 5.5 ms (25,000 triangles). That leaves
+  little room on slower machines such as the Steam Deck, so measure there
+  before M4 adds sound. The GPU renderer (section 6) is the answer if it
+  does not fit.
+- **Not tried yet**: a second gamepad as player 2; the M3 exe started from
+  Steam (M0's exe was, with Steam Input); Test and Service.
+
