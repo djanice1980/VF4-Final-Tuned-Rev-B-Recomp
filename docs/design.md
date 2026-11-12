@@ -288,7 +288,8 @@ game) on its own ARM7 core and mixes 64 channels with a DSP for reverb.
 - Channels: PCM 8/16-bit and Yamaha ADPCM, loops, the envelope generator,
   pitch (rates as the decomp found them), pan and send levels.
 - The DSP (reverb) last, from public descriptions of the chip; until then
-  the effect sends are dropped.
+  the effect sends are dropped. The game uses it (section 17); it uses
+  neither the filter nor the LFOs.
 - Output through SDL3 audio at 44.1 kHz.
 
 ## 8. Builder and launcher
@@ -347,7 +348,7 @@ players never to share it.
 | M1 | Translator for all of `main.bin` and `test.bin` | every routine translates and compiles with no warnings; instruction tests pass (done 2026-11-12, section 12) |
 | M2 | Runtime with the device models, headless | boots to attract and plays CPU vs CPU matches; lockstep recording identical to VF4debug's (section 13) |
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton (done 2026-11-12, section 15) |
-| M4 | Sound | music, voices and effects; then the DSP |
+| M4 | Sound | music, voices and effects (done 2026-11-12, section 17); the DSP (reverb) still to do |
 | M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs |
 | M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered |
 
@@ -515,3 +516,86 @@ machine as possible.
 - **Not tried yet**: a second gamepad as player 2; the M3 exe started from
   Steam (M0's exe was, with Steam Input); Test and Service.
 
+
+## 16. M4 plan (2026-11-12)
+
+- **The real driver runs.** `aicadrv.bin` (the game loads it into sound RAM)
+  runs on an ARM7 interpreter, `runtime/sound/arm7.c`, written from the ARM
+  architecture manual. The driver is hand-written ARMv3 code: a main loop that
+  polls without waiting, plus a timer A interrupt (FIQ) that the driver
+  re-arms at 0xD4 for a sequencer tick every 44 samples. It reads the chip's
+  monitor registers (play position, envelope level) to key off one-shots and
+  free voices, so the chip model must answer them as the chip does.
+- **The chip**, `runtime/sound/aica.c`, our own code from the chip's public
+  descriptions and the decompilation's findings (`tools/dtpk_seq.py`,
+  `tools/aica_adpcm.py`). It covers: 64 channels with PCM16, PCM8 and ADPCM;
+  loops; pitch (OCT/FNS); the amplitude envelope with its rate tables; total
+  level, direct level and pan; timers A to C; both interrupt controllers;
+  the monitor registers; key on/off. The filter envelope and the LFOs come
+  next, and the effect DSP (reverb) last. Until the DSP exists, the effect
+  sends are dropped. (The game uses neither the filter nor the LFOs, so they
+  were left out: section 17.)
+- **Time.** The chip runs at 44,100 samples per virtual second on the
+  machine's thread. An event every 32 samples (0.73 ms) runs, for each
+  sample, the ARM for a fixed budget of instructions, then the timers,
+  interrupts and mixer. The budget is a setting; real time is not involved,
+  so the run stays deterministic and an audio hash can be checked. The main
+  CPU sees sound RAM and the registers change at 32-sample steps.
+- **VF4debug's mailbox model stays** for comparisons: `--sound mailbox`
+  (the headless default, so `tools/compare_runs.py` still compares against
+  VF4debug) or `--sound chip` (the game's default). With the chip, the game
+  sees the real driver's answers: sequences are reported as playing and the
+  handshakes come at the driver's own pace. That run is no longer
+  VF4debug's, but it is still deterministic.
+- **Output.** The mixer writes 16-bit stereo frames to a buffer. The game
+  window hands each frame's samples (735 a frame) to an `SDL_AudioStream`
+  at its vertical blank. The audio device's clock drifts from the host
+  clock, so the stream's frequency ratio is nudged (at most 0.5%) to keep
+  about 50 ms queued. During the unpaced boot the samples are dropped. The
+  headless program writes them to a WAV file (`--wav FILE`) for checks.
+- **Checks.** Every run with the chip is deterministic, which makes an audio
+  hash possible. Music from the chip is compared against the decomp's
+  renderer (`tools/dtpk_seq.py --wav`) for the same sequence. Then it gets
+  listened to.
+
+
+## 17. M4 results (2026-11-12)
+
+- **Played and listened to** on Linux and from Steam under Proton: music,
+  voices and effects, in time with the picture. The logs show the audio
+  queue holding at about 50 ms, with only the unpaced start-up's samples
+  dropped.
+- **The real driver runs** on the ARM7 interpreter. Three points of the
+  ARM rules matter to this driver, which calls with `stmfd sp!,{pc}`:
+  - a stored PC is the instruction's address + 12;
+  - an unaligned LDR rotates the word;
+  - a FIQ's return address is the next instruction + 4.
+  The ARM costs about 0.45 ms of host time a frame at 128 instructions a
+  sample (`--arm-budget`).
+- **The music matches the decomp's renderer.** The attract music
+  (`bg_vf4ftadv1`) was compared against `tools/dtpk_seq.py --wav` with a
+  spectrogram correlation: 0.80, against a baseline of 0.36.
+- **Deterministic.** Two headless runs of the CPU vs CPU script with
+  `--sound chip` give the same machine hashes and byte-identical WAV files
+  (292 s, peak -2.2 dBFS, RMS -24 dBFS, nothing clipped). The headless
+  default is still VF4debug's mailbox model, and its comparisons still
+  match: 90/90 and 36/36 attract hashes, 18/18 `cpu_vs_cpu` and 29/29
+  `versus`.
+- **Mix level, an estimate.** The voice sum is scaled by 2^-17. At 2^-15,
+  a fight clipped 103,000 samples. This was not checked against the
+  board, since no recording from real hardware or Flycast was kept. Check it
+  against a capture before M6.
+- **Unused by VF4FT**, measured over a CPU vs CPU match (737 key-ons):
+  - the filter: the driver sets LPOFF on every key-on, because no tone has
+    filter data (tone word +0x10 & 0x7ff is 0);
+  - the LFOs: no key-on has a depth.
+  So both stay out of the model; the stats line reports any use.
+- **The effect DSP is used and is not modelled yet.** 295 of the 737
+  key-ons send to it, and the game loads a DSP program. Those sends are
+  dropped, so the sound is dry: no reverb.
+  This is the remaining sound work (section 7).
+- **The main CPU's interrupt** is wired: MCIPD & MCIEB to the system chip's
+  external interrupt bit 1. The game enables the driver's doorbell (MCIEB
+  0x020), but the driver never rang it in these runs.
+- **The game's options:** the chip is the default; `--silent` gives the
+  mailbox model (no sound, VF4debug's run).

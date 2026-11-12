@@ -25,7 +25,7 @@ the decompilation's files. The plan, with its milestones: [docs/design.md](docs/
 | M1: translator | Done 2026-11-12. Both programs translate to C (6,632 + 2,120 routines) that compiles with no warnings for Windows and Linux; 1.8 million checks against VF4debug's interpreter, none failed ([details](docs/design.md#12-m1-results-2026-11-12)) |
 | M2: runtime with the hardware models, headless | Done 2026-11-12. The translated game boots to attract and plays CPU vs CPU matches on VF4debug's hardware models, instruction for instruction the same run as VF4debug's (36,000 attract frames and two whole matches compared hash for hash); about 4 times the real hardware's speed with no picture yet ([details](docs/design.md#13-m2-results-2026-11-12)) |
 | M3: picture, input, real time | Done 2026-11-12. The game runs in a window at 60 fps natively on Linux and under Proton (Direct3D 12), with keyboard and gamepads, and gives the same run as VF4debug's; played through coin, start and a match with a DualSense. The picture is VF4debug's software renderer, 8 to 9 ms a frame with the machine while playing ([details](docs/design.md#15-m3-results-2026-11-12)) |
-| M4: sound | Next |
+| M4: sound | Done 2026-11-12, but the reverb (the chip's effect DSP) is still to do. The game's own sound driver runs on an ARM7 interpreter with a model of the AICA chip: music, voices and effects play in the window on Linux and under Proton, and every run is deterministic ([details](docs/design.md#17-m4-results-2026-11-12)) |
 
 ## How it works
 
@@ -146,7 +146,7 @@ made from your copy of the game: never commit or share it.
    make -C tests/lockstep -j16 test
    ```
 
-## Playing (development, M3)
+## Playing (development, M3 and M4)
 
 `build/linux/vf4ft` and `build/win64/vf4ft.exe` (steps 3 and 4, once
 `work/gen/` exists) are the game in a window. Each reads `data/main.bin`
@@ -178,9 +178,11 @@ coins: press Coin, then Start.
 Options: `--fullscreen`, `--gpu direct3d12|vulkan`, `--frames N` (quit
 after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `--real-boot` (the start-up at its real pace too), `--image FILE`,
-`--dimm FILE`, `--log FILE`. Every 600 frames `vf4ft.log` (beside the
+`--dimm FILE`, `--log FILE`, `--silent` (no sound chip: VF4debug's
+mailbox model, as in M3). Every 600 frames `vf4ft.log` (beside the
 program) records how long the machine took per frame, on average and at
-most. No sound yet (M4). Rebinding, free play and settings are M6.
+most, and how much audio is queued. Sound plays from the warning screen on;
+there is no reverb yet. Rebinding, free play and settings are M6.
 
 ## Running the game headless (development, M2)
 
@@ -227,8 +229,15 @@ image and the routine tables). Other places: `cmake -S . -B build/linux
    work the same way once `hash` lines are added after their commands.
 
 `--interp` runs the same binary on VF4debug's interpreter instead of the
-translation (for comparisons; slower). `--help` lists the rest: they are
-VF4debug's options.
+translation (for comparisons; slower). `--sound chip` runs the sound chip
+and the game's driver instead of VF4debug's mailbox model (the default,
+which the comparisons need), and `--wav FILE` writes what it plays:
+
+```bash
+build/linux/vf4ft_headless --frames 9000 --sound chip --wav build/attract.wav
+```
+
+`--help` lists the rest: they are VF4debug's options.
 
 `meta/` holds the routine list and FPU modes taken from the decompilation
 (addresses and names only). After the decompilation changes, refresh it with

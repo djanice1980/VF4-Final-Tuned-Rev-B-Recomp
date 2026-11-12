@@ -45,3 +45,12 @@ What the recomp changed:
   view (`PAGE_WRITECOPY`), as the private `mmap` on Linux.
 - `machine.c` (M3, Windows only): `snapshot_save_mem` goes through a
   temporary file, since Windows has no `open_memstream`.
+- `hw.h`, `hw_sound.c` (M4): `hw_sound_chip` puts the sound chip model
+  (`runtime/sound/aica.c`, the recomp's own code) on the sound registers in
+  place of the mailbox model. The chip runs 32 samples at a time on a
+  machine event, raises the system chip's external interrupt bit 1, and is
+  kept in the snapshots. `hw_sound_arm_budget` sets its ARM7's instructions
+  a sample. With `hw_sound_chip` 0 (the default) nothing behaves
+  differently.
+- `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
+  and `--wav FILE`.

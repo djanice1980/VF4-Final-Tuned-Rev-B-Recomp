@@ -38,9 +38,15 @@ typedef struct game_input {
 typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int booting, game_input *in);
 
 /* Everything up to the first instruction: memory, the program image, the
- * DIMM image, devices, the BIOS stand-in, the translated code's tables.
- * 0 on success; messages go to stderr. Call on the thread that will run. */
-int game_machine_init(const char *image, const char *dimm, game_frame_fn fn);
+ * DIMM image, devices, the BIOS stand-in, the translated code's tables;
+ * sound_chip: the sound chip with the game's own driver (1), or VF4debug's
+ * silent mailbox model (0). 0 on success; messages go to stderr. Call on
+ * the thread that will run. */
+int game_machine_init(const char *image, const char *dimm, int sound_chip, game_frame_fn fn);
+
+/* from the frame function: the sound the chip made since the last call, up
+ * to max stereo frames (44,100 a second); with sound_chip 0 there is none */
+unsigned game_machine_audio(short *dst, unsigned max);
 
 /* Runs until game_machine_stop (or a fatal stop); returns 0 for a stop that
  * was asked for, else 1, with the reason in game_machine_why. */

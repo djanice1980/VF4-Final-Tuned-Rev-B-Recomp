@@ -21,11 +21,17 @@
  * Every other request is a sound command: counted, kept in a short history
  * for the status report, and dropped. Nothing is played. Sequences and
  * voices therefore always read as "not playing".
+ *
+ * recomp: with hw_sound_chip set, none of that: the registers are the chip
+ * model's (runtime/sound/aica.c), whose ARM7 runs the driver the game
+ * loaded, stepped in virtual time 32 samples at a time.
  */
 #include "hw.h"
 #include "mem.h"
 #include "machine.h"
 #include "observe.h"
+
+#include "aica.h"                   /* recomp */
 
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +53,39 @@ typedef struct sound_state {
 } sound_state;
 
 static sound_state ss;
+
+/* recomp: the chip */
+int hw_sound_chip;
+unsigned hw_sound_arm_budget;
+#define CHIP_BLOCK 32u                  /* samples a step */
+static u64 chip_samples;                /* samples run; the next step ends at sample chip_samples + CHIP_BLOCK */
+
+/* sample n is due at virtual cycle n * CPU_HZ / AICA_RATE */
+static u64 chip_cycle_of(u64 n)
+{
+    return n * (CPU_HZ / 100) / (AICA_RATE / 100);
+}
+
+/* the chip's interrupt to the main CPU: bit 1 of the system chip's external
+ * interrupts (the driver's doorbell, MCIPD bit 5, is the one the game enables) */
+#define EXT_IRQ_AICA 0x00000002u
+static void chip_irq(sh4 *c)
+{
+    u32 want = aica_main_irq() ? EXT_IRQ_AICA : 0;
+    if ((hw.irq_external & EXT_IRQ_AICA) != want) {
+        hw.irq_external = (hw.irq_external & ~EXT_IRQ_AICA) | want;
+        hw_irq_update(c);
+    }
+}
+
+static void chip_step(sh4 *c, u32 arg)
+{
+    (void)arg;
+    aica_run(CHIP_BLOCK);
+    chip_samples += CHIP_BLOCK;
+    event_add(chip_cycle_of(chip_samples + CHIP_BLOCK), chip_step, 0, "sound chip");
+    chip_irq(c);
+}
 
 static u32 sr32(u32 off) { return g_r32(0xa0000000u + SOUND_RAM_PHYS + off); }
 /* what the driver side writes into sound RAM is the model's: a planted value (mem.h) */
@@ -131,6 +170,10 @@ static void driver_step(sh4 *c, u32 arg)
 
 int hw_sound_read(sh4 *c, u32 p, u32 *out)
 {
+    if (hw_sound_chip && p >= 0x00700000u && p < 0x00708000u) {    /* recomp */
+        *out = aica_read(p - 0x00700000u);
+        return 1;
+    }
     if (p >= 0x00700000u && p < 0x00708000u) {
         *out = ss.reg[(p - 0x00700000u) / 4];
         return 1;
@@ -150,6 +193,11 @@ int hw_sound_read(sh4 *c, u32 p, u32 *out)
 
 int hw_sound_write(sh4 *c, u32 p, u32 v)
 {
+    if (hw_sound_chip && p >= 0x00700000u && p < 0x00708000u) {    /* recomp */
+        aica_write(p - 0x00700000u, v);
+        chip_irq(c);
+        return 1;
+    }
     if (p >= 0x00700000u && p < 0x00708000u) {
         ss.reg[(p - 0x00700000u) / 4] = v;
         if (p == 0x00702c00u) {
@@ -174,6 +222,10 @@ int hw_sound_write(sh4 *c, u32 p, u32 v)
 
 void hw_sound_stats(FILE *f)
 {
+    if (hw_sound_chip) {                /* recomp */
+        aica_stats(f);
+        return;
+    }
     fprintf(f, "  sound: driver %s; %llu requests taken (%llu sound commands dropped, %llu block moves)\n",
             ss.running ? "running" : "not started", (unsigned long long)ss.requests,
             (unsigned long long)ss.sound_commands, (unsigned long long)ss.block_moves);
@@ -201,6 +253,15 @@ void hw_sound_init(void)
     snapshot_register("sound", &ss, sizeof ss);
     event_register(driver_step, "sound driver step");
     mem_add_ram("sound-ram", SOUND_RAM_PHYS, SOUND_RAM_SIZE);
+    if (hw_sound_chip) {                /* recomp: the chip, from the first sample */
+        unsigned n;
+        aica_init(mem_ptr(0xa0000000u + SOUND_RAM_PHYS), hw_sound_arm_budget);
+        snapshot_register("sound chip", aica_state(&n), n);
+        snapshot_register("sound chip samples", &chip_samples, sizeof chip_samples);
+        event_register(chip_step, "sound chip");
+        chip_samples = 0;
+        event_add(chip_cycle_of(CHIP_BLOCK), chip_step, 0, "sound chip");
+    }
     /* the first 64 KiB, where the driver's mailbox is, take the slow path:
      * the marks on the words the model plants there (ready, free space,
      * the handshake words, the emptied ring) are then exact in every run */

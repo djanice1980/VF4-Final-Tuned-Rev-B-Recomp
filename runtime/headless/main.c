@@ -17,6 +17,7 @@
 #include "view.h"
 #include "net.h"
 #include "rt_native.h"     /* recomp */
+#include "aica.h"           /* recomp */
 
 #include <signal.h>
 #include <stdio.h>
@@ -36,6 +37,10 @@ static void usage(void)
     fputs(
         "usage: vf4ft-headless [options]\n"
         "  --interp          run VF4debug's interpreter instead of the translated code (recomp)\n"
+        "  --sound MODEL     the sound board: mailbox (VF4debug's model, the default) or chip (the AICA with\n"
+        "                    the game's own driver on its ARM7) (recomp)\n"
+        "  --arm-budget N    with the chip: ARM7 instructions a sample (default 128) (recomp)\n"
+        "  --wav FILE        with the chip: write what it plays, 44,100 Hz stereo (recomp)\n"
         "  --decomp DIR      the vf4ft-decomp checkout (default: $VF4_DECOMP, else " DEFAULT_DECOMP ")\n"
         "  --image FILE      the program image (default: DIR/work/main.bin, or $VF4_IMAGE)\n"
         "  --dimm FILE       the decrypted DIMM image with the asset files\n"
@@ -86,6 +91,36 @@ static void on_interrupt(int sig)
     machine_interrupted = 1;
 }
 
+/* recomp: --wav: the chip's output, taken at every vertical blank */
+static FILE *wav_f;
+static unsigned long long wav_frames;
+
+static void wav_header(FILE *f, unsigned long long frames)
+{
+    unsigned bytes = (unsigned)(frames * 4);
+    unsigned char h[44] = { 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 2, 0,
+                            0x44, 0xac, 0, 0, 0x10, 0xb1, 0x02, 0, 4, 0, 16, 0, 'd', 'a', 't', 'a' };
+    unsigned riff = bytes + 36;
+    for (int i = 0; i < 4; i++) {
+        h[4 + i] = (unsigned char)(riff >> (8 * i));
+    }
+    fwrite(h, 1, 40, f);
+    unsigned char b[4] = { (unsigned char)bytes, (unsigned char)(bytes >> 8), (unsigned char)(bytes >> 16),
+                           (unsigned char)(bytes >> 24) };
+    fwrite(b, 1, 4, f);
+}
+
+static void wav_frame(sh4 *c)
+{
+    (void)c;
+    int16_t buf[2 * 2048];
+    unsigned n;
+    while ((n = aica_audio_take(buf, 2048)) > 0) {
+        fwrite(buf, 4, n, wav_f);
+        wav_frames += n;
+    }
+}
+
 void write_reports(void)
 {
     char path[1200];
@@ -118,6 +153,7 @@ int main(int argc, char **argv)
     const char *traces[64], *breaks[64];
     int trace_n = 0, break_n = 0, list_hle = 0, view_used;
     int interp = 0;     /* recomp */
+    const char *wav_path = NULL;    /* recomp */
     memset(&cfg, 0, sizeof cfg);
     cfg.decomp = getenv("VF4_DECOMP") ? getenv("VF4_DECOMP") : DEFAULT_DECOMP;
     cfg.image = getenv("VF4_IMAGE");
@@ -152,6 +188,14 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--net")) hw_net_option = 1;
         else if (!strcmp(a, "--list-hle")) list_hle = 1;
         else if (!strcmp(a, "--interp")) interp = 1;      /* recomp */
+        else if (!strcmp(a, "--sound")) {                 /* recomp */
+            NEED();
+            if (!strcmp(v, "chip")) hw_sound_chip = 1;
+            else if (!strcmp(v, "mailbox")) hw_sound_chip = 0;
+            else { usage(); return 2; }
+        }
+        else if (!strcmp(a, "--arm-budget")) { NEED(); hw_sound_arm_budget = (unsigned)strtoul(v, NULL, 0); }   /* recomp */
+        else if (!strcmp(a, "--wav")) { NEED(); wav_path = v; }      /* recomp */
         else if (!strcmp(a, "--diag")) {
             NEED();
             if (!strcmp(v, "hostnan")) sh4_diag |= DIAG_HOST_NAN;
@@ -212,6 +256,19 @@ int main(int argc, char **argv)
     }
     if (!interp && rt_native_init(cfg.image))
         return 1;
+    if (wav_path) {                     /* recomp */
+        if (!hw_sound_chip) {
+            fprintf(stderr, "vf4ft-headless: --wav needs --sound chip\n");
+            return 2;
+        }
+        wav_f = fopen(wav_path, "wb");
+        if (!wav_f) {
+            perror(wav_path);
+            return 1;
+        }
+        wav_header(wav_f, 0);
+        machine_host_frame = wav_frame;
+    }
     if ((cfg.coverage || cfg.profile) && obs_enable())
         return 1;
     if (cfg.log_path && obs_open(cfg.log_path, cfg.run_name))
@@ -280,6 +337,12 @@ int main(int argc, char **argv)
         fprintf(stderr, "  %.2f s, %.1f million instructions a second; last mode %s\n", secs,
                 secs > 0 ? (double)cpu.insns / secs / 1e6 : 0.0,
                 game_mode_name(game_mode_main(), game_mode_sub(), mode, sizeof mode));
+    }
+    if (wav_f) {                        /* recomp */
+        wav_frame(&cpu);
+        fseek(wav_f, 0, SEEK_SET);
+        wav_header(wav_f, wav_frames);
+        fclose(wav_f);
     }
     view_close();
     write_reports();

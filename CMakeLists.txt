@@ -48,9 +48,10 @@ if(TARGET vf4ft_gen_main)
         VERBATIM)
     file(GLOB machine_src CONFIGURE_DEPENDS runtime/machine/*.c)
     # objects, not an archive: the translated code calls back into rt_native.c
-    add_library(vf4ft_machine OBJECT runtime/native/rt_native.c ${machine_src} "${machine_gen}/tables.c")
+    add_library(vf4ft_machine OBJECT runtime/native/rt_native.c ${machine_src} "${machine_gen}/tables.c"
+                runtime/sound/arm7.c runtime/sound/aica.c)
     # runtime/machine first: its sh4.h is the one the seam sees (runtime/cpu/sh4.h)
-    target_include_directories(vf4ft_machine BEFORE PUBLIC runtime/machine runtime/native)
+    target_include_directories(vf4ft_machine BEFORE PUBLIC runtime/machine runtime/native runtime/sound)
     target_compile_options(vf4ft_machine PRIVATE -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${VF4FT_FP_FLAGS})
     set_source_files_properties("${machine_gen}/tables.c" PROPERTIES COMPILE_OPTIONS "-O0;-g0")
     target_link_libraries(vf4ft_machine PUBLIC vf4ft_gen_main m)

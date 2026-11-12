@@ -12,6 +12,7 @@
 #include "view.h"
 #include "net.h"
 #include "rt_native.h"
+#include "aica.h"
 #include "game_machine.h"
 
 #include <stdio.h>
@@ -58,7 +59,12 @@ static void host_frame(sh4 *c)
     }
 }
 
-int game_machine_init(const char *image, const char *dimm, game_frame_fn fn)
+unsigned game_machine_audio(short *dst, unsigned max)
+{
+    return hw_sound_chip ? aica_audio_take(dst, max) : 0;
+}
+
+int game_machine_init(const char *image, const char *dimm, int sound_chip, game_frame_fn fn)
 {
     memset(&cfg, 0, sizeof cfg);
     cfg.image = image;
@@ -66,6 +72,7 @@ int game_machine_init(const char *image, const char *dimm, game_frame_fn fn)
     cfg.run_name = "game";
     cfg.report_dir = "out";
     frame_fn = fn;
+    hw_sound_chip = sound_chip;
 
     if (mem_init() || mem_add_ram("main-ram", RAM_BASE, RAM_SIZE) ||
         mem_add_ram("harness-scratch", CONTROL_SCRATCH, CONTROL_SCRATCH_SIZE))

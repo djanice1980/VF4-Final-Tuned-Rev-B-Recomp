@@ -16,6 +16,7 @@
  *   --real-boot       the game's first start-up step (WARNING.INIT, about 97 s) at its real pace too;
  *                     by default it runs as fast as it can
  *   --fullscreen      start in fullscreen (F11 or Alt+Enter toggles)
+ *   --silent          no sound chip: VF4debug's mailbox model in its place (as M3)
  *   --gpu NAME        SDL_GPU driver: direct3d12 (or d3d12) or vulkan (default: SDL's choice)
  *   --log FILE        log somewhere else
  *
@@ -78,7 +79,39 @@ static struct {
 } shared;
 
 static const char *image_path, *dimm_path;
-static int unpaced, real_boot;
+static int unpaced, real_boot, silent;
+static SDL_AudioStream *audio;          /* NULL: no sound */
+
+/* Sound: the chip's samples of this vertical blank go to the stream. The
+ * device's clock is not the host's: the stream's frequency ratio is nudged
+ * (at most 0.5%) to keep about 50 ms queued, and audio is dropped while the
+ * machine runs ahead of real time (the boot, --unpaced) or the queue has
+ * grown past 200 ms (a stall). */
+#define AUDIO_TARGET 2205               /* frames: 50 ms */
+static double audio_level = AUDIO_TARGET;
+static unsigned audio_dropped;
+
+static void audio_frame(int ahead)
+{
+    static short buf[2 * 4096];
+    unsigned n, total = 0;
+    int queued = audio ? SDL_GetAudioStreamQueued(audio) / 4 : 0;
+    int keep = audio && !ahead && queued < 4 * AUDIO_TARGET;
+    while ((n = game_machine_audio(buf, 4096)) > 0) {
+        if (keep)
+            SDL_PutAudioStreamData(audio, buf, (int)n * 4);
+        else
+            audio_dropped += n;
+        total += n;
+    }
+    if (!keep || !total)
+        return;
+    audio_level += (queued - audio_level) * 0.05;
+    double ratio = 1.0 + (audio_level - AUDIO_TARGET) / AUDIO_TARGET * 0.005;
+    if (ratio < 0.995) ratio = 0.995;
+    if (ratio > 1.005) ratio = 1.005;
+    SDL_SetAudioStreamFrequencyRatio(audio, (float)ratio);
+}
 static unsigned frames_max;
 static SDL_AtomicInt machine_state;     /* 0 starting, 1 running, 2 init failed, 3 stopped */
 static Uint32 machine_event;            /* an SDL event type: the machine has stopped */
@@ -98,11 +131,13 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
             busy_max_ns = b;
         if (++busy_frames == 600) {
             logf_("machine: vertical blank %u; %.2f ms a frame on average, %.2f ms at most; %u times behind by "
-                  "more than 1/4 s", frame, busy_ns / 1e6 / busy_frames, busy_max_ns / 1e6, resyncs);
+                  "more than 1/4 s; audio queue %.0f ms", frame, busy_ns / 1e6 / busy_frames, busy_max_ns / 1e6, resyncs,
+                  audio_level / 44.1);
             busy_ns = busy_max_ns = 0;
             busy_frames = 0;
         }
     }
+    audio_frame((booting && !real_boot) || unpaced);
     SDL_LockMutex(shared.lock);
     if (rgb) {
         memcpy(shared.pic, rgb, sizeof shared.pic);
@@ -134,7 +169,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
 static int SDLCALL machine_main(void *arg)
 {
     (void)arg;
-    if (game_machine_init(image_path, dimm_path, on_frame)) {
+    if (game_machine_init(image_path, dimm_path, !silent, on_frame)) {
         SDL_SetAtomicInt(&machine_state, 2);
     } else {
         SDL_SetAtomicInt(&machine_state, 1);
@@ -258,6 +293,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--dimm") && v) dimm_path = argv[++i];
         else if (!strcmp(a, "--unpaced")) unpaced = 1;
         else if (!strcmp(a, "--real-boot")) real_boot = 1;
+        else if (!strcmp(a, "--silent")) silent = 1;
         else if (!strcmp(a, "--fullscreen")) fullscreen = 1;
         else if (!strcmp(a, "--gpu") && v) {
             gpu_name = argv[++i];
@@ -284,7 +320,7 @@ int main(int argc, char **argv)
     SDL_SetLogOutputFunction(sdl_log, NULL);
     SDL_SetLogPriority(SDL_LOG_CATEGORY_GPU, SDL_LOG_PRIORITY_INFO);
     int sdl_ver = SDL_GetVersion();
-    logf_("vf4ft M3; SDL %d.%d.%d (%s); platform %s", SDL_VERSIONNUM_MAJOR(sdl_ver), SDL_VERSIONNUM_MINOR(sdl_ver),
+    logf_("vf4ft M4; SDL %d.%d.%d (%s); platform %s", SDL_VERSIONNUM_MAJOR(sdl_ver), SDL_VERSIONNUM_MINOR(sdl_ver),
           SDL_VERSIONNUM_MICRO(sdl_ver), SDL_GetRevision(), SDL_GetPlatform());
     {
         const char *appid = SDL_getenv("SteamAppId"), *deck = SDL_getenv("SteamDeck");
@@ -293,11 +329,23 @@ int main(int argc, char **argv)
     logf_("image %s; DIMM %s", image_path, dimm_path);
 
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | (silent ? 0 : SDL_INIT_AUDIO))) {
         logf_("SDL_Init failed: %s", SDL_GetError());
         return 1;
     }
     logf_("video driver: %s", SDL_GetCurrentVideoDriver());
+    if (!silent) {
+        SDL_AudioSpec as = { SDL_AUDIO_S16, 2, 44100 };
+        audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &as, NULL, NULL);
+        if (!audio)
+            logf_("no sound: cannot open the audio device: %s", SDL_GetError());
+        else {
+            static short quiet[2 * AUDIO_TARGET];
+            SDL_PutAudioStreamData(audio, quiet, sizeof quiet);
+            SDL_ResumeAudioStreamDevice(audio);
+            logf_("audio driver: %s", SDL_GetCurrentAudioDriver());
+        }
+    }
     shared.lock = SDL_CreateMutex();
     machine_event = SDL_RegisterEvents(1);
 
@@ -481,6 +529,11 @@ int main(int argc, char **argv)
     if (failed)
         logf_("the machine did not start: see the messages above (or, on Windows, this log)");
 
+    if (audio) {
+        logf_("audio: %u frames dropped (boot, unpaced or a stall); last queue %.0f ms", audio_dropped,
+              audio_level / 44.1);
+        SDL_DestroyAudioStream(audio);
+    }
     SDL_ReleaseGPUTransferBuffer(gpu, upload);
     SDL_ReleaseGPUTexture(gpu, pic_tex);
     SDL_ReleaseWindowFromGPUDevice(gpu, win);

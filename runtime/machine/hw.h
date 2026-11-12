@@ -89,6 +89,11 @@ void hw_sound_init(void);
 int hw_sound_read(sh4 *c, u32 p, u32 *out);
 int hw_sound_write(sh4 *c, u32 p, u32 v);
 void hw_sound_stats(FILE *f);
+/* recomp: 1 = the sound chip with the game's own driver on its ARM7
+ * (runtime/sound, docs/design.md section 16); 0 = VF4debug's mailbox model.
+ * Set before hw_init. hw_sound_arm_budget: ARM instructions a sample (0: the default) */
+extern int hw_sound_chip;
+extern unsigned hw_sound_arm_budget;
 
 /* the rendering chips and the ELAN (hw_gfx.c) */
 void hw_gfx_init(void);
