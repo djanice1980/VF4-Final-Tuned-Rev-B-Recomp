@@ -1,0 +1,4 @@
+address	count	stride	name
+0c1746d4	52	4	move_commands
+0c1747a4	46	4	move_timed_commands
+0c29f6cc	80	8	move_script_ops

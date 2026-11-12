@@ -90,9 +90,21 @@ follows branches and delay slots, and emits C with labels and `goto`.
   set by the caller, as on the hardware, so code that reads or saves PR sees
   the right value.
 - **Computed jumps inside a routine** (`braf` case tables, `jmp @rN` tails):
-  the translator resolves GCC's switch idiom and the hand-written tables the
-  decomp documents, and emits a C `switch`. An unresolved target at run time
-  goes to the interpreter fallback (below) and is logged, so it can be added.
+  the translator resolves GCC's case tables (byte or word offsets after a
+  `mova`, bounded by the `cmp/hi`/`cmp/hs` on every way in, following copies
+  of the index and values a `cmp/eq` decided), switches on a constant, and
+  `mov`/`add`/`and`/`or` constants into `jsr`/`jmp`. What it cannot see
+  through is listed by hand in `translator/hints.tsv`, each row with its
+  reason (M1: the clipper's 3-bit `braf r9` ladders and one table of code
+  addresses). A jump left unresolved goes through `rt_jump`, which only
+  allows the start of a routine (a tail call).
+- **Uncached aliases**: code jumped to through P1/P2 (`0xac...`, the cache
+  routines run themselves uncached) is the same code at its P0 address.
+- **Missing entries**: a call to an address no listed routine starts at
+  makes it a routine of its own (`sub_<address>`; six newlib routines of
+  `test.bin` the decomp's list leaves out).
+- **Decided branches**: `bf/s x; slot; bt y` never falls out of the `bt`;
+  the translator drops such impossible ways (they led into data).
 - **Tail calls** into another routine (`jmp`/`bra` out of the extent) become
   a call followed by a return.
 - **Interpreter fallback.** Anything the translator does not cover (an entry
@@ -107,13 +119,16 @@ follows branches and delay slots, and emits C with labels and `goto`.
   `gbr`, `mach/macl`, `pr`, `fpscr`, `fpul`, `fr[32]` as both banks). Locals
   are cached in C variables inside a routine and written back at calls and
   exits; the compiler does the rest.
-- **FPU mode is static.** The decomp settled the SZ and PR mode of every
-  instruction: the translator tracks it through each routine as the decomp's
-  `AssignFpuContext` pass does (`fschg`, `frchg`, writes to FPSCR, the
-  delay-slot rule) and takes `meta/fpu_context.tsv` for the places where flow
-  alone gets it wrong, so each `fmov`/`fadd`/... is emitted for its known
-  width. A run-time check in debug builds compares FPSCR against the expected
-  mode at every routine entry.
+- **FPU mode is static where flow decides it.** Each routine gets a summary
+  of what it leaves in SZ and PR in terms of what it found ("as on entry",
+  "flipped", 0, 1, unknown), worked out to a fixed point over the whole call
+  graph; entry modes then come from the agreement of all call sites, with
+  routines nothing calls directly starting in GCC's mode (0, 0). FPSCR
+  loads from constants (including `lds.l @rN+` from a literal) and
+  save/restore pairs are followed. The modes are checked against
+  `meta/main/fpu_context.tsv`: 207 agree, 0 disagree. Instructions whose mode
+  stays unknown (64, in the two hand-written stack-switch routines) test FPSCR
+  at run time and carry both forms.
 - Floating-point details follow the interpreter's documented behavior (NaN
   pattern, flush-to-zero, `fsca` and `fsrra` tables, `fipr`/`ftrv` component
   order), with shared code so the two always agree.
@@ -221,9 +236,16 @@ players never to share it.
 
 ## 9. Checking that it is right
 
-- **Instruction tests**: VF4debug's interpreter checks (1.42 M cases) are run
-  through the translator as well: each case is translated, run, and its
-  state compared.
+- **Instruction tests** (`tests/lockstep`, built `-m32` next to VF4debug's
+  core, read from its checkout): every ordinary instruction word (56,294
+  cases from 49,478 words, each FPU mode static and at run time) is emitted
+  by the translator and run from random states against one step of
+  VF4debug's interpreter, comparing every register, the store queues,
+  instruction counts and the memory it addresses; FPU traps are compared
+  too. Then routines of `main.bin` (VF4debug's pure routines and
+  `tests/lockstep/routines.txt`) are called both ways, comparing the state
+  and all of RAM. A broken instruction is caught on its first state (checked
+  by planting one).
 - **Lockstep against the interpreter**: a development mode runs the game in
   the translated build and records each routine entry and exit with the
   registers; the same recording from VF4debug on the same inputs must be
@@ -240,7 +262,7 @@ players never to share it.
 | | What | Done when |
 |---|---|---|
 | M0 | Repository, llvm-mingw cross build from CachyOS, SDL3, an empty window exe | the exe opens a window and reads a gamepad under Proton |
-| M1 | Translator for all of `main.bin` and `test.bin` | every routine translates and compiles with no warnings; instruction tests pass |
+| M1 | Translator for all of `main.bin` and `test.bin` | every routine translates and compiles with no warnings; instruction tests pass (done 2026-11-12, section 12) |
 | M2 | Runtime with the device models, headless | boots to attract and plays CPU vs CPU matches; lockstep recording identical to VF4debug's |
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton |
 | M4 | Sound | music, voices and effects; then the DSP |
@@ -261,3 +283,25 @@ players never to share it.
   shortcut to each Steam user's `shortcuts.vdf` (with Steam closed, after
   asking), and on Linux sets Proton as its compatibility tool for the Windows
   exe, or no tool for the Linux build.
+
+## 12. M1 results (2026-11-12)
+
+- `main.bin`: 6,632 routines, 432,307 instructions; 16,797 static calls,
+  3,844 through registers; 313 computed jumps resolved (11 by hint), 4 left
+  to run time: two exception-vector relays (`context_save_dispatch*`), a hook
+  pointer (`vertex_colour_group_send`) and a jump into the boot ROM
+  (`int_break_handler`). No illegal instruction reached, no bad delay slot.
+- `test.bin`: 2,120 routines (6 found as call targets), 133,930
+  instructions; 83 jumps resolved (10 by hint), 3 left to run time (the
+  same relays and hook).
+- The generated C (76 files, about 40 MB) compiles with no warnings under
+  clang (Linux), llvm-mingw (Windows) and gcc `-m32` (the lockstep build),
+  with `-Werror` on generated code in CMake (`vf4ft_gen_main`,
+  `vf4ft_gen_test`).
+- Lockstep: 1,804,564 checks, 0 failed (56,294 instruction cases x 32
+  states; 3,156 routine runs over 50 routines). The routine runs reach 53
+  routines: whole-program agreement is M2's lockstep recording.
+- Known limits carried into M2: an FPU exception that traps in the middle of
+  a routine does not stop the routine's C code (the game runs with no
+  enables and DN set, so none should); `rt_jump` only reaches routine starts;
+  interrupts are not modelled yet (`rt_event` is the host's).

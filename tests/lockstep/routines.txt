@@ -1,0 +1,19 @@
+# Routines of the main program the lockstep test calls, besides VF4debug's
+# tests/pure_routines.txt: library code with loops, calls, switches and
+# delay slots that touches only what its arguments point at. After the name,
+# one letter per argument (r4, r5, r6, r7): p an address in the scratch
+# buffer, n a length (at most 2 KiB), b a byte, i any number.
+strlen p
+strcmp pp
+strncmp ppn
+memcmp ppn
+memcpy ppn
+memset pbn
+memmove ppn
+strcpy pp
+strncpy ppn
+strchr pb
+__udivsi3_i4 ii
+__sdivsi3_i4 ii
+crc32 ipn
+adler32 ipn

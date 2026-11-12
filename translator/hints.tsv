@@ -1,0 +1,12 @@
+program	at	targets	why
+*	argb_tris_send_near_clip+0x3a	ladder*8	braf r9 into a ladder of 8 bra/nop pairs: r9 is a 3-bit clip code (one rotcl r9 per vertex in the bsr helpers), shifted by shll2
+*	argb_offset_tris_send_near_clip+0x3a	ladder*8	the same ladder
+*	lit_tris_send_near_clip+0x3a	ladder*8	the same ladder
+*	lit_offset_tris_send_near_clip+0x3a	ladder*8	the same ladder
+*	float_colour_tri_near_clip_spec+0x3a	ladder*8	the same ladder
+*	float_colour_tri_near_clip_plain+0x3a	ladder*8	the same ladder
+*	intensity_tri_near_clip+0x3a	ladder*8	the same ladder
+*	intensity_spill_tri_near_clip+0x3a	ladder*8	the same ladder
+*	bump_tri_near_clip+0x30	ladder*8	the same ladder
+*	vertex_colour_tri_near_clip+0x3a	ladder*8	the same ladder
+main	0c125df6	@0c125ff8*16	jmp @r0 through a table of 16 code addresses (index bounded by cmp/ge with 16)

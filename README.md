@@ -21,7 +21,8 @@ No game yet. The plan, with its milestones: [docs/design.md](docs/design.md).
 | Milestone | State |
 |---|---|
 | M0: cross build, window, input, Steam/Proton | Done 2026-11-12. `vf4ft.exe` runs under Proton Experimental from Steam (Direct3D 12 through vkd3d-proton by default, Vulkan too) and natively on Linux; with Steam Input on it sees exactly one controller (Steam's virtual pad) and reads stick, D-pad and buttons |
-| M1: translator | Next |
+| M1: translator | Done 2026-11-12. Both programs translate to C (6,632 + 2,120 routines) that compiles with no warnings for Windows and Linux; 1.8 million checks against VF4debug's interpreter, none failed ([details](docs/design.md#12-m1-results-2026-11-12)) |
+| M2: runtime with the hardware models, headless | Next |
 
 ## How it works
 
@@ -38,9 +39,10 @@ No game yet. The plan, with its milestones: [docs/design.md](docs/design.md).
 
 ## Development build (CachyOS / Arch)
 
-There is no game in it yet: milestone M0 is the platform layer alone, a
+There is no game in it yet: the program is M0's platform layer alone, a
 window drawn through SDL_GPU that reads keyboard and gamepads and writes
-what it sees to `vf4ft.log` beside the program.
+what it sees to `vf4ft.log` beside the program. The translated game code
+(M1, next section) is built as libraries beside it.
 
 1. Tools. Each prints a version line:
 
@@ -99,6 +101,53 @@ what it sees to `vf4ft.log` beside the program.
    exactly. `python3 -I tools/steam_shortcut.py list` shows the non-Steam
    games. Start Steam, launch the entry, and check `build/win64/vf4ft.log`:
    with Steam Input on, the pad reads "Steam virtual" (vendor 28de).
+
+## Translating the game (development, M1)
+
+The translator reads the two decrypted programs (`main.bin`, `test.bin`).
+Until the builder exists (M5) they come from a
+[decompilation](https://github.com/djanice1980/VF4-Final-Tuned-Rev-B-Decomp-Source)
+checkout beside this one (`../vf4ft-decomp/work/`, made there from the MAME
+set by its `tools/extract.sh`). Its output goes to `work/gen/`, which is
+made from your copy of the game: never commit or share it.
+
+1. Translate both programs (Python 3, no packages). Each run prints a
+   summary and writes `work/gen/<program>/report.txt`:
+
+   ```bash
+   python3 -I translator/translate.py --program main --image ../vf4ft-decomp/work/main.bin --out work/gen/main
+   ```
+
+   ```bash
+   python3 -I translator/translate.py --program test --image ../vf4ft-decomp/work/test.bin --out work/gen/test
+   ```
+
+2. Build as in steps 3 and 4 above: CMake picks up `work/gen/` and compiles
+   it into `vf4ft_gen_main` and `vf4ft_gen_test` (warnings are errors).
+
+3. The lockstep tests against VF4debug's interpreter. They need the
+   [VF4debug](https://github.com/djanice1980/VF4debug) checkout at
+   `../VF4debug` and gcc with 32-bit support; check with:
+
+   ```bash
+   pacman -Q gcc lib32-glibc lib32-gcc-libs
+   ```
+
+   If any is missing (multilib must be enabled in `/etc/pacman.conf`):
+
+   ```bash
+   sudo pacman -S --needed gcc lib32-glibc lib32-gcc-libs
+   ```
+
+   Then build and run (about 3 minutes; the last line is the verdict):
+
+   ```bash
+   make -C tests/lockstep -j16 test
+   ```
+
+`meta/` holds the routine list and FPU modes taken from the decompilation
+(addresses and names only). After the decompilation changes, refresh it with
+`python3 -I tools/sync_meta.py ../vf4ft-decomp` and translate again.
 
 ## License
 

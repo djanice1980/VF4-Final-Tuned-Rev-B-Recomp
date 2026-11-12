@@ -11,6 +11,24 @@ if(WIN32 AND NOT DEFINED SDL3_DIR)
 endif()
 find_package(SDL3 3.4 REQUIRED CONFIG COMPONENTS SDL3-shared)
 
+# The translated CPU: runtime pieces, and the code the translator made from
+# your copy of the game (work/gen, from translator/translate.py). Warnings in
+# generated code are errors: they mean the translator emitted something wrong.
+add_library(vf4ft_cpu STATIC runtime/cpu/rt_core.c runtime/cpu/sh4rt_fpu.c)
+target_include_directories(vf4ft_cpu PUBLIC runtime/cpu)
+target_compile_options(vf4ft_cpu PRIVATE -Wall -Wextra)
+
+set(VF4FT_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/work/gen" CACHE PATH "translator output (one folder per program)")
+foreach(prog main test)
+    file(GLOB gen_src CONFIGURE_DEPENDS "${VF4FT_GEN_DIR}/${prog}/*.c")
+    if(gen_src)
+        add_library(vf4ft_gen_${prog} STATIC ${gen_src})
+        target_include_directories(vf4ft_gen_${prog} PRIVATE "${VF4FT_GEN_DIR}/${prog}")
+        target_link_libraries(vf4ft_gen_${prog} PUBLIC vf4ft_cpu)
+        target_compile_options(vf4ft_gen_${prog} PRIVATE -Wall -Wextra -Werror)
+    endif()
+endforeach()
+
 add_executable(vf4ft runtime/host/main.c)
 target_link_libraries(vf4ft PRIVATE SDL3::SDL3)
 target_compile_options(vf4ft PRIVATE -Wall -Wextra)
