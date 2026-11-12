@@ -646,6 +646,25 @@ possible cross-check for the timing details, if they ever matter.
   If the chip scales the send differently, the reverb is louder or
   quieter by the same factor; a capture from the board or Flycast of the
   same scene would settle it.
+- **Compared against a board capture (2026-11-12), without a result.**
+  A playthrough captured from a real NAOMI 2 (YouTube "Virtua Fighter 4
+  Final Tuned Playthrough (Real Arcade PCB Capture)", ulNHQDq29Sk, by Yo-O,
+  through a Micomsoft SC-580N1) is an analog capture: its silences sit at
+  -68 to -70 dBFS, not at digital zero. (The "By Urien84" longplays have
+  digital-zero silences: emulator captures.) Its music runs about -22 dBFS
+  RMS with peaks at -5, close to ours, though the capture's gain is not
+  known. The reverb level could not be measured from it:
+  - the two runs never play the same sounds at the same moments: the
+    attract's pieces start up to a second apart, and the music and the
+    effects shift separately;
+  - the reverb rides on certain effects and voices, not the music, about
+    25 dB under music that is not aligned with them;
+  - look-alike sounds before the capture's quiet gaps do not match ours
+    at the sample level (correlation under 0.1).
+  The way to do it is a scene that plays the same in both, such as a
+  round intro of the same match-up, rendered by a script.
+  Scratch tools for this (findmatch, speed, fitrev, event) were not kept
+  in the repository.
 - **A word of 0 in the ring decodes to +0.5 full scale** (silence is
   0x6000). Until the DSP's own writes have swept the ring (1.5 s), parts
   of it read as a constant. The start-up's sound is dropped, so this is
