@@ -1,0 +1,17 @@
+# Built from the player's own MAME set: never commit
+work/
+build/
+install/
+
+# Game files and anything made from them
+*.chd
+*.pic
+*.bin
+*.dec
+*.exe
+*.dll
+
+# Toolchains downloaded by the scripts
+toolchain/
+
+__pycache__/
