@@ -1,4 +1,0 @@
-address	routine	file	how	calls	why
-0c0f3200	dimm_fbusy	vf4lib/libcore/src/sffs.c	hooked	2503496	file wait: when called from dimm_fclose, virtual time jumps to the next event
-0c130d40	stopwatch_usec	sdk/naomi_library/system.c	hooked	13560	frame wait: when called from render_done_wait, virtual time jumps to the next event
-0c1410e0	busy_wait_hook_noop	sdk/kamui/hooks.c	hooked	68572	frame wait: the 3D library's wait loops call it; virtual time jumps to the next event
