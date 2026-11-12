@@ -1,9 +1,9 @@
-/* The AICA sound chip: 64 channels, timers, the two interrupt controllers,
- * and the ARM7 that runs the game's sound driver (docs/design.md section
- * 16). Our own code, from the chip's public descriptions and the
- * decompilation's findings. Nothing here knows about the main CPU's
- * machine: hw_sound.c connects it. The state holds no pointers (snapshots
- * keep it as plain data). */
+/* The AICA sound chip: 64 channels, the effect DSP, timers,
+ * the two interrupt controllers, and the ARM7 that runs the game's sound
+ * driver (docs/design.md sections 16 and 18). Our own code, from the
+ * chip's public descriptions and the decompilation's findings. Nothing
+ * here knows about the main CPU's machine: hw_sound.c connects it. The
+ * state holds no pointers (snapshots keep it as plain data). */
 #ifndef VF4FT_AICA_H
 #define VF4FT_AICA_H
 

@@ -287,9 +287,8 @@ game) on its own ARM7 core and mixes 64 channels with a DSP for reverb.
   the audio thread, stepped in time with the samples.
 - Channels: PCM 8/16-bit and Yamaha ADPCM, loops, the envelope generator,
   pitch (rates as the decomp found them), pan and send levels.
-- The DSP (reverb) last, from public descriptions of the chip; until then
-  the effect sends are dropped. The game uses it (section 17); it uses
-  neither the filter nor the LFOs.
+- The DSP (reverb) last, from public descriptions of the chip (done:
+  section 18). The game uses neither the filter nor the LFOs (section 17).
 - Output through SDL3 audio at 44.1 kHz.
 
 ## 8. Builder and launcher
@@ -348,7 +347,7 @@ players never to share it.
 | M1 | Translator for all of `main.bin` and `test.bin` | every routine translates and compiles with no warnings; instruction tests pass (done 2026-11-12, section 12) |
 | M2 | Runtime with the device models, headless | boots to attract and plays CPU vs CPU matches; lockstep recording identical to VF4debug's (section 13) |
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton (done 2026-11-12, section 15) |
-| M4 | Sound | music, voices and effects (done 2026-11-12, section 17); the DSP (reverb) still to do |
+| M4 | Sound | music, voices and effects (done 2026-11-12, section 17); the DSP's reverb (section 18) |
 | M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs |
 | M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered |
 
@@ -590,12 +589,61 @@ machine as possible.
     filter data (tone word +0x10 & 0x7ff is 0);
   - the LFOs: no key-on has a depth.
   So both stay out of the model; the stats line reports any use.
-- **The effect DSP is used and is not modelled yet.** 295 of the 737
-  key-ons send to it, and the game loads a DSP program. Those sends are
-  dropped, so the sound is dry: no reverb.
-  This is the remaining sound work (section 7).
+- **The effect DSP is used**: 295 of the 737 key-ons send to it, and the
+  game loads a DSP program. At first the sends were dropped (no reverb);
+  section 18 adds the DSP.
 - **The main CPU's interrupt** is wired: MCIPD & MCIEB to the system chip's
   external interrupt bit 1. The game enables the driver's doorbell (MCIEB
   0x020), but the driver never rang it in these runs.
 - **The game's options:** the chip is the default; `--silent` gives the
   mailbox model (no sound, VF4debug's run).
+
+## 18. The effect DSP (2026-11-12)
+
+`runtime/sound/aica.c` runs the chip's effect DSP from the public
+description of its registers and instruction word: 128 steps a sample,
+TEMP (128 x 24 bits, addressed relative to MDEC_CT), MEMS, MIXS, EFREG,
+the 26-bit accumulator, SHIFT with and without saturation, and the ring
+buffer in sound RAM in the chip's 16-bit float format. No emulator's code
+was used. The FPGA Saturn core's SCSP (the predecessor's DSP) is a
+possible cross-check for the timing details, if they ever matter.
+
+- **The game's program** was read out of the registers and disassembled.
+  It is loaded once, at the start-up, and does not change. The game's own
+  code settles the points the descriptions leave open:
+  - every memory read and write is on an odd step;
+  - each read is stored into MEMS by IWT exactly two steps later;
+  - each output is written once a sample.
+  The model follows that: a read lands two steps on, and what a step
+  stores is the previous step's accumulator after SHIFT.
+- **What it does.** Send 0 (MIXS0) feeds a stereo hall reverb: early
+  reflections from about 100 ms, then a smooth decay of about 14 dB a
+  second, with left and right decorrelated. Its outputs, EF0 (left) and
+  EF1 (right), also carry the send itself at unity. Send 1 feeds a
+  saturating "fuzz" (twelve saturating doublings, then x0.17) to EF2,
+  centred. A CPU vs CPU match sends only to send 0. The ring buffer is 64K
+  words at 0x7E0000.
+- **Checked:**
+  - the float format round-trips: every word packs back to itself, and
+    every 24-bit value keeps its top 12 significant bits;
+  - the program's impulse response, run offline from a register dump, is
+    the reverb above, with nothing saturating;
+  - a match's outputs peak at 9,967 of 32,767, with no saturated results;
+  - two runs give byte-identical WAVs;
+  - the machine's hashes are the same as without the DSP (its writes to
+    sound RAM change nothing the game reads);
+  - the mailbox comparisons against VF4debug still match.
+  The DSP costs about 0.3 ms of host time a frame: its program is decoded
+  when written, not every sample.
+- **Level, an estimate.** A channel's send is scaled into MIXS so that a
+  full-scale 16-bit sample is full scale for the DSP (MIXS's 20 bits are
+  read into bits 23-4 of its 24-bit word). The game sends at IMXL 6
+  against a direct level of 15: 27 dB down, at 3 dB a step. So the reverb
+  is a quiet room under the dry sound, about 31 dB below it in a match.
+  If the chip scales the send differently, the reverb is louder or
+  quieter by the same factor; a capture from the board or Flycast of the
+  same scene would settle it.
+- **A word of 0 in the ring decodes to +0.5 full scale** (silence is
+  0x6000). Until the DSP's own writes have swept the ring (1.5 s), parts
+  of it read as a constant. The start-up's sound is dropped, so this is
+  not heard.
