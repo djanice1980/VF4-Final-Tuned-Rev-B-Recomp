@@ -13,6 +13,7 @@
 #include <string.h>
 
 volatile int machine_interrupted;
+void (*machine_host_frame)(sh4 *c);       /* recomp: see machine.h */
 machine_config cfg;
 sh4 cpu;
 u32 machine_frame;
@@ -205,6 +206,8 @@ static void vblank_event(sh4 *c, u32 arg)
     hw_gfx_frame(c);
     hw_raise(c, IRQ_VBLANK_IN);         /* the first chip's vertical blank interrupt */
     control_frame(c);
+    if (machine_host_frame)             /* recomp */
+        machine_host_frame(c);
     obs_mode_check(c);
     obs_frame_line(c);
     if (machine_interrupted && !c->stop)
@@ -312,6 +315,23 @@ int snapshot_save(const char *path)
 int snapshot_save_mem(u8 **data, size_t *size)
 {
     char *buf = NULL;
+#ifdef _WIN32
+    /* recomp: no open_memstream on Windows: a temporary file, read back */
+    FILE *f = tmpfile();
+    if (!f)
+        return -1;
+    int bad = snapshot_write(f);
+    long n = bad ? -1 : ftell(f);
+    if (n < 0 || !(buf = malloc(n ? (size_t)n : 1)) || (rewind(f), fread(buf, 1, (size_t)n, f) != (size_t)n)) {
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    *size = (size_t)n;
+    *data = (u8 *)buf;
+    return 0;
+#else
     FILE *f = open_memstream(&buf, size);
     if (!f)
         return -1;
@@ -324,6 +344,7 @@ int snapshot_save_mem(u8 **data, size_t *size)
     }
     *data = (u8 *)buf;
     return 0;
+#endif
 }
 
 static int snapshot_write(FILE *f)

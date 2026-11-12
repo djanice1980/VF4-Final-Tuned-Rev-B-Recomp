@@ -38,6 +38,9 @@ extern sh4 cpu;
 extern u32 machine_frame;         /* virtual vertical blanks since the start */
 extern char machine_stop_text[512];
 extern volatile int machine_interrupted;      /* set by Ctrl-C: the run ends at the next vertical blank */
+/* recomp: the game window's hook (runtime/host), once per vertical blank after
+ * the controller's frame step: it takes the picture and sets the inputs */
+extern void (*machine_host_frame)(sh4 *c);
 
 int machine_init(void);
 void write_reports(void);

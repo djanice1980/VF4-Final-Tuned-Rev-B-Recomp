@@ -16,14 +16,15 @@ emulator runs at play time.
 
 ## Status
 
-No game yet. The plan, with its milestones: [docs/design.md](docs/design.md).
+Playable in a window as a development build, with no sound yet (M3), from
+the decompilation's files. The plan, with its milestones: [docs/design.md](docs/design.md).
 
 | Milestone | State |
 |---|---|
 | M0: cross build, window, input, Steam/Proton | Done 2026-11-12. `vf4ft.exe` runs under Proton Experimental from Steam (Direct3D 12 through vkd3d-proton by default, Vulkan too) and natively on Linux; with Steam Input on it sees exactly one controller (Steam's virtual pad) and reads stick, D-pad and buttons |
 | M1: translator | Done 2026-11-12. Both programs translate to C (6,632 + 2,120 routines) that compiles with no warnings for Windows and Linux; 1.8 million checks against VF4debug's interpreter, none failed ([details](docs/design.md#12-m1-results-2026-11-12)) |
 | M2: runtime with the hardware models, headless | Done 2026-11-12. The translated game boots to attract and plays CPU vs CPU matches on VF4debug's hardware models, instruction for instruction the same run as VF4debug's (36,000 attract frames and two whole matches compared hash for hash); about 4 times the real hardware's speed with no picture yet ([details](docs/design.md#13-m2-results-2026-11-12)) |
-| M3: picture, input, real time | Next |
+| M3: picture, input, real time | In progress. The game runs in a window at 60 fps natively on Linux and under Proton (Direct3D 12), with keyboard and gamepads, and gives the same run as VF4debug's. The picture is VF4debug's software renderer (5.5 ms a frame in a fight). Waiting on a play test ([plan](docs/design.md#14-m3-plan-2026-11-12)) |
 
 ## How it works
 
@@ -40,10 +41,10 @@ No game yet. The plan, with its milestones: [docs/design.md](docs/design.md).
 
 ## Development build (CachyOS / Arch)
 
-There is no game in it yet: the program is M0's platform layer alone, a
-window drawn through SDL_GPU that reads keyboard and gamepads and writes
-what it sees to `vf4ft.log` beside the program. The translated game code
-(M1, next section) is built as libraries beside it.
+Steps 1 to 6 build the toolchain and the window. The game itself needs the
+translated code (M1, "Translating the game") and the decompilation's files:
+"Playing (development, M3)" below. Until the code is translated, only the
+CPU runtime is built and there is no `vf4ft` program.
 
 1. Tools. Each prints a version line:
 
@@ -82,13 +83,11 @@ what it sees to `vf4ft.log` beside the program. The translated game code
    Install). The prefix is kept in `build/proton-prefix`:
 
    ```bash
-   cd build/win64 && WINEPREFIX="$PWD/../proton-prefix" GAMEID=umu-default PROTONPATH="$HOME/.steam/steam/steamapps/common/Proton - Experimental" umu-run ./vf4ft.exe --frames 300
+   cd build/win64 && WINEPREFIX="$PWD/../proton-prefix" GAMEID=umu-default PROTONPATH="$HOME/.steam/steam/steamapps/common/Proton - Experimental" umu-run ./vf4ft.exe
    ```
 
-   Then read `build/win64/vf4ft.log`. Options: `--frames N` (stop after N
-   frames), `--gpu direct3d12|vulkan`, `--log FILE`. Keys: arrows/WASD,
-   J K L (Guard Punch Kick), Enter (Start), 5 (Coin). Quit with Esc, or
-   hold View + Menu (Back + Start) on a controller for a second.
+   Then read `build/win64/vf4ft.log`. Controls and options: "Playing
+   (development, M3)" below.
 
 6. Run it from Steam (Steam Input). Close Steam first (Steam menu, Exit),
    then add the program as a non-Steam game set to Proton Experimental:
@@ -145,6 +144,42 @@ made from your copy of the game: never commit or share it.
    ```bash
    make -C tests/lockstep -j16 test
    ```
+
+## Playing (development, M3)
+
+`build/linux/vf4ft` and `build/win64/vf4ft.exe` (steps 3 and 4, once
+`work/gen/` exists) are the game in a window. Each reads `data/main.bin`
+and `data/vf41_s.dec` beside itself. The build makes those as links to
+`../vf4ft-decomp/work/` (or `-DVF4_DECOMP=<path>`), until the builder's
+install layout (M5). Linux:
+
+```bash
+build/linux/vf4ft
+```
+
+Windows under Proton: step 5 above; from Steam: step 6. The start-up
+before the warning screen (about 97 s of nothing on the real board) runs
+as fast as it can, so the warning screen shows after 2 to 3 seconds. The
+game runs at 60 frames a second from then on. It is Japanese settings with
+coins: press Coin, then Start.
+
+| | Keyboard (player 1) | Gamepad (first: player 1, second: player 2) |
+|---|---|---|
+| Move | arrows or WASD | left stick or D-pad |
+| Guard / Punch / Kick | J / K / L | X / Y / B (West / North / East) |
+| Punch + Guard (throw) | | A (South) |
+| Start | Enter | Menu |
+| Coin | 5 (slot 1), 6 (slot 2) | View |
+| Test / Service | F2 / F3 | |
+| Fullscreen | F11 or Alt+Enter | |
+| Quit | Esc | hold View + Menu for a second |
+
+Options: `--fullscreen`, `--gpu direct3d12|vulkan`, `--frames N` (quit
+after N vertical blanks), `--unpaced` (no waiting, for measuring),
+`--real-boot` (the start-up at its real pace too), `--image FILE`,
+`--dimm FILE`, `--log FILE`. Every 600 frames `vf4ft.log` (beside the
+program) records how long the machine took per frame, on average and at
+most. No sound yet (M4). Rebinding, free play and settings are M6.
 
 ## Running the game headless (development, M2)
 

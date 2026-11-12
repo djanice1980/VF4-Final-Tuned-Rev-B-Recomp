@@ -20,6 +20,14 @@ void view_stats(FILE *f);
 /* the script's "picture FILE": the next frame the game renders goes there */
 void view_picture(const char *path);
 
+/* recomp: the game window (runtime/host) draws every frame and takes the
+ * newest picture at each vertical blank: VIEW_W x VIEW_H, 3 bytes a pixel
+ * (red, green, blue), or NULL before the game has rendered one */
+#define VIEW_W 640
+#define VIEW_H 480
+void view_host_start(void);
+const u8 *view_host_picture(void);
+
 /* called from hw_gfx.c, only while view_on is set */
 void view_list_segment(sh4 *c, u32 addr, u32 len);       /* a display list segment the ELAN is told to run */
 void view_reg_write(sh4 *c, int chip, u32 off, u32 v);   /* a write to a rendering chip's core register */

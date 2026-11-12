@@ -7,8 +7,12 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32                          /* recomp: Windows, docs/design.md section 14 */
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 
 u8 *mem_page[65536];
 u8 *mem_page_ram[65536];
@@ -48,10 +52,6 @@ int mem_area_count;
 mem_watch mem_watches[MEM_MAX_WATCH];
 int mem_watch_count;
 
-#ifndef MAP_FIXED_NOREPLACE
-#define MAP_FIXED_NOREPLACE 0x100000
-#endif
-
 int mem_init(void)
 {
     memset(mem_page, 0, sizeof mem_page);
@@ -61,6 +61,21 @@ int mem_init(void)
     mem_wpage_sync();                   /* recomp */
     return 0;
 }
+
+#ifdef _WIN32
+/* recomp: on Windows an area is one allocation with a spare 64 KiB after it
+ * (the guard), at whatever address the host gives; the mirrors and aliases
+ * are in the page table only, which is all the interpreter and the
+ * translated code use */
+static u8 *map_at(int fd, u32 addr, u32 size)
+{
+    (void)fd, (void)addr, (void)size;
+    return NULL;
+}
+#else
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
 
 static u8 *map_at(int fd, u32 addr, u32 size)
 {
@@ -74,6 +89,7 @@ static u8 *map_at(int fd, u32 addr, u32 size)
     }
     return p;
 }
+#endif
 
 /* A page of the host's own after the end of a mapping, where nothing else
  * is. The interpreter moves a word or a long word with one host access at
@@ -84,9 +100,13 @@ static u8 *map_at(int fd, u32 addr, u32 size)
  * there the bytes that spill over go nowhere, and the harness lives. */
 static void guard_after(u8 *end)
 {
+#ifdef _WIN32
+    (void)end;                          /* recomp: allocated with the area */
+#else
     void *p = mmap(end, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
     if (p != MAP_FAILED && p != (void *)end)
         munmap(p, 4096);
+#endif
 }
 
 /* once every area is there (an area's place must not be taken by its neighbour's guard) */
@@ -104,6 +124,15 @@ int mem_add_ram(const char *name, u32 phys, u32 size)
     a->name = name;
     a->phys = phys;
     a->size = size;
+#ifdef _WIN32
+    /* recomp: one allocation, the guard included */
+    a->fd = -1;
+    a->host = VirtualAlloc(NULL, (SIZE_T)size + 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!a->host) {
+        fprintf(stderr, "mem: cannot make %s: Windows error %lu\n", name, (unsigned long)GetLastError());
+        return -1;
+    }
+#else
     a->fd = memfd_create(name, 0);
     if (a->fd < 0 || ftruncate(a->fd, size) < 0) {
         fprintf(stderr, "mem: cannot make %s: %s\n", name, strerror(errno));
@@ -126,6 +155,7 @@ int mem_add_ram(const char *name, u32 phys, u32 size)
     /* the mirrors that also are host mappings: P1 and P2 */
     if (!map_at(a->fd, 0x80000000u | phys, size) || !map_at(a->fd, 0xa0000000u | phys, size))
         fprintf(stderr, "mem: a mirror of %s could not be mapped; the interpreter is not affected\n", name);
+#endif
     /* the page table: every mirror of the 29-bit physical address below P3 */
     for (u32 top = 0; top < 6; top++) {
         u32 base = (top << 29) | phys;

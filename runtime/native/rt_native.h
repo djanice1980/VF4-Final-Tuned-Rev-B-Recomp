@@ -15,6 +15,10 @@ int rt_native_init(const char *image);
  * ends the run. */
 int rt_native_run(sh4 *c);
 
+/* the names of the decompilation the machine looks up (tables.c): 0 when all
+ * are there, else says which are gone */
+int rt_native_names_check(void);
+
 /* counts for the closing lines */
 typedef struct rt_native_stats {
     unsigned long long slow_blocks;     /* rt_slow calls (an event inside a block, or a device brought it forward) */

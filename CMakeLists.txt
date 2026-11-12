@@ -32,24 +32,12 @@ foreach(prog main test)
     endif()
 endforeach()
 
-add_executable(vf4ft runtime/host/main.c)
-target_link_libraries(vf4ft PRIVATE SDL3::SDL3)
-target_compile_options(vf4ft PRIVATE -Wall -Wextra)
-
-if(WIN32)
-    # A windowed program: no console window when started from Steam or Explorer.
-    set_target_properties(vf4ft PROPERTIES WIN32_EXECUTABLE ON)
-    # Nothing from the toolchain's own DLLs: only system DLLs and SDL3.dll beside the exe.
-    target_link_options(vf4ft PRIVATE -static)
-    add_custom_command(TARGET vf4ft POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3-shared> $<TARGET_FILE_DIR:vf4ft>)
-endif()
-
-# Milestone 2: the translated game on VF4debug's machine, headless (Linux
-# for now: runtime/machine maps guest memory with memfd). Development only:
-# the machine's routine and global tables come from the decompilation, made
-# by VF4debug's own tools/gen_tables.py (docs/design.md, section 5).
-if(NOT WIN32 AND TARGET vf4ft_gen_main)
+# The machine (milestone 2 and on): VF4debug's device models (runtime/machine)
+# and the seam to the translated main program (runtime/native). Development
+# builds make its routine and global tables from the decompilation, with
+# VF4debug's own tools/gen_tables.py (docs/design.md, section 5); the player's
+# build will make them from meta/ (M5).
+if(TARGET vf4ft_gen_main)
     set(VF4_DECOMP "${CMAKE_CURRENT_SOURCE_DIR}/../vf4ft-decomp" CACHE PATH "the vf4ft-decomp checkout")
     set(VF4DEBUG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../VF4debug" CACHE PATH "the VF4debug checkout (its tools/)")
     set(machine_gen "${CMAKE_CURRENT_BINARY_DIR}/machine_gen")
@@ -59,12 +47,47 @@ if(NOT WIN32 AND TARGET vf4ft_gen_main)
         COMMENT "Routine and global tables from the decompilation"
         VERBATIM)
     file(GLOB machine_src CONFIGURE_DEPENDS runtime/machine/*.c)
-    add_executable(vf4ft_headless runtime/headless/main.c runtime/native/rt_native.c ${machine_src}
-                   "${machine_gen}/tables.c")
+    # objects, not an archive: the translated code calls back into rt_native.c
+    add_library(vf4ft_machine OBJECT runtime/native/rt_native.c ${machine_src} "${machine_gen}/tables.c")
     # runtime/machine first: its sh4.h is the one the seam sees (runtime/cpu/sh4.h)
-    target_include_directories(vf4ft_headless BEFORE PRIVATE runtime/machine runtime/native)
-    target_compile_definitions(vf4ft_headless PRIVATE "DEFAULT_DECOMP=\"${VF4_DECOMP}\"")
-    target_compile_options(vf4ft_headless PRIVATE -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${VF4FT_FP_FLAGS})
+    target_include_directories(vf4ft_machine BEFORE PUBLIC runtime/machine runtime/native)
+    target_compile_options(vf4ft_machine PRIVATE -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${VF4FT_FP_FLAGS})
     set_source_files_properties("${machine_gen}/tables.c" PROPERTIES COMPILE_OPTIONS "-O0;-g0")
-    target_link_libraries(vf4ft_headless PRIVATE vf4ft_gen_main m)
+    target_link_libraries(vf4ft_machine PUBLIC vf4ft_gen_main m)
+    if(WIN32)
+        target_link_libraries(vf4ft_machine PUBLIC pthread)    # winpthreads, from llvm-mingw (view.c's workers)
+    endif()
+
+    # The game (milestone 3): the machine on its own thread, the window, the
+    # controls. Until the install layout of M5 it reads data/main.bin and
+    # data/vf41_s.dec beside itself: links to the decompilation's files here.
+    add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c)
+    target_link_libraries(vf4ft PRIVATE SDL3::SDL3 vf4ft_machine)
+    target_compile_options(vf4ft PRIVATE -Wall -Wextra ${VF4FT_FP_FLAGS})
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/data")
+    foreach(f main.bin vf41_s.dec)
+        if(EXISTS "${VF4_DECOMP}/work/${f}" AND NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/data/${f}")
+            file(CREATE_LINK "${VF4_DECOMP}/work/${f}" "${CMAKE_CURRENT_BINARY_DIR}/data/${f}" SYMBOLIC)
+        endif()
+    endforeach()
+    if(WIN32)
+        # A windowed program: no console window when started from Steam or Explorer.
+        set_target_properties(vf4ft PROPERTIES WIN32_EXECUTABLE ON)
+        # Nothing from the toolchain's own DLLs: only system DLLs and SDL3.dll beside the exe.
+        target_link_options(vf4ft PRIVATE -static)
+        add_custom_command(TARGET vf4ft POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3-shared> $<TARGET_FILE_DIR:vf4ft>)
+    endif()
+
+    # Milestone 2: the same machine headless, with VF4debug's options and
+    # scripts, for the comparisons (tools/compare_runs.py). Linux only.
+    if(NOT WIN32)
+        add_executable(vf4ft_headless runtime/headless/main.c)
+        target_compile_definitions(vf4ft_headless PRIVATE "DEFAULT_DECOMP=\"${VF4_DECOMP}\"")
+        target_compile_options(vf4ft_headless PRIVATE -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${VF4FT_FP_FLAGS})
+        target_link_libraries(vf4ft_headless PRIVATE vf4ft_machine)
+    endif()
+else()
+    message(WARNING "no translated code in ${VF4FT_GEN_DIR}: run translator/translate.py first (README.md); "
+                    "only the CPU runtime is built")
 endif()

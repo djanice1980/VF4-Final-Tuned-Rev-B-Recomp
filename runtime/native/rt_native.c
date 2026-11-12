@@ -32,6 +32,7 @@
 #include "dispatch.h"
 #include "machine.h"
 #include "control.h"
+#include "tables.h"
 #include "rt_dispatch.h"
 #include "rt_native.h"
 
@@ -569,4 +570,36 @@ int rt_native_run(sh4 *c)
     rt_drive(c);
     rt_host_fault(c, 103, c->pc, 0);
     return STOP_FATAL;
+}
+
+/* moved here from runtime/headless/main.c (VF4debug's src/main.c), shared with the game */
+/* The names of the decompilation this program relies on. They are looked
+ * up in the tables generated at build time; when the decompilation renames
+ * one, the build still succeeds, so say so here instead of misbehaving. */
+int rt_native_names_check(void)
+{
+    static const char *const globals[] = {
+        "main_mode_no", "sub_mode_no", "game_frame_count", "vblank_count", "mode_data", "bios_signature",
+        "boot_country", "bios_rtc_seconds", "board_serial_1", "board_serial_2", "dimm_board_id_word",
+        "dimm_reply_word", "dimm_comms_mode", "mie_ident_expected"
+    };
+    static const char *const fns[] = {
+        "_start", "exception_entry", "irq_entry_via_firmware", "busy_wait_hook_noop", "stopwatch_usec",
+        "render_done_wait", "dimm_fbusy", "dimm_fclose"
+    };
+    int missing = 0;
+    for (unsigned i = 0; i < sizeof globals / sizeof globals[0]; i++)
+        if (!global_addr(globals[i])) {
+            fprintf(stderr, "vf4ft: the decompilation no longer has a global named %s\n", globals[i]);
+            missing++;
+        }
+    for (unsigned i = 0; i < sizeof fns / sizeof fns[0]; i++)
+        if (!routine_by_name(fns[i])) {
+            fprintf(stderr, "vf4ft: the decompilation no longer has a routine named %s\n", fns[i]);
+            missing++;
+        }
+    if (missing)
+        fprintf(stderr, "vf4ft: %d names this program uses are gone (renamed in the decompilation?). Find the "
+                "new names and change them in runtime/machine/ (grep for the old ones), then rebuild.\n", missing);
+    return missing;
 }

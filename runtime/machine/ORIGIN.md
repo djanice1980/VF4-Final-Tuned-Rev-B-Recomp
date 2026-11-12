@@ -31,3 +31,17 @@ What the recomp changed:
   code page marked (the interpreter, `--interp`) nothing behaves differently.
 - `observe.h` (the observed stores) and `sh4_exec.inc` (the store-queue
   flush): call `mem_code_note` before writing.
+- `machine.h`, `machine.c` (M3): `machine_host_frame`, a hook the game
+  window (`runtime/host/game_machine.c`) sets. `vblank_event` calls it after
+  the controller's frame step; it is NULL in the headless program.
+- `view.h`, `view.c` (M3): a host mode (`view_host_start`) that draws every
+  frame with no files and no pipe, and `view_host_picture`, the newest
+  picture (`VIEW_W` x `VIEW_H` RGB). Windows: the CPU count from winpthreads,
+  `_mkdir`, no `SIGPIPE`.
+- `mem.c` (M3, Windows only): each RAM area is one `VirtualAlloc` with its
+  guard after it. The mirrors and aliases are in the page table only, with
+  no host mappings at guest addresses.
+- `hw_cart.c` (M3, Windows only): the DIMM image as a copy-on-write file
+  view (`PAGE_WRITECOPY`), as the private `mmap` on Linux.
+- `machine.c` (M3, Windows only): `snapshot_save_mem` goes through a
+  temporary file, since Windows has no `open_memstream`.

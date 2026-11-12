@@ -81,9 +81,13 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <direct.h>                     /* recomp: _mkdir */
+#endif
 
 #define VW 640                          /* the screen */
 #define VH 480
+_Static_assert(VW == VIEW_W && VH == VIEW_H, "view.h");     /* recomp */
 #define FBW 1024                        /* the largest target a pass can have */
 #define FBH 1024
 #define VRAM1 0x04000000u               /* the first chip's video memory, texture addresses as offsets */
@@ -101,6 +105,7 @@ static const char *pipe_cmd;            /* --view-cmd / --live / --video: raw RG
 static FILE *pipe_f;
 static int pipe_fps = 60;
 static int realtime;                    /* --realtime: 60 vertical blanks a second of real time */
+static int host_mode;                   /* recomp: the game window draws every frame (view_host_start) */
 static int marks;                       /* --view-marks: where the game itself says the fighters are */
 static u32 view_from;                   /* --view-from N: nothing before this vertical blank */
 static int threads_wanted;              /* --view-threads N */
@@ -169,7 +174,11 @@ static void pool_run(void (*fn)(int, void *), int items, void *arg)
     if (items <= 0)
         return;
     if (!pool.made) {
+#ifdef _WIN32
+        long cpus = pthread_num_processors_np();       /* recomp: Windows (winpthreads) */
+#else
         long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
         int want = threads_wanted ? threads_wanted : cpus > 8 ? 8 : (int)cpus;
         if (want > MAX_THREADS)
             want = MAX_THREADS;
@@ -2509,7 +2518,9 @@ static void pipe_open(void)
 {
     if (!pipe_cmd || pipe_f)
         return;
+#ifdef SIGPIPE                         /* recomp: none on Windows */
     signal(SIGPIPE, SIG_IGN);
+#endif
     fflush(stdout);
     fflush(stderr);
     pipe_f = popen(pipe_cmd, "w");
@@ -2562,7 +2573,7 @@ static scene *scene_open(u32 key)
 static void lists_begin(int pass)
 {
     u32 key = view_core_reg(0, 0x124) & 0x00fffffcu;
-    int active = (png_dir || pipe_cmd) && machine_frame >= view_from, want, regular = 0;
+    int active = (png_dir || pipe_cmd || host_mode) && machine_frame >= view_from, want, regular = 0;   /* recomp: host_mode */
     if (!pass) {
         regular = active && screens % (u32)every == 0;
         want = pic_request || regular;
@@ -3102,12 +3113,30 @@ int view_init(void)
                  pipe_fps, file);
         pipe_cmd = cmd;
     }
+#ifdef _WIN32
+    if (png_dir && _mkdir(png_dir) && errno != EEXIST) {       /* recomp: Windows */
+#else
     if (png_dir && mkdir(png_dir, 0777) && errno != EEXIST) {
+#endif
         perror(png_dir);
         return -1;
     }
     view_start();
     return 0;
+}
+
+/* recomp: the game window (runtime/host): every frame drawn, no files, no pipe */
+void view_host_start(void)
+{
+    host_mode = 1;
+    every = 1;
+    view_start();
+}
+
+/* recomp: the newest picture (VIEW_W x VIEW_H, RGB), or NULL before the first */
+const u8 *view_host_picture(void)
+{
+    return shown_valid ? shown : NULL;
 }
 
 /* the script's "picture FILE": the next frame the game renders is drawn

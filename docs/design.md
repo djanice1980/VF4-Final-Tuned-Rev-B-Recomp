@@ -243,6 +243,16 @@ builds; the player's build will make them from `meta/` instead (M5).
 | Graphics | `hw_gfx.c` + new renderer | section 6 |
 | Sound | new | section 7 |
 
+For later (added 2026-11-12, not yet read):
+
+- Card readers: the arcade-projects.com thread on a card reader emulator for
+  Naomi 2 / Chihiro / Triforce games (Initial D3, WMMT, Mario Kart, F-Zero AX),
+  <https://www.arcade-projects.com/threads/naomi-2-chihiro-triforce-card-reader-emulator-initial-d3-wmmt-mario-kart-f-zero-ax.814/>.
+  Worth reading when cards are done (M6), to compare against `hw_card.c`.
+- Network: Flycast's VF.NET service, <https://vfnet.flyca.st/ui/>. Worth
+  looking at as an online option in place of "unplugged". Before doing any of
+  this, check what it expects from a client and whether it can be used.
+
 ## 6. Graphics
 
 The game sends display lists to the ELAN (Naomi 2's geometry chip) and
@@ -424,3 +434,63 @@ players never to share it.
   against the translation. Many call routines with made-up arguments
   through the controller's `call`, which has not been tried on the native
   runtime. Real time, picture, input and sound are M3 and M4.
+
+## 14. M3 plan (2026-11-12)
+
+How the M2 machine becomes something you play, with as little change to the
+machine as possible.
+
+- **Time stays virtual and is paced at the vertical blank.** The machine runs
+  exactly as in M2: cycles, events, the BIOS stand-in's time jumps. One
+  `recomp:` hook in `machine.c`'s `vblank_event`, `machine_host_frame`, runs
+  once per vertical blank on the machine's thread. It hands over the picture,
+  applies the newest input, and waits until that frame is due on the host
+  clock (60 frames a second, `FRAME_CYCLES`). If the run falls more than a
+  quarter second behind (a long load), it drops the debt instead of
+  catching up in a burst. The start-up before the warning screen
+  (WARNING.INIT, 5,832 vertical blanks, about 97 s with nothing on screen)
+  runs unpaced unless `--real-boot` is given. A frame takes about 1 ms of CPU in attract (section
+  13) plus about 1.3 ms for the software picture, so there is room.
+  As a result, a run depends only on the input set at each vertical blank.
+  The same per-frame input gives the same run, so a play session can be
+  recorded and checked against VF4debug like the M2 scripts.
+- **Two threads.** The machine runs on its own thread (`rt_native_run`, no
+  script). The main thread runs SDL: events, input and presenting. They
+  share one mutex-guarded record: the newest picture with its frame number,
+  and the input state. Quit sets `machine_interrupted`, which stops the run at
+  the next vertical blank, and then the main thread joins the machine thread.
+  Moving or resizing the window, or a slow present, does not stall the game.
+- **Picture: `view.c` for now.** The software renderer draws every frame on
+  the machine's thread with its own worker pool. A `recomp:` "host" mode turns
+  it on with no files and no pipe. The hook copies the 640x480 picture
+  (`shown`). The main thread uploads it to an SDL_GPU texture and blits it to
+  the swapchain, scaled to the window at 4:3 with black bars
+  (`SDL_BlitGPUTexture`, linear filter), so no shaders are needed yet. Vsync
+  on; the window shows the newest frame at each refresh. The GPU renderer of
+  section 6 replaces the software picture later; it does not block M3.
+- **Input.** Keyboard and gamepads (Steam Input arrives as a gamepad) map onto
+  `inputs` (`control.h`): player 1 on the keyboard and the first gamepad,
+  player 2 on a second gamepad. Stick and D-pad give the directions. The face
+  buttons give Guard, Punch and Kick, and South gives Punch + Guard (the
+  throw). Start, Coin, Test and Service have keys (F2 Test and F3 Service).
+  The table is in the README. A coin is the
+  coin switch's rising edge, counted into `inputs.coins` as the controller
+  script does. Free play and the saved setting are M6.
+- **Windows.** The machine code builds with llvm-mingw:
+  - `mem.c`: each RAM area is one `VirtualAlloc` with a spare page after it
+    (the guard). The mirrors (P1, P2, aliases) live only in the page table,
+    which the interpreter and the translated code both use. No code reads
+    guest memory through host addresses equal to guest addresses.
+  - `hw_cart.c`: a copy-on-write file mapping of the DIMM image
+    (`PAGE_WRITECOPY`), the same as Linux's private `mmap`.
+  - `view.c`: the CPU count from `GetSystemInfo`, and no pipe viewer on
+    Windows. The worker pool keeps pthreads (llvm-mingw ships winpthreads).
+
+  The routine and global tables (`tables.c`) are still generated from the
+  decompilation on the build machine, as for the headless build. The player's
+  build makes them from `meta/` in M5.
+- **Programs.** `vf4ft` (the M0 window) becomes the game: the M0 host plus a
+  machine thread. `vf4ft_headless` stays as it is for the comparisons. The
+  game reads the image and the DIMM file from the same places as the headless
+  build (`--decomp`, `--image`, `--dimm`, or the environment), until M5's
+  install layout.

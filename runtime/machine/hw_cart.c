@@ -25,11 +25,15 @@
 #include "net.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <string.h>
+#ifdef _WIN32                          /* recomp: Windows, docs/design.md section 14 */
+#include <windows.h>
+#else
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 typedef struct cart_state {
     u32 ctrl, addr_lo;          /* 0x5f7000, 0x5f7004 */
@@ -161,6 +165,38 @@ int hw_cart_init(const char *path)
     event_register(dma_end_event, "cartridge DMA end");
     image = NULL;
     image_size = 0;
+#ifdef _WIN32
+    /* recomp: a copy-on-write view of the file, as the private mmap below */
+    wchar_t wpath[1024];
+    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 1024)) {
+        fprintf(stderr, "vf4debug: the DIMM image's path is too long: %s\n", path);
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "vf4debug: cannot open the DIMM image %s: Windows error %lu\n", path,
+                (unsigned long)GetLastError());
+        return -1;
+    }
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 0x1000000 || sz.QuadPart > 0xffffffffll) {
+        fprintf(stderr, "vf4debug: %s is too small to be the DIMM image\n", path);
+        CloseHandle(h);
+        return -1;
+    }
+    HANDLE map = CreateFileMappingW(h, NULL, PAGE_WRITECOPY, 0, 0, NULL);
+    void *m = map ? MapViewOfFile(map, FILE_MAP_COPY, 0, 0, 0) : NULL;
+    if (map)
+        CloseHandle(map);
+    CloseHandle(h);
+    if (!m) {
+        fprintf(stderr, "vf4debug: cannot map %s: Windows error %lu\n", path, (unsigned long)GetLastError());
+        return -1;
+    }
+    image_size = (u32)sz.QuadPart;
+    image = m;
+    return 0;
+#else
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         fprintf(stderr, "vf4debug: cannot open the DIMM image %s: %s\n"
@@ -184,4 +220,5 @@ int hw_cart_init(const char *path)
     }
     image = m;
     return 0;
+#endif
 }
