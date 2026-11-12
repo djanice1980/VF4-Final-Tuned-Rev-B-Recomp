@@ -82,6 +82,19 @@ what it sees to `vf4ft.log` beside the program.
    frames), `--gpu direct3d12|vulkan`, `--log FILE`. Keys: arrows/WASD,
    J K L (Guard Punch Kick), Enter (Start), 5 (Coin), Esc quits.
 
+6. Run it from Steam (Steam Input). Close Steam first (Steam menu, Exit),
+   then add the program as a non-Steam game set to Proton Experimental:
+
+   ```bash
+   python3 -I tools/steam_shortcut.py add build/win64/vf4ft.exe --name "VF4 Final Tuned (recomp test)"
+   ```
+
+   It backs up `shortcuts.vdf` and `config.vdf` beside themselves
+   (`*.vf4ft-backup-<time>`) and changes nothing if it cannot read them
+   exactly. `python3 -I tools/steam_shortcut.py list` shows the non-Steam
+   games. Start Steam, launch the entry, and check `build/win64/vf4ft.log`:
+   with Steam Input on, the pad reads "Steam virtual" (vendor 28de).
+
 ## License
 
 MIT, for this project's own work: see [LICENSE](LICENSE). The game and
