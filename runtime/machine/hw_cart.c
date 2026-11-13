@@ -9,8 +9,11 @@
  * queue, the decompression.
  *
  * The data is the decrypted DIMM image of the decompilation's work
- * directory (work/vf41_s.dec), opened read-only; the game's rare writes to
- * the board's memory (its network log) go to a private copy in memory.
+ * directory (work/vf41_s.dec), opened read-only; writes into the image go
+ * to a private copy in memory. recomp: the board's memory above the image,
+ * 0x0f000000 on (where the game keeps its network-check log), is
+ * hw_dimm_net.c's window, which is there whether or not the network side
+ * is modelled.
  *
  * Register layout as the decompiled sffs.c uses it (and as the board's
  * public documentation gives it): 0x5f7000 address high bits with mode

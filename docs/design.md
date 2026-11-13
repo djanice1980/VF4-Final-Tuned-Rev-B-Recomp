@@ -1869,3 +1869,53 @@ and a click on Support on Ko-fi opened the page and closed it.
 
 Not tried: a real mouse, and a density other than 1 (a scaled Wayland
 desktop running the native build).
+
+## 32. The DIMM board's memory above the image (2026-11-13)
+
+David asked what the red block behind the first letter of the boot's
+network check screen was. The same screen read RESPONSE TIME = -1 FRAMES
+and MODE = -1.
+
+**Cause (ours, not the game's):** the game keeps its network-check log in
+the DIMM board's own memory. `net_log_storage_init` puts it at the media
+limit, 0x0F000000; `game_boot` saves a record there before the screen
+(`net_log_status_write`, `net_log_save`: `dimm_write` of 0xB5C bytes at
+0x0F004000 through the cartridge port), and the screen reads it back every
+frame (`net_log_current_draw`, `net_log_read`, `dimm_read`). VF4debug's
+cartridge model (`runtime/machine/hw_cart.c`) has memory only as far as
+the image, which ends at exactly 0x0F000000, and `hw_dimm_net.c` modelled
+the top 16 MiB only while the network side was on (off by default). So the
+save was dropped and the read gave 0xFF bytes: -1 for the numbers, and a
+status text (+0xA38, the record's last 292 bytes) with no terminating zero.
+`net_log_record_draw` prints it with `%s`, so the text ran on into the
+stack past the record: a return address (0x0C020696) and a stack pointer
+(0x0DFFBFB4) whose bytes hold 0x0D, a carriage return to the line's start,
+then 0x1F, the font's glyph 31, a red block, which landed on the R of
+RECEIVE STATUS.
+
+Shown by: a temporary probe in the view printed every triangle over that
+pixel (the glyph 31 quad, from list address 0x0BBC0E80, beside the R); a
+zero poked over the 0x1F byte took the block away, one byte later did not.
+
+**Fix:** the window's memory (`hw_dimm_net.c`, 0x0F000000-0x0FFFFFFF, zero
+at power-on, kept in the snapshots as before) is there whether the network
+side is on or off. A real board's 256 MiB module has it either way. Off,
+the model still answers no registers, commands or interrupts. The game
+writes the record just before the screen reads it, so the start value does
+not show.
+
+**Checked:**
+- With the network side off, the game touches nothing else above the
+  image: one write and then one read a frame for the screen's 1,800 frames,
+  over a boot, the attract sequence, a coin start and a versus match
+  (temporary logging, removed).
+- The screen in the game, software and GPU renderers: RESPONSE TIME = 3600
+  FRAMES (60 SECONDS), MODE = 3, (GAME) getIPbyDNS TIME OUT, nothing on
+  the R.
+- Against VF4debug's binary (not changed): network off, the same hashes to
+  frame 4000 (the record is read at frame 4030; later hashes differ by the
+  record) and the same mode at every thousandth frame to 20,000; network
+  on (its `net_game` script, a whole match), the same 43 exchanges and the
+  same final hash.
+
+VF4debug has the same gap; it is left to that repository.

@@ -96,6 +96,12 @@ What the recomp changed:
   - `view.h`, `view.c`: `view_program_changed`, which makes the view look
     up its tables again (the function-local `done` became the file's
     `tables_done`).
+- `hw_dimm_net.c`, `hw_cart.c` (2026-11-13): the top 16 MiB of the board's
+  memory (the network model's window, 0x0F000000 on) is there whether the
+  network side is on or off; `in_window` no longer asks `ns.on`. The game
+  keeps its network-check log there, and without it the boot's check
+  screen showed -1s and a stray glyph (docs/design.md section 32). With
+  the network side off the registers still answer nothing.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

@@ -28,7 +28,16 @@
  *
  * The model is off unless asked for (--net, or "net on" as the first
  * command of a script). Off, it answers nothing and writes nothing: the
- * registers and the port behave as they did before it existed.
+ * registers behave as they did before it existed.
+ *
+ * recomp: the window's memory is there either way. It is the board's own
+ * RAM (the top 16 MiB of its 256 MiB module), not part of the network
+ * side, and the game keeps its network-check log in it with or without a
+ * network: net_log_save writes a record at 0x0f004000 and the boot's
+ * network check screen reads it back (net_log_current_draw). With the
+ * memory missing, that record read back as 0xff bytes and the screen
+ * printed -1s and, from the stack past the record's unterminated text, a
+ * stray glyph (docs/design.md section 32).
  */
 #include "net.h"
 #include "hle.h"
@@ -257,7 +266,7 @@ void net_win_write(u32 addr, const void *src, u32 n)
 
 static int in_window(u32 offset)
 {
-    return ns.on && offset >= WIN_BASE && offset - WIN_BASE < WIN_SIZE;
+    return offset >= WIN_BASE && offset - WIN_BASE < WIN_SIZE;   /* recomp: on or off (see the top) */
 }
 
 int hw_net_pio_read(u32 offset, u32 *out)
