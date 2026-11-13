@@ -2141,6 +2141,42 @@ static void shot_fake(void)
     }
 }
 
+/* The window's first size and its smallest. SDL's window units are logical
+ * on Wayland (the desktop scales them) but pixels on Windows and X11, where
+ * SDL_GetDisplayContentScale is the desktop's scale (SDL's README-highdpi):
+ * the page times that scale. Under Wine and Proton the scale is Wine's own
+ * (96 dpi, 1.0, unless the prefix says otherwise), not the Linux desktop's,
+ * so on a 4K screen scaled 175% that alone leaves the window about 550 x 340
+ * as the desktop measures it: the window is also at least half the usable
+ * height of the screen, in the page's shape, and at most 90% of it. */
+static float win_scale = 1.0f;     /* for the log */
+static SDL_Rect win_usable;
+
+static void first_size(int *w, int *h, int *min_w, int *min_h)
+{
+    SDL_DisplayID d = SDL_GetPrimaryDisplay();
+    float cs = d ? SDL_GetDisplayContentScale(d) : 0.0f;
+    if (!(cs >= 0.5f && cs <= 8.0f))
+        cs = 1.0f;
+    SDL_Rect u = {0, 0, 0, 0};
+    if (!d || !SDL_GetDisplayUsableBounds(d, &u) || u.w < 320 || u.h < 200)
+        u.w = u.h = 0;
+    float fh = LH * cs;
+    if (u.h && fh < u.h * 0.5f)
+        fh = u.h * 0.5f;
+    float fw = fh * LW / LH;
+    if (u.w && fw > u.w * 0.9f)
+        fw = u.w * 0.9f, fh = fw * LH / LW;
+    if (u.h && fh > u.h * 0.9f)
+        fh = u.h * 0.9f, fw = fh * LW / LH;
+    *w = (int)fw;
+    *h = (int)fh;
+    *min_w = SDL_min((int)(640 * cs), *w);
+    *min_h = SDL_min((int)(400 * cs), *h);
+    win_scale = cs;
+    win_usable = u;
+}
+
 int main(int argc, char **argv)
 {
     const char *opt_game = NULL, *opt_pick_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL,
@@ -2168,12 +2204,15 @@ int main(int argc, char **argv)
     }
     if (!shot_page || shot_scale < 1 || shot_scale > 4)
         shot_scale = 1;     /* --shot-scale: the window made K times as big, as on a high-DPI screen */
-    if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", (int)LW * shot_scale, (int)LH * shot_scale,
+    int win_w = (int)LW * shot_scale, win_h = (int)LH * shot_scale, min_w = 640, min_h = 400;
+    if (!shot_page)
+        first_size(&win_w, &win_h, &min_w, &min_h);     /* pictures keep the page's own size */
+    if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", win_w, win_h,
                                      SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, &win, &ren)) {
         SDL_Log("window: %s", SDL_GetError());
         return 1;
     }
-    SDL_SetWindowMinimumSize(win, 640, 400);
+    SDL_SetWindowMinimumSize(win, min_w, min_h);
     SDL_SetRenderVSync(ren, 1);
     if (ui_init(ren)) {
         SDL_Log("ui: %s", SDL_GetError());
@@ -2197,6 +2236,9 @@ int main(int argc, char **argv)
     say("window: SDL %d.%d.%d, renderer %s, video %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MINOR(SDL_GetVersion()), SDL_VERSIONNUM_MICRO(SDL_GetVersion()),
         SDL_GetRendererName(ren), SDL_GetCurrentVideoDriver());
+    if (!shot_page)
+        say("window: %d x %d to start (display scale %.2f, usable area %d x %d)", win_w, win_h, win_scale,
+            win_usable.w, win_usable.h);
     say("install folder: %s", game);
     steam_setup();
     upd_startup();

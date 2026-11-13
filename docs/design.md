@@ -1661,3 +1661,41 @@ and hides it with `SteamGameId` set; the Windows launcher hides it under
 umu-run (through `SteamGameId`) and under plain Wine with no Steam
 variables (through Wine). Not tried: Steam itself on Windows, whose launch
 variables are expected to be the same ones.
+
+## 28. The launcher's first window size (2026-11-13)
+
+David's report: under CachyOS (KDE, a 4K screen scaled 175%) the launcher
+opened small. The Windows launcher under Proton is an X11 window through
+Xwayland, and KWin lets X11 programs scale themselves. SDL's window units
+are logical on Wayland but pixels on Windows and X11, where
+`SDL_GetDisplayContentScale` gives the desktop's scale (SDL's
+README-highdpi); the launcher asked for 960 x 600 and applied no scale. So:
+
+- On a high-DPI Windows PC it opened small too (our bug).
+- Under Wine and Proton the scale SDL sees is Wine's (`LogPixels` 96 in
+  the prefix, scale 1.00), not the desktop's: a probe gave 3840 x 2160 at
+  1.00 under both, so the content scale alone cannot fix it there.
+
+`first_size` makes the window the page times the content scale, at least
+half the screen's usable height (in the page's 8:5 shape), and no more than
+90% of the usable area; the smallest size is 640 x 400 times the content
+scale. Pictures (`--shot`) keep the page's own size. `launcher.log` says
+the size it chose, the scale and the usable area.
+
+**Checked** in a headless KWin (`kwin_wayland --virtual` with its own
+D-Bus session and config folder; the output's scale set through its
+`kwinoutputconfig.json`, since `--scale` alone made the output larger at
+scale 1). KWin's own measure of the window, on a 3840 x 2160 screen at 175%
+(2194 x 1234 desktop units):
+
+| launcher | before | now |
+|---|---|---|
+| Windows, Proton (umu-run) | 960 x 600 pixels, about 549 x 343 | 1728 x 1080 pixels, 987 x 617 |
+| Linux, X11 | 960 x 600 pixels, about 549 x 343 | 1728 x 1080 pixels (scale 1.75), 987 x 617 |
+| Linux, Wayland | 960 x 600 | 987 x 617 |
+
+And on a 1920 x 1080 screen at 100% with a Wine prefix set to 144 dpi (as
+a Windows PC at 150%): 1440 x 900, the page times 1.5. Not tried: a real
+Windows PC, a Steam Deck, and moving the window between screens of
+different scales (not changed here).
+
