@@ -434,6 +434,40 @@ void ui_image(SDL_Texture *t, float x, float y, float w, float h)
     SDL_RenderTexture(ren, t, NULL, &(SDL_FRect){ x0, y0, px(x + w) - x0, py(y + h) - y0 });
 }
 
+/* PNGs made into textures, by their data (a failed one is kept as NULL, so
+ * it is not tried again every frame) */
+static struct { const unsigned char *png; SDL_Texture *t; } pngs[4];
+static int npngs;
+
+int ui_png(const unsigned char *png, size_t n, float x, float y, float w, float h)
+{
+    int i = 0;
+    while (i < npngs && pngs[i].png != png)
+        i++;
+    if (i == npngs) {
+        if (npngs == (int)SDL_arraysize(pngs))
+            return 0;
+        SDL_Texture *t = NULL;
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+        SDL_Surface *s = SDL_LoadPNG_IO(SDL_IOFromConstMem(png, n), true);
+        if (s) {
+            t = SDL_CreateTextureFromSurface(ren, s);
+            SDL_DestroySurface(s);
+            if (t)
+                SDL_SetTextureScaleMode(t, SDL_SCALEMODE_LINEAR);
+        }
+#else
+        (void)n;
+#endif
+        pngs[npngs].png = png;
+        pngs[npngs++].t = t;
+    }
+    if (!pngs[i].t)
+        return 0;
+    ui_image(pngs[i].t, x, y, w, h);
+    return 1;
+}
+
 /* ---- icons: distance functions, in units of the icon's box (0..1) ---- */
 
 typedef struct { float x, y; } v2;
@@ -603,7 +637,10 @@ void ui_quit(void)
         SDL_DestroyTexture(disks[i].t);
     for (int i = 0; i < nicons; i++)
         SDL_DestroyTexture(icons[i].t);
-    nsheets = ndisks = nicons = 0;
+    for (int i = 0; i < npngs; i++)
+        if (pngs[i].t)
+            SDL_DestroyTexture(pngs[i].t);
+    nsheets = ndisks = nicons = npngs = 0;
     ren = NULL;
 }
 

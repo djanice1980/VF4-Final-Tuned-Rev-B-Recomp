@@ -80,6 +80,13 @@ void ui_round_line(float x, float y, float w, float h, float r, float t, SDL_Col
 void ui_icon(int icon, float cx, float cy, float size, SDL_Color c);
 /* a texture over a logical rectangle */
 void ui_image(SDL_Texture *t, float x, float y, float w, float h);
+/* a PNG in the program over a logical rectangle (SDL 3.4's PNG loader; the
+ * texture is kept until ui_quit). 0 when it cannot be drawn (an older SDL,
+ * or a damaged PNG): the caller then draws something else */
+int ui_png(const unsigned char *png, size_t n, float x, float y, float w, float h);
+/* kofi_badge.c (tools/make_kofi.py): Ko-fi's "Support me on Ko-fi" button, 672 x 356 */
+extern const unsigned char ui_kofi_badge_png[];
+extern const size_t ui_kofi_badge_png_size;
 
 /* ---- input glyphs ---- */
 /* what the hints show: the keyboard's keys or a gamepad's buttons, in the

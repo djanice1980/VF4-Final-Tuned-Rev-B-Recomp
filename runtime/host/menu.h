@@ -7,7 +7,8 @@
  * restart are here too, so a player with only a gamepad (the Steam Deck)
  * can reach the operator's test menu: in it the operator bar turns A and X
  * into Test and Service. A release's game also has Check for updates
- * (updates.h).
+ * (updates.h). Support on Ko-fi opens the author's Ko-fi page, and the
+ * first start shows a notice about it, once (docs/design.md section 26).
  *
  * This file draws and keeps the menu's state (with runtime/ui); main.c
  * pauses the machine, reads the controls, and puts the drawing over the
@@ -22,6 +23,9 @@
 #define MENU_MIN_W 640      /* the window's smallest size: the menu fits */
 #define MENU_MIN_H 400
 
+#define MENU_KOFI_URL "https://ko-fi.com/P5P81EV1M0"
+#define MENU_KOFI_SHOWN "ko-fi.com/P5P81EV1M0"      /* as the menu shows it, to type in elsewhere */
+
 /* what the player asks of it */
 enum { MENU_UP, MENU_DOWN, MENU_LEFT, MENU_RIGHT, MENU_OK, MENU_BACK, MENU_PREV, MENU_NEXT };
 
@@ -34,6 +38,8 @@ enum {
     MENU_OPERATOR,          /* close it and show the operator bar (in the test menu already) */
     MENU_RESTART,           /* close it: the game starts again from power on */
     MENU_QUIT,
+    MENU_KOFI,              /* open MENU_KOFI_URL in the browser, then menu_kofi() */
+    MENU_KOFI_CLOSE,        /* the same, and close it (the notice's Support on Ko-fi) */
 };
 
 /* how this run started: settings that change only at the next start are
@@ -46,6 +52,11 @@ typedef struct menu_run {
 
 /* opens it on s (the settings in use, changed in place) */
 void menu_open(settings *s, const menu_run *run);
+/* opens it as the first start's notice instead: Ko-fi, with Support on
+ * Ko-fi and Close */
+void menu_open_notice(settings *s, const menu_run *run);
+/* what opening the Ko-fi page did (1 opened, 0 not), for the menu to say */
+void menu_kofi(int opened);
 
 /* a command; returns MENU_* */
 int menu_command(int cmd);

@@ -11,19 +11,22 @@ enum { TAB_GAME, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
 static const char *const tab_names[TABS] = { "Game", "Picture", "Sound", "Controls" };
 
 /* a row: an option (options.h), one of these actions, or a control */
-enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_QUIT, A_CONTROL };
+enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_QUIT, A_CONTROL };
 
-static const int tab_rows[TABS][8] = {
-    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_UPDATES, A_QUIT, -1 },
+#define ROWS 10
+static const int tab_rows[TABS][ROWS] = {
+    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_QUIT, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
-static int shown_rows[TABS][8], nshown[TABS];   /* tab_rows without Updates outside a release folder */
+static int shown_rows[TABS][ROWS], nshown[TABS];   /* tab_rows without Updates outside a release folder */
 
 static settings *s;
 static menu_run run;
 static settings before;     /* as it was when opened */
 static int tab, row, top, armed = -1; /* armed: Restart or Quit, chosen once (the second choice does it) */
+static int notice, notice_focus;    /* the first start's Ko-fi notice; its buttons: 0 Support on Ko-fi, 1 Close */
+static int kofi_said = -1;          /* the Ko-fi page was opened (1) or not (0) since the menu opened */
 
 void menu_open(settings *cfg, const menu_run *r)
 {
@@ -33,12 +36,26 @@ void menu_open(settings *cfg, const menu_run *r)
     tab = TAB_GAME;
     row = top = 0;
     armed = -1;
+    notice = 0;
+    kofi_said = -1;
     for (int t = 0; t < TABS; t++) {
         nshown[t] = 0;
-        for (int i = 0; i < 8 && tab_rows[t][i] >= 0; i++)
+        for (int i = 0; i < ROWS && tab_rows[t][i] >= 0; i++)
             if (tab_rows[t][i] != A_UPDATES || gu_state() != GU_OFF)
                 shown_rows[t][nshown[t]++] = tab_rows[t][i];
     }
+}
+
+void menu_open_notice(settings *cfg, const menu_run *r)
+{
+    menu_open(cfg, r);
+    notice = 1;
+    notice_focus = 1;       /* Close: a button pressed as the notice comes up opens no browser */
+}
+
+void menu_kofi(int opened)
+{
+    kofi_said = opened != 0;
 }
 
 int menu_changed(void)
@@ -86,6 +103,17 @@ static int change(int d)
 
 int menu_command(int cmd)
 {
+    if (notice) {
+        switch (cmd) {
+        case MENU_UP:
+        case MENU_DOWN:
+        case MENU_LEFT:
+        case MENU_RIGHT: notice_focus ^= 1; return MENU_STAY;
+        case MENU_OK: return notice_focus == 0 ? MENU_KOFI_CLOSE : MENU_RESUME;
+        case MENU_BACK: return MENU_RESUME;
+        default: return MENU_STAY;
+        }
+    }
     int was_armed = armed;
     armed = -1;
     switch (cmd) {
@@ -111,6 +139,7 @@ int menu_command(int cmd)
             }
             return row_id(row) == A_RESTART ? MENU_RESTART : MENU_QUIT;
         case A_UPDATES: gu_press(); return MENU_STAY;
+        case A_KOFI: return MENU_KOFI;
         case A_CONTROL: return MENU_STAY;
         default: return change(1);
         }
@@ -119,6 +148,59 @@ int menu_command(int cmd)
 }
 
 /* ---- drawing ---- */
+
+/* Ko-fi's badge, w wide (its own shape: 672 x 356); a plain button in its
+ * color when SDL cannot read PNGs (before 3.4) */
+static float kofi_badge(float x, float y, float w)
+{
+    float h = w * 356 / 672;
+    if (!ui_png(ui_kofi_badge_png, ui_kofi_badge_png_size, x, y, w, h)) {
+        ui_round(x, y, w, h, h * 0.2f, (SDL_Color){ 255, 90, 22, 255 });
+        ui_text_in(UI_BOLD, h * 0.2f, x, y + h / 2, w, 1, 0, (SDL_Color){ 255, 255, 255, 255 },
+                   "Support me on Ko-fi");
+    }
+    return h;
+}
+
+/* a button of the notice; focused, it is in the accent */
+static float notice_button(float x, float y, const char *label, int on)
+{
+    float w = ui_text_w(UI_MEDIUM, 16, label) + 52;
+    ui_round(x, y, w, 46, 12, on ? UI_ACCENT : UI_RAISED);
+    ui_text_in(UI_MEDIUM, 16, x, y + 23, w, 1, 0, on ? UI_ON_ACCENT : UI_TEXT, label);
+    return w;
+}
+
+/* the first start's notice (menu_open_notice), like the author's pcbview's */
+static void draw_notice(void)
+{
+    const float W = 620, H = 512, X = (1180 - W) / 2, Y = (680 - H) / 2, P = 34;
+    ui_round_line(X, Y, W, H, 20, 1, UI_LINE, UI_PANEL);
+    ui_text(UI_BOLD, 21, X + P, Y + 44, UI_TEXT, "Support this recomp");
+    float y = Y + 84;
+    y += 23 * (float)ui_wrap(UI_REGULAR, 15.5f, X + P, y, W - 2 * P, 23, UI_MUTED,
+                             "This recomp of Virtua Fighter 4 Final Tuned is free. If you enjoy it, you can "
+                             "support its development on Ko-fi.");
+    float bw = 250;
+    y += kofi_badge(X + (W - bw) / 2, y, bw) + 26;
+    ui_text_in(UI_MEDIUM, 15, X, y, W, 1, 0, UI_TEXT, MENU_KOFI_SHOWN);
+    y += 34;
+    ui_text_in(UI_REGULAR, 13.5f, X, y, W, 1, 0, UI_FAINT,
+               "Support on Ko-fi stays in the game's menu, on the Game tab.");
+    ui_text_in(UI_REGULAR, 13.5f, X, y + 20, W, 1, 0, UI_FAINT, "This notice won't show again.");
+    /* the buttons, in the middle */
+    const char *l0 = "Support on Ko-fi", *l1 = "Close";
+    float w0 = ui_text_w(UI_MEDIUM, 16, l0) + 52, w1 = ui_text_w(UI_MEDIUM, 16, l1) + 52;
+    float bx = X + (W - w0 - 14 - w1) / 2, by = Y + H - 62 - 66;
+    bx += notice_button(bx, by, l0, notice_focus == 0) + 14;
+    notice_button(bx, by, l1, notice_focus == 1);
+    ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
+    static const ui_hint hints[] = {
+        { "Choose", { UI_IN_LEFTRIGHT, UI_IN_NONE } }, { "Select", { UI_IN_OK, UI_IN_NONE } },
+        { "Close", { UI_IN_BACK, UI_IN_NONE } },
+    };
+    ui_hints(X + W - 32, Y + H - 31, 26, hints, (int)SDL_arraysize(hints), 2);
+}
 
 /* the option's value differs from the run's and it applies at the next start */
 static int later(int id)
@@ -167,6 +249,15 @@ static void about_of(int id, const char **title, const char **text, const char *
         *text = "Off and on again, as the cabinet's power switch. Records and settings are kept.";
         break;
     case A_QUIT: *title = "Quit"; *text = "Saves the records and closes the game."; break;
+    case A_KOFI:
+        *title = "Support on Ko-fi";
+        *text = "This recomp is free. If you enjoy it, you can support its development on Ko-fi: "
+                MENU_KOFI_SHOWN;
+        if (kofi_said == 1)
+            *note = "Sent to your browser.";
+        else if (kofi_said == 0)
+            *note = "No browser opened: the address is above.";
+        break;
     case A_UPDATES: {
         static char t[600], mb[48];
         *title = "Check for updates";
@@ -221,6 +312,10 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
 
     /* the panel: 1100 x 620 units in the middle */
     ui_fit(1180, 680, pw, ph);
+    if (notice) {
+        draw_notice();
+        return;
+    }
     const float X = 40, Y = 30, W = 1100, H = 620;
     ui_round_line(X, Y, W, H, 20, 1, UI_LINE, UI_PANEL);
     ui_text(UI_BOLD, 21, X + 34, Y + 40, UI_TEXT, "Virtua Fighter 4 Final Tuned");
@@ -253,6 +348,7 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         case A_TEST: w->label = run.test_program ? "Operator buttons" : "Operator test menu"; break;
         case A_RESTART: w->label = armed == A_RESTART ? "Restart the game? Choose it again" : "Restart the game"; break;
         case A_QUIT: w->label = armed == A_QUIT ? "Quit? Choose it again" : "Quit"; break;
+        case A_KOFI: w->label = "Support on Ko-fi"; break;
         case A_UPDATES: {
             static char label[96];
             int st = gu_state();
@@ -285,6 +381,10 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
     const char *title, *text, *note;
     about_of(row_id(row), &title, &text, &note);
     ui_about(X + 694, ry, W - 694 - 30, rh, title, text, note);
+    if (row_id(row) == A_KOFI) {         /* the badge at the foot of the panel */
+        float bw = 220, aw = W - 694 - 30;
+        kofi_badge(X + 694 + (aw - bw) / 2, ry + rh - 24 - bw * 356 / 672, bw);
+    }
 
     ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
     static const ui_hint hints[] = {

@@ -1,5 +1,7 @@
 # VF4 Final Tuned (Ver. B): native recomp
 
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support%20this%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/P5P81EV1M0)
+
 *Virtua Fighter 4 Final Tuned (Ver. B)* (Sega AM2, Naomi 2, 2004) as a
 native Windows program, for Windows and for Steam under Proton.
 
@@ -501,3 +503,14 @@ Others' work in it:
   domain or MIT, as its own end says.
 - SDL3, which the builder downloads and the Windows release carries as
   `SDL3.dll`: zlib license.
+- Ko-fi's "Support me on Ko-fi" button
+  ([runtime/ui/kofi_badge.png](runtime/ui/kofi_badge.png)), which Ko-fi
+  gives creators to link to their page: it links to this project's.
+
+## Support
+
+If the recomp is useful to you, you can support its development:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5P81EV1M0)
+
+(In the game: the menu's Game tab, **Support on Ko-fi**.)

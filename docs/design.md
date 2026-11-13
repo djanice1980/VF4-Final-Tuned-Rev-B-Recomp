@@ -1505,3 +1505,59 @@ only once no `update.py` runs, and the step waits for that too.
 - A game killed before it hands the update over (the request then waits
   for the next quit or launcher start) was not tried.
 - The real check needs the releases to be public (section 24).
+
+## 26. Ko-fi in the game (2026-11-13)
+
+Asked for by David: his Ko-fi page in the game's menu, and once when the
+game starts, as in his pcbview (a one-time notice at its first start, and
+Help → Support on Ko-fi).
+
+**The menu.** The Game tab has **Support on Ko-fi** before Quit. Choosing
+it opens `https://ko-fi.com/P5P81EV1M0` in the browser (`SDL_OpenURL`), and
+the menu stays open. The panel beside it says what the page is, gives the
+address to type in elsewhere (a Deck in Game Mode may have no browser to
+show), says *Sent to your browser* or *No browser opened*, and shows Ko-fi's
+own button at its foot. (On Linux SDL counts the address as sent once the
+portal or `xdg-open` has it; whether a browser then opens it, it cannot
+say.)
+
+**The notice.** The first start shows, once, a panel in the menu's place:
+*Support this recomp*, a line on what it is, Ko-fi's button, the address,
+and where to find it again. It has two buttons, **Support on Ko-fi**
+(opens the page and closes it) and **Close**. Close has the focus, so a
+button already held as it comes up opens nothing. Esc, Insert, Guide and
+Back close it too. Like the menu, it pauses the game.
+
+- It comes two seconds after the first picture: during the start-up check
+  (WARNING.INIT), which waits under it.
+- `user/kofi-notice` marks it shown and is written when it is shown, so a
+  game killed while it is up does not show it again. Removing the file
+  brings it back.
+- A test run (`--frames`, `--shot`, `--press`, `--keys` or `--unpaced`)
+  never shows it, so earlier tests' key lists still hold. `--kofi-notice N`
+  shows it at vertical blank N in any run, and writes no mark.
+
+**The button.** `runtime/ui/kofi_badge.png` is pcbview's copy of Ko-fi's
+button (672 x 356). `tools/make_kofi.py` turns it into a C array
+(`runtime/ui/kofi_badge.c`), and `ui_png` draws it with SDL 3.4's
+`SDL_LoadPNG_IO`. The texture is kept until `ui_quit`. An older SDL (a
+distribution's 3.2) has no PNG loader: the button is then a plain one in
+Ko-fi's orange with the same words.
+
+**Checked.**
+
+- Natively, with `--kofi-notice` and `--keys`: the notice, Left to Support
+  on Ko-fi, Return; then the menu's row and Return. Both opened the
+  address. Under a desktop's session bus SDL hands the address to the XDG
+  portal before it tries `xdg-open`. So for a test that must not open a
+  browser, `DBUS_SESSION_BUS_ADDRESS` points nowhere and a stand-in
+  `xdg-open` comes first in PATH; it recorded both addresses.
+- Two plain starts with a new user folder: the first showed the notice
+  after three seconds and wrote the mark, and the second did not show it.
+- Under Proton, the Windows build: the notice and the row look the same
+  (looked at 1:1). Nothing was opened there, since Wine hands the address
+  to the desktop's browser.
+
+**Not done.** A real Windows PC, a Deck in Game Mode (where the browser
+opens), and the old-SDL fallback button (both of this project's SDLs are
+3.4).

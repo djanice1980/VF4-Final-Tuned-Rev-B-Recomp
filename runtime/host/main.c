@@ -37,6 +37,9 @@
  *                     glyphs): xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck, steamvirtual
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
+ *   --kofi-notice N   for tests: the first start's Ko-fi notice at vertical blank N, even when it
+ *                     was shown before (test runs, with --frames, --shot, --press, --keys or
+ *                     --unpaced, show it only so)
  *
  * Settings (M6): user/settings.txt (settings.h), written by the launcher's
  * Settings page: free play or coins, fullscreen, picture, sound, the card
@@ -53,7 +56,9 @@
  * again. Nothing in it is changed from the board's.
  * The menu (menu.c): Insert or Esc, a gamepad's Guide button, or View + Menu
  * held for a second; the game pauses. Settings, the operator's test menu,
- * restart and quit are in it. Closing the window quits too.
+ * restart and quit are in it. Closing the window quits too. The first start
+ * shows a notice about the author's Ko-fi page in it, once (user/kofi-notice
+ * marks it shown; docs/design.md section 26).
  *
  * The backup is written every 10 seconds when it has changed, and when the
  * game ends; a file that is there and not a backup is left alone (the run
@@ -686,18 +691,90 @@ static int fullscreen_wanted(void)
            (cfg_.fullscreen == FULLSCREEN_AUTO && ((deck && atoi(deck)) || (tenfoot && atoi(tenfoot))));
 }
 
-static void menu_show(void)
+/* the menu, or (notice) the first start's Ko-fi notice in its place */
+static void menu_show_as(int notice)
 {
     menu_run r;
     r.start = start_cfg;
     r.sound = audio != NULL;
     r.test_program = SDL_GetAtomicInt(&program_now);
-    menu_open(&cfg_, &r);
+    if (notice)
+        menu_open_notice(&cfg_, &r);
+    else
+        menu_open(&cfg_, &r);
     menu_on = ov_dirty = 1;
     SDL_SetAtomicInt(&menu_pause, 1);
     if (audio)
         SDL_PauseAudioStreamDevice(audio);
-    logf_("menu: open at vertical blank %d", SDL_GetAtomicInt(&frame_now));
+    logf_("menu: %s at vertical blank %d", notice ? "the Ko-fi notice" : "open", SDL_GetAtomicInt(&frame_now));
+}
+
+static void menu_show(void)
+{
+    menu_show_as(0);
+}
+
+/* ---- the first start's Ko-fi notice (docs/design.md section 26) ---- */
+static unsigned kofi_frame;         /* --kofi-notice: at this vertical blank */
+static int kofi_due;                /* 1 until it is shown */
+static Uint64 kofi_after;           /* not before this (ms): set at the first picture */
+
+static void kofi_mark(void)
+{
+    char path[4200];
+    SDL_snprintf(path, sizeof path, "%skofi-notice", user_dir);
+    SDL_IOStream *f = SDL_IOFromFile(path, "wb");
+    if (!f) {
+        logf_("kofi: cannot write %s: %s", path, SDL_GetError());
+        return;
+    }
+    SDL_IOprintf(f, "The game showed its Ko-fi notice. Remove this file to see it again at the next start.\n");
+    SDL_CloseIO(f);
+}
+
+/* whether this run shows it: once ever, never in a test run (test) unless asked */
+static void kofi_setup(int test)
+{
+    if (kofi_frame) {
+        kofi_due = 1;
+        return;
+    }
+    if (test)
+        return;
+    char path[4200];
+    SDL_snprintf(path, sizeof path, "%skofi-notice", user_dir);
+    kofi_due = !SDL_GetPathInfo(path, NULL);
+}
+
+/* called every turn of the window's loop: shows it when it is time */
+static void kofi_turn(int have_picture, Uint64 now_ms)
+{
+    if (!kofi_due || !have_picture || menu_on)
+        return;
+    if (kofi_frame) {
+        if ((unsigned)SDL_GetAtomicInt(&frame_now) < kofi_frame)
+            return;
+    } else {
+        if (!kofi_after)
+            kofi_after = now_ms + 2000;     /* two seconds into the picture */
+        if (now_ms < kofi_after)
+            return;
+    }
+    kofi_due = 0;
+    if (!kofi_frame)
+        kofi_mark();
+    menu_show_as(1);
+}
+
+/* opens the Ko-fi page in the browser and tells the menu what it did */
+static void kofi_open(void)
+{
+    bool ok = SDL_OpenURL(MENU_KOFI_URL);
+    if (ok)
+        logf_("menu: Ko-fi: opened %s", MENU_KOFI_URL);
+    else
+        logf_("menu: Ko-fi: cannot open %s: %s", MENU_KOFI_URL, SDL_GetError());
+    menu_kofi(ok);
 }
 
 static void menu_hide(void)
@@ -767,6 +844,15 @@ static int menu_do(int a)
         menu_hide();
         logf_("quit: the menu");
         return 0;
+    case MENU_KOFI:
+        kofi_open();
+        ov_dirty = 1;
+        return 1;
+    case MENU_KOFI_CLOSE:
+        kofi_open();
+        menu_hide();
+        logf_("menu: back to the game");
+        return 1;
     default:
         ov_dirty = 1;
         return 1;
@@ -1082,6 +1168,7 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(a, "--log") && v) log_path = argv[++i];
         else if (!strcmp(a, "--user") && v) user_arg = argv[++i];
+        else if (!strcmp(a, "--kofi-notice") && v) kofi_frame = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--shot") && v && i + 2 < argc && nshots < 8) {
             shots[nshots].frame = (unsigned)strtoul(argv[++i], NULL, 10);
             shots[nshots++].path = argv[++i];
@@ -1146,6 +1233,7 @@ int main(int argc, char **argv)
     }
     if (!SDL_GetPathInfo(user_dir, NULL) && !SDL_CreateDirectory(user_dir))
         logf_("cannot make %s: %s", user_dir, SDL_GetError());
+    kofi_setup(frames_max || nshots || presses || key_items || unpaced);
     {
         char *sp = settings_path;
         SDL_snprintf(sp, sizeof settings_path, "%ssettings.txt", user_dir);
@@ -1499,6 +1587,7 @@ int main(int argc, char **argv)
             }
             shown_frame = frame;
         }
+        kofi_turn(have_picture, now_ms);
         /* the menu (1) or the operator bar (2), drawn again when it changed;
          * the menu's first turn shows the picture alone and takes it (grab) */
         int ov = menu_on ? 1 : bar_on && now_ms < bar_until ? 2 : 0, grab = 0;
