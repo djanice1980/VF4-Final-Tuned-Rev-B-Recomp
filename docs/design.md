@@ -927,18 +927,21 @@ program: `test.bin` from the game, the game from `test.bin`'s EXIT.
   from the decomp's `src_test` globals (769), and `tools/make_tables.py`
   writes `tables_test.c` beside `tables.c`; both programs are linked into
   the one executable.
-- The test program's exception entry is not named in the decomp's map
-  (its bytes are main.bin's); the stand-in takes it as
-  `irq_entry_via_firmware` - 0x44, where it is in both programs.
-- **Workaround:** the decomp's test map leaves out the eight Kamui hook
-  stubs at 0x0c06b040 + 0x20 n (byte for byte main.bin's at 0x0c141000 to
-  0x0c1410e0), so the stand-in had no hook on the test program's busy
-  wait, which spun through the interpreter: 7.5 ms of the machine's time a
-  frame. `make_tables.py` adds them (`TEST_EXTRA`) while the map has no
-  routine there; with them a test mode frame takes 0.82 ms, and the
-  pictures are the same. The real fix is naming them (and the exception
-  entry) in the decomp's `ghidra/source_map_test.tsv`; the workaround
-  steps aside by itself once they are named.
+- The test program's exception entry (its bytes are main.bin's) is
+  named `exception_entry` in the decomp's map since decomp 794d491f; the
+  stand-in still takes `irq_entry_via_firmware` - 0x44, where it is in
+  both programs, for a map without the name.
+- **Workaround, fixed in the decomp:** the decomp's test map left out the
+  eight Kamui hook stubs at 0x0c06b040 + 0x20 n (byte for byte main.bin's
+  at 0x0c141000 to 0x0c1410e0), so the stand-in had no hook on the test
+  program's busy wait, which spun through the interpreter: 7.5 ms of the
+  machine's time a frame. `make_tables.py` used to add them
+  (`TEST_EXTRA`). Decomp 794d491f names them (and the exception entry) in
+  `ghidra/source_map_test.tsv`, `meta/test/routines.tsv` has them from
+  there, and `TEST_EXTRA` is gone. The busy wait is hooked as before:
+  headless (`--sound chip --cards`), 3,000 test mode frames add 1.0 s to
+  the 4.96 s of the boot alone, 0.33 ms a frame (the workaround's run
+  measured 0.82 ms the same way).
 - The test program has no sound (the sound test is the BIOS's system
   menu): the sound CPU stays in reset while it runs, as on a cold start of
   that program. This found a bug in M4's code: the sound chip's state was

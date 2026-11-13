@@ -277,10 +277,11 @@ int hle_outside(sh4 *c, u32 target, int kind)
 void hle_vectors_write(void)
 {
     routine *exc = routine_by_name("exception_entry"), *irq = routine_by_name("irq_entry_via_firmware");
-    /* recomp (test mode): the test program's decompilation has no routine at
-     * its exception entry, the same code as main.bin's exception_entry
-     * (sdk/sy/exception_vectors.c), 0x44 bytes before irq_entry_via_firmware
-     * in both programs */
+    /* recomp (test mode): the test program's exception entry, the same code
+     * as main.bin's exception_entry (sdk/sy/exception_vectors.c), is named in
+     * the decompilation's map since decomp 794d491f; a map without the name
+     * gets it 0x44 bytes before irq_entry_via_firmware, where it is in both
+     * programs */
     u32 exc_addr = exc ? exc->addr : irq ? irq->addr - 0x44 : 0;
     static const u16 keep_all[] = { 0x2f06 /* mov.l r0,@-r15 */, 0xd001 /* mov.l @(4,pc),r0 */, 0x402b /* jmp @r0 */,
                                     0x60f6 /* mov.l @r15+,r0 (the delay slot) */ };

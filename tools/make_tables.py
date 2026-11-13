@@ -28,27 +28,9 @@ def read_tsv(path):
         return list(csv.DictReader(f, delimiter="\t"))
 
 
-# WORKAROUND (test mode, 2026-11-12): the decompilation's map of test.bin
-# (ghidra/source_map_test.tsv) has nothing between error_hook_put and
-# border_color_by_code_hang (sdk/kamui/hooks.c), where test.bin has main.bin's
-# eight hook stubs, byte for byte and in the same order. The BIOS stand-in
-# hooks busy_wait_hook_noop by name (hle_waits.c: the graphics library's waits
-# become jumps of virtual time); without the name every wait of the test
-# program spins through the interpreter: 7.5 ms of the machine's time a frame
-# here, 0.8 with the hook. The real fix is naming them in the decompilation; a row
-# here is added only while its map has no routine at that address, so this
-# goes away by itself after the next tools/sync_meta.py.
-TEST_EXTRA = [(0x0c06b040 + 0x20 * i, 10, name, "sdk/kamui/hooks.c") for i, name in enumerate(
-    ["render_done_hook_noop", "vblank_hook_noop", "hblank_hook_noop", "surface_alloc_fail_hook_noop",
-     "strip_hazard_hook_noop", "list_input_end_hook_noop", "yuv_done_hook_noop", "busy_wait_hook_noop"])]
-
-
 def write_one(out_dir, meta, program, prefix):
     routines = sorted((int(r["address"], 16), int(r["size"]), r["name"], r["file"])
                       for r in read_tsv(os.path.join(meta, program, "routines.tsv")))
-    if program == "test":
-        have_a, have_n = {r[0] for r in routines}, {r[2] for r in routines}
-        routines = sorted(routines + [r for r in TEST_EXTRA if r[0] not in have_a and r[2] not in have_n])
     globs = sorted((int(r["address"], 16), r["name"]) for r in read_tsv(os.path.join(meta, program, "globals.tsv")))
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "tables.c" if program == "main" else "tables_%s.c" % program)
