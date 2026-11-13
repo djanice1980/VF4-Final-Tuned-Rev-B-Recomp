@@ -68,6 +68,7 @@
 #include "settings.h"
 #include "gpu_render.h"
 #include "menu.h"
+#include "ui.h"
 
 #define VF4FT_TITLE "Virtua Fighter 4 Final Tuned"
 #ifndef VF4FT_VERSION
@@ -134,7 +135,9 @@ static SDL_AtomicInt frame_now;         /* the machine's vertical blank */
 static SDL_AtomicInt program_now;       /* 1 while the test program runs */
 
 /* the picture in tex (w x h, RGBA) to a BMP file: waits for the GPU */
-static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 h, const char *path)
+/* reads a texture back (w x h, RGBA bytes): use gets its pixels, or NULL */
+static void read_back(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 h,
+                      void (*use)(void *ud, const void *px, Uint32 w, Uint32 h), void *ud)
 {
     SDL_GPUTransferBufferCreateInfo ti;
     SDL_zero(ti);
@@ -143,7 +146,9 @@ static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 
     SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(gpu, &ti);
     SDL_GPUCommandBuffer *cmd = tb ? SDL_AcquireGPUCommandBuffer(gpu) : NULL;
     if (!cmd) {
-        logf_("--shot %s: %s", path, SDL_GetError());
+        if (tb)
+            SDL_ReleaseGPUTransferBuffer(gpu, tb);
+        use(ud, NULL, w, h);
         return;
     }
     SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
@@ -157,15 +162,26 @@ static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 
         SDL_ReleaseGPUFence(gpu, fence);
     }
     void *px = SDL_MapGPUTransferBuffer(gpu, tb, false);
-    SDL_Surface *sf = px ? SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, px, (int)w * 4) : NULL;
+    use(ud, px, w, h);
+    if (px)
+        SDL_UnmapGPUTransferBuffer(gpu, tb);
+    SDL_ReleaseGPUTransferBuffer(gpu, tb);
+}
+
+static void save_bmp(void *ud, const void *px, Uint32 w, Uint32 h)
+{
+    const char *path = ud;
+    SDL_Surface *sf = px ? SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, (void *)px, (int)w * 4) : NULL;
     if (sf && SDL_SaveBMP(sf, path))
         logf_("--shot: %s (%ux%u)", path, w, h);
     else
         logf_("--shot %s: %s", path, SDL_GetError());
     SDL_DestroySurface(sf);
-    if (px)
-        SDL_UnmapGPUTransferBuffer(gpu, tb);
-    SDL_ReleaseGPUTransferBuffer(gpu, tb);
+}
+
+static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 h, const char *path)
+{
+    read_back(gpu, tex, w, h, save_bmp, (void *)path);
 }
 
 /* --press: scripted presses for tests */
@@ -619,6 +635,27 @@ static void log_gamepad_added(SDL_JoystickID which)
           path ? path : "-");
 }
 
+/* ---- the menu's drawing ----
+ * SDL's software renderer draws it (runtime/ui: sharp text at any size) into
+ * a surface the window's size, which is uploaded into a texture and blitted
+ * over the picture: no shaders, so any device. Behind the menu is the window
+ * as it was when the menu opened, taken once (a frame without the menu),
+ * blurred and darkened. The operator bar is a strip as wide as the picture,
+ * at its top. */
+static struct {
+    int w, h;                       /* the surface's and the texture's size: the window's, in pixels */
+    SDL_Surface *surf;
+    SDL_Renderer *ren;              /* ui_init's */
+    SDL_GPUTexture *tex;
+    SDL_GPUTransferBuffer *up;
+    SDL_Texture *backdrop;          /* on ren; NULL until taken (or when it could not be) */
+    int taken;                      /* the window was taken for this opening (and this size) */
+    SDL_GPUTexture *grab;           /* the window, taken for the backdrop */
+    Uint32 grab_w, grab_h;
+    int ready;                      /* what tex holds: 0 nothing, 1 the menu, 2 the bar */
+    int bar_w, bar_h;
+} ovl;
+
 /* ---- the menu (menu.c) ---- */
 
 static SDL_Window *main_win;
@@ -641,8 +678,10 @@ static int fullscreen_wanted(void)
 
 static void menu_show(void)
 {
-    menu_run r = { start_cfg.renderer, start_cfg.scale, start_cfg.cards, audio != NULL,
-                   SDL_GetAtomicInt(&program_now) };
+    menu_run r;
+    r.start = start_cfg;
+    r.sound = audio != NULL;
+    r.test_program = SDL_GetAtomicInt(&program_now);
     menu_open(&cfg_, &r);
     menu_on = ov_dirty = 1;
     SDL_SetAtomicInt(&menu_pause, 1);
@@ -655,6 +694,11 @@ static void menu_hide(void)
 {
     menu_on = 0;
     ov_dirty = 1;
+    if (ovl.backdrop) {
+        SDL_DestroyTexture(ovl.backdrop);
+        ovl.backdrop = NULL;
+    }
+    ovl.taken = 0;          /* taken again at the next opening */
     if (menu_changed()) {
         if (settings_save(&cfg_, settings_path))
             logf_("menu: cannot write %s", settings_path);
@@ -706,6 +750,7 @@ static int menu_do(int a)
     case MENU_RESTART:
         bar_on = 0;
         SDL_SetAtomicInt(&restart_req, cfg_.coins == COINS_ARCADE ? GAME_COINS_ARCADE : GAME_COINS_FREE_PLAY);
+        start_cfg.coins = cfg_.coins;           /* the restart takes it */
         menu_hide();
         return 1;
     case MENU_QUIT:
@@ -718,17 +763,147 @@ static int menu_do(int a)
     }
 }
 
-/* the picture at 4:3 (or stretched) in the middle of a w x h target, and the
- * menu or the operator bar over it */
-static void compose(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, Uint32 w, Uint32 h, SDL_GPUTexture *src,
-                    Uint32 src_w, Uint32 src_h, int have_picture, int ov, SDL_GPUTexture *ov_tex)
+
+static void ovl_free(SDL_GPUDevice *gpu)
 {
-    Uint32 dw = w, dh = h;
+    if (ovl.ren) {
+        ui_quit();
+        if (ovl.backdrop)
+            SDL_DestroyTexture(ovl.backdrop);
+        SDL_DestroyRenderer(ovl.ren);
+    }
+    SDL_DestroySurface(ovl.surf);
+    if (ovl.tex)
+        SDL_ReleaseGPUTexture(gpu, ovl.tex);
+    if (ovl.up)
+        SDL_ReleaseGPUTransferBuffer(gpu, ovl.up);
+    if (ovl.grab)
+        SDL_ReleaseGPUTexture(gpu, ovl.grab);
+    SDL_zero(ovl);
+}
+
+/* made again at the window's size, w x h pixels; 0 or -1 */
+static int ovl_size(SDL_GPUDevice *gpu, int w, int h)
+{
+    ovl_free(gpu);
+    ovl.surf = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_ABGR8888);
+    ovl.ren = ovl.surf ? SDL_CreateSoftwareRenderer(ovl.surf) : NULL;
+    SDL_GPUTextureCreateInfo ti;
+    SDL_zero(ti);
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.width = (Uint32)w;
+    ti.height = (Uint32)h;
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
+    ovl.tex = SDL_CreateGPUTexture(gpu, &ti);
+    SDL_GPUTransferBufferCreateInfo bi;
+    SDL_zero(bi);
+    bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    bi.size = (Uint32)w * (Uint32)h * 4;
+    ovl.up = SDL_CreateGPUTransferBuffer(gpu, &bi);
+    if (!ovl.ren || !ovl.tex || !ovl.up || ui_init(ovl.ren)) {
+        logf_("the menu's drawing at %dx%d: %s", w, h, SDL_GetError());
+        ovl_free(gpu);
+        return -1;
+    }
+    ovl.w = w;
+    ovl.h = h;
+    return 0;
+}
+
+/* the backdrop from the window taken (RGBA, w x h): made small, blurred,
+ * made big again and darkened, as a texture on ovl.ren */
+static void ovl_backdrop(void *ud, const void *pixels, Uint32 w, Uint32 h)
+{
+    (void)ud;
+    if (!pixels || !ovl.ren || ovl.backdrop)
+        return;
+    const Uint8 *px = pixels;
+    int f = (int)h / 90 > 1 ? (int)h / 90 : 1, sw = (int)w / f, sh = (int)h / f;
+    if (sw < 2 || sh < 2)
+        return;
+    float *a = SDL_malloc(sizeof(float) * 3 * (size_t)sw * (size_t)sh);
+    float *b = SDL_malloc(sizeof(float) * 3 * (size_t)sw * (size_t)sh);
+    SDL_Surface *out = SDL_CreateSurface((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888);
+    if (a && b && out) {
+        for (int y = 0; y < sh; y++)
+            for (int x = 0; x < sw; x++) {
+                float c[3] = { 0, 0, 0 };
+                for (int j = 0; j < f; j++)
+                    for (int i = 0; i < f; i++) {
+                        const Uint8 *p = px + ((size_t)(y * f + j) * w + (size_t)(x * f + i)) * 4;
+                        c[0] += p[0], c[1] += p[1], c[2] += p[2];
+                    }
+                for (int k = 0; k < 3; k++)
+                    a[(y * sw + x) * 3 + k] = c[k] / (float)(f * f);
+            }
+        for (int pass = 0; pass < 2; pass++) {     /* a 3 x 3 box, twice */
+            for (int y = 0; y < sh; y++)
+                for (int x = 0; x < sw; x++)
+                    for (int k = 0; k < 3; k++) {
+                        float sum = 0;
+                        int n = 0;
+                        for (int j = y - 1; j <= y + 1; j++)
+                            for (int i = x - 1; i <= x + 1; i++)
+                                if (i >= 0 && i < sw && j >= 0 && j < sh) {
+                                    sum += a[(j * sw + i) * 3 + k];
+                                    n++;
+                                }
+                        b[(y * sw + x) * 3 + k] = sum / (float)n;
+                    }
+            float *t = a;
+            a = b;
+            b = t;
+        }
+        static const float bg[3] = { 14, 16, 22 };
+        for (Uint32 y = 0; y < h; y++) {
+            float fy = ((float)y + 0.5f) / (float)f - 0.5f;
+            fy = fy < 0 ? 0 : fy > (float)(sh - 1) ? (float)(sh - 1) : fy;
+            int y0 = (int)fy, y1 = y0 + 1 < sh ? y0 + 1 : y0;
+            float ty = fy - (float)y0;
+            Uint8 *d = (Uint8 *)out->pixels + (size_t)y * out->pitch;
+            for (Uint32 x = 0; x < w; x++) {
+                float fx = ((float)x + 0.5f) / (float)f - 0.5f;
+                fx = fx < 0 ? 0 : fx > (float)(sw - 1) ? (float)(sw - 1) : fx;
+                int x0 = (int)fx, x1 = x0 + 1 < sw ? x0 + 1 : x0;
+                float tx = fx - (float)x0;
+                for (int k = 0; k < 3; k++) {
+                    float top = a[(y0 * sw + x0) * 3 + k] * (1 - tx) + a[(y0 * sw + x1) * 3 + k] * tx;
+                    float bot = a[(y1 * sw + x0) * 3 + k] * (1 - tx) + a[(y1 * sw + x1) * 3 + k] * tx;
+                    d[4 * x + k] = (Uint8)((top * (1 - ty) + bot * ty) * 0.42f + bg[k] * 0.58f);
+                }
+                d[4 * x + 3] = 255;
+            }
+        }
+        ovl.backdrop = SDL_CreateTextureFromSurface(ovl.ren, out);
+    }
+    SDL_DestroySurface(out);
+    SDL_free(a);
+    SDL_free(b);
+}
+
+/* the picture's place in a w x h target: 4:3 in the middle, or all of it */
+static void picture_rect(Uint32 w, Uint32 h, Uint32 *x0, Uint32 *y0, Uint32 *dw, Uint32 *dh)
+{
+    *dw = w;
+    *dh = h;
     if (cfg_.picture == PICTURE_STRETCH)
         ;       /* the whole window */
-    else if ((Uint64)w * 3 > (Uint64)h * 4) dw = h * 4 / 3;
-    else dh = w * 3 / 4;
-    Uint32 x0 = (w - dw) / 2, y0 = (h - dh) / 2;
+    else if ((Uint64)w * 3 > (Uint64)h * 4) *dw = h * 4 / 3;
+    else *dh = w * 3 / 4;
+    *x0 = (w - *dw) / 2;
+    *y0 = (h - *dh) / 2;
+}
+
+/* the picture at 4:3 (or stretched) in the middle of a w x h target, and the
+ * menu (ov 1) or the operator bar (2) over it when ovl holds it */
+static void compose(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, Uint32 w, Uint32 h, SDL_GPUTexture *src,
+                    Uint32 src_w, Uint32 src_h, int have_picture, int ov)
+{
+    Uint32 x0, y0, dw, dh;
+    picture_rect(w, h, &x0, &y0, &dw, &dh);
     if (have_picture) {
         SDL_GPUBlitInfo bl;
         SDL_zero(bl);
@@ -753,25 +928,21 @@ static void compose(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, Uint32 w,
         t.store_op = SDL_GPU_STOREOP_STORE;
         SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
     }
-    if (!ov)
+    if (!ov || ovl.ready != ov)
         return;
-    /* whole pixels of the panel, about 85% of the picture at most */
-    Uint32 sx = dw * 85 / 100 / MENU_W, sy = dh * 85 / 100 / MENU_H, sc = sx < sy ? sx : sy;
-    if (sc < 1)
-        sc = 1;
-    Uint32 oh = ov == 1 ? MENU_H : MENU_BAR_H, pw = MENU_W * sc, ph = oh * sc;
-    if (pw > w || ph > h)
-        return;         /* a window too small for it (the minimum size keeps it from happening) */
+    /* drawn for this size only: after a resize it is drawn again first */
+    if (ov == 1 ? (Uint32)ovl.w != w || (Uint32)ovl.h != h : (Uint32)ovl.bar_w != dw || (Uint32)ovl.bar_h > h)
+        return;
     SDL_GPUBlitInfo bl;
     SDL_zero(bl);
-    bl.source.texture = ov_tex;
-    bl.source.w = MENU_W;
-    bl.source.h = oh;
+    bl.source.texture = ovl.tex;
+    bl.source.w = ov == 1 ? w : dw;
+    bl.source.h = ov == 1 ? h : (Uint32)ovl.bar_h;
     bl.destination.texture = target;
-    bl.destination.x = pw <= dw ? x0 + (dw - pw) / 2 : (w - pw) / 2;
-    bl.destination.y = ov == 1 ? (ph <= dh ? y0 + (dh - ph) / 2 : (h - ph) / 2) : y0;
-    bl.destination.w = pw;
-    bl.destination.h = ph;
+    bl.destination.x = ov == 1 ? 0 : x0;
+    bl.destination.y = ov == 1 ? 0 : y0;
+    bl.destination.w = bl.source.w;
+    bl.destination.h = bl.source.h;
     bl.load_op = SDL_GPU_LOADOP_LOAD;
     bl.filter = SDL_GPU_FILTER_NEAREST;
     SDL_BlitGPUTexture(cmd, &bl);
@@ -1003,7 +1174,7 @@ int main(int argc, char **argv)
                                        (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
     if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
     main_win = win;
-    SDL_SetWindowMinimumSize(win, MENU_W, MENU_H);      /* the menu always fits */
+    SDL_SetWindowMinimumSize(win, MENU_MIN_W, MENU_MIN_H);      /* the menu always fits */
     /* The GPU renderer's shaders are SPIR-V: a Vulkan device (natively, or
      * Proton's winevulkan). Without one the software picture is shown, on
      * whatever device SDL picks. */
@@ -1067,27 +1238,21 @@ int main(int argc, char **argv)
     if (!pic_tex || !upload) { logf_("picture texture: %s", SDL_GetError()); return 1; }
     static unsigned char rgb[PIC_W * PIC_H * 3];
 
-    /* the menu's drawing: SDL's software renderer into a surface, uploaded
-     * into a texture and blitted over the picture (no shaders: any device) */
-    SDL_Surface *ov_surf = SDL_CreateSurface(MENU_W, MENU_H, SDL_PIXELFORMAT_ABGR8888);
-    SDL_Renderer *ov_ren = ov_surf ? SDL_CreateSoftwareRenderer(ov_surf) : NULL;
-    ti.width = MENU_W;
-    ti.height = MENU_H;
-    SDL_GPUTexture *ov_tex = SDL_CreateGPUTexture(gpu, &ti);
-    bi.size = MENU_W * MENU_H * 4;
-    SDL_GPUTransferBuffer *ov_upload = SDL_CreateGPUTransferBuffer(gpu, &bi);
-    if (!ov_ren || !ov_tex || !ov_upload) { logf_("the menu's texture: %s", SDL_GetError()); return 1; }
     SDL_GPUTexture *shot_tex = NULL;    /* --keys shot=: the window as shown */
     Uint32 shot_w = 0, shot_h = 0;
 
     Uint64 t0 = SDL_GetTicksNS(), chord_since = 0, dir_next = 0;
     unsigned shown_frame = 0, pictures = 0, presents = 0;
     int have_picture = 0, running = 1, stopping = 0, reported_start = 0;
-    int chord_used = 0, last_dir = -1, last_program = 0, ov_shown = 0, key_turns = 0;
+    int chord_used = 0, last_dir = -1, last_program = 0, key_turns = 0;
     while (running) {
         const char *window_shot = NULL;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            int dev_was = ui_device();
+            ui_note_event(&ev);
+            if (ui_device() != dev_was && (menu_on || bar_on))
+                ov_dirty = 1;       /* its hints show the keys or the buttons */
             if (ev.type == machine_event) {
                 running = 0;
                 continue;
@@ -1115,6 +1280,10 @@ int main(int argc, char **argv)
                         cmd = MENU_OK;
                     else if (!ev.key.repeat && key == SDLK_BACKSPACE)
                         cmd = MENU_BACK;
+                    else if (!ev.key.repeat && (key == SDLK_Q || key == SDLK_PAGEUP))
+                        cmd = MENU_PREV;
+                    else if (!ev.key.repeat && (key == SDLK_E || key == SDLK_PAGEDOWN))
+                        cmd = MENU_NEXT;
                 }
                 if (cmd >= 0 && !menu_do(menu_command(cmd)))
                     running = 0;
@@ -1132,6 +1301,8 @@ int main(int argc, char **argv)
                         running = 0;
                 } else if (menu_on && (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START)) {
                     menu_do(menu_command(MENU_BACK));
+                } else if (menu_on && (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
+                    menu_do(menu_command(b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER ? MENU_PREV : MENU_NEXT));
                 } else if (!menu_on && bar_on && b == SDL_GAMEPAD_BUTTON_EAST) {
                     bar_on = 0;
                     pad_hold |= 1u << b;
@@ -1291,34 +1462,53 @@ int main(int argc, char **argv)
             }
             shown_frame = frame;
         }
-        /* the menu (1) or the operator bar (2), drawn again when it changed */
-        int ov = menu_on ? 1 : bar_on && now_ms < bar_until ? 2 : 0;
-        if (ov && (ov_dirty || ov != ov_shown)) {
-            SDL_SetRenderDrawColor(ov_ren, 0, 0, 0, 255);
-            SDL_RenderClear(ov_ren);
-            if (ov == 1)
-                menu_draw(ov_ren);
-            else
-                menu_draw_bar(ov_ren);
-            SDL_FlushRenderer(ov_ren);
-            unsigned char *dst = SDL_MapGPUTransferBuffer(gpu, ov_upload, true);
-            if (dst && SDL_LockSurface(ov_surf)) {
-                for (int y = 0; y < MENU_H; y++)
-                    memcpy(dst + (size_t)y * MENU_W * 4, (unsigned char *)ov_surf->pixels + (size_t)y * ov_surf->pitch,
-                           MENU_W * 4);
-                SDL_UnlockSurface(ov_surf);
+        /* the menu (1) or the operator bar (2), drawn again when it changed;
+         * the menu's first turn shows the picture alone and takes it (grab) */
+        int ov = menu_on ? 1 : bar_on && now_ms < bar_until ? 2 : 0, grab = 0;
+        if (ov) {
+            int ww = 0, wh = 0;
+            SDL_GetWindowSizeInPixels(win, &ww, &wh);
+            if (ww > 0 && wh > 0 && (ww != ovl.w || wh != ovl.h) && ovl_size(gpu, ww, wh) == 0)
+                ov_dirty = 1;
+            grab = ov == 1 && ovl.ren && !ovl.taken;
+        }
+        if (ov && ovl.ren && !grab && (ov_dirty || ov != ovl.ready)) {
+            SDL_SetRenderDrawColor(ovl.ren, 0, 0, 0, 0);
+            SDL_RenderClear(ovl.ren);
+            Uint32 px0, py0, pdw, pdh;
+            picture_rect((Uint32)ovl.w, (Uint32)ovl.h, &px0, &py0, &pdw, &pdh);
+            int rw = ovl.w, rh = ovl.h;
+            if (ov == 1) {
+                menu_draw(ovl.ren, ovl.w, ovl.h, ovl.backdrop);
+            } else {
+                rw = (int)pdw;
+                rh = menu_bar_height((int)pdh) < ovl.h ? menu_bar_height((int)pdh) : ovl.h;
+                menu_draw_bar(ovl.ren, rw, rh);
             }
-            if (dst) {
-                SDL_UnmapGPUTransferBuffer(gpu, ov_upload);
+            SDL_FlushRenderer(ovl.ren);
+            unsigned char *dst = SDL_MapGPUTransferBuffer(gpu, ovl.up, true);
+            int locked = dst && SDL_LockSurface(ovl.surf);
+            if (locked) {
+                for (int y = 0; y < rh; y++)
+                    memcpy(dst + (size_t)y * (size_t)rw * 4,
+                           (unsigned char *)ovl.surf->pixels + (size_t)y * ovl.surf->pitch, (size_t)rw * 4);
+                SDL_UnlockSurface(ovl.surf);
+            }
+            if (dst)
+                SDL_UnmapGPUTransferBuffer(gpu, ovl.up);
+            if (locked) {
                 SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
-                SDL_GPUTextureTransferInfo src = { .transfer_buffer = ov_upload, .offset = 0 };
-                SDL_GPUTextureRegion reg = { .texture = ov_tex, .w = MENU_W, .h = MENU_H, .d = 1 };
+                SDL_GPUTextureTransferInfo src = { .transfer_buffer = ovl.up, .offset = 0,
+                                                   .pixels_per_row = (Uint32)rw, .rows_per_layer = (Uint32)rh };
+                SDL_GPUTextureRegion reg = { .texture = ovl.tex, .w = (Uint32)rw, .h = (Uint32)rh, .d = 1 };
                 SDL_UploadToGPUTexture(cp, &src, &reg, true);
                 SDL_EndGPUCopyPass(cp);
+                ovl.ready = ov;
+                ovl.bar_w = rw;
+                ovl.bar_h = rh;
             }
             ov_dirty = 0;
         }
-        ov_shown = ov;
         SDL_GPUTexture *sc = NULL;
         Uint32 w = 0, h = 0;
         if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &sc, &w, &h)) {
@@ -1340,7 +1530,20 @@ int main(int argc, char **argv)
             }
         }
         if (sc) {
-            compose(cmd, sc, w, h, src_tex, src_w, src_h, have_picture, ov, ov_tex);
+            compose(cmd, sc, w, h, src_tex, src_w, src_h, have_picture, grab ? 0 : ov);
+            if (grab) {
+                if (!ovl.grab || ovl.grab_w != w || ovl.grab_h != h) {
+                    if (ovl.grab)
+                        SDL_ReleaseGPUTexture(gpu, ovl.grab);
+                    SDL_GPUTextureCreateInfo gi = ti;
+                    gi.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                    gi.width = ovl.grab_w = w;
+                    gi.height = ovl.grab_h = h;
+                    ovl.grab = SDL_CreateGPUTexture(gpu, &gi);
+                }
+                if (ovl.grab)
+                    compose(cmd, ovl.grab, w, h, src_tex, src_w, src_h, have_picture, 0);
+            }
             if (presents++ == 0)
                 logf_("first present: swapchain %ux%u", w, h);
             if (window_shot) {
@@ -1354,10 +1557,16 @@ int main(int argc, char **argv)
                     shot_tex = SDL_CreateGPUTexture(gpu, &si);
                 }
                 if (shot_tex)
-                    compose(cmd, shot_tex, w, h, src_tex, src_w, src_h, have_picture, ov, ov_tex);
+                    compose(cmd, shot_tex, w, h, src_tex, src_w, src_h, have_picture, grab ? 0 : ov);
             }
         }
         SDL_SubmitGPUCommandBuffer(cmd);
+        if (grab && sc) {
+            if (ovl.grab)
+                read_back(gpu, ovl.grab, ovl.grab_w, ovl.grab_h, ovl_backdrop, NULL);
+            ovl.taken = 1;          /* without a backdrop when it failed: the menu shows anyway */
+            ov_dirty = 1;
+        }
         if (window_shot) {
             if (sc && shot_tex)
                 shot_save(gpu, shot_tex, w, h, window_shot);
@@ -1408,12 +1617,9 @@ int main(int argc, char **argv)
     }
     SDL_ReleaseGPUTransferBuffer(gpu, upload);
     SDL_ReleaseGPUTexture(gpu, pic_tex);
-    SDL_ReleaseGPUTransferBuffer(gpu, ov_upload);
-    SDL_ReleaseGPUTexture(gpu, ov_tex);
+    ovl_free(gpu);
     if (shot_tex)
         SDL_ReleaseGPUTexture(gpu, shot_tex);
-    SDL_DestroyRenderer(ov_ren);
-    SDL_DestroySurface(ov_surf);
     if (vpad) {
         SDL_JoystickID id = SDL_GetJoystickID(vpad);
         SDL_CloseJoystick(vpad);

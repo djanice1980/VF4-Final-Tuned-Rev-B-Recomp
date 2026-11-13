@@ -1,25 +1,35 @@
 /* The game's own menu: see menu.h. */
 #include "menu.h"
 
-#include <stdio.h>
 #include <string.h>
 
-enum {
-    R_RESUME, R_CREDITS, R_PICTURE, R_FILTER, R_FULLSCREEN, R_VOLUME, R_RENDERER, R_SCALE, R_CARDS,
-    R_TEST, R_RESTART, R_QUIT, R_COUNT
+#include "options.h"
+#include "ui.h"
+
+enum { TAB_GAME, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
+static const char *const tab_names[TABS] = { "Game", "Picture", "Sound", "Controls" };
+
+/* a row: an option (options.h), one of these actions, or a control */
+enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_QUIT, A_CONTROL };
+
+static const int tab_rows[TABS][8] = {
+    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_QUIT, -1 },
+    [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
+    [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
 
 static settings *s;
 static menu_run run;
 static settings before;     /* as it was when opened */
-static int row, armed = -1; /* armed: Restart or Quit, chosen once (the second choice does it) */
+static int tab, row, top, armed = -1; /* armed: Restart or Quit, chosen once (the second choice does it) */
 
 void menu_open(settings *cfg, const menu_run *r)
 {
     s = cfg;
     run = *r;
     before = *cfg;
-    row = R_RESUME;
+    tab = TAB_GAME;
+    row = top = 0;
     armed = -1;
 }
 
@@ -28,31 +38,39 @@ int menu_changed(void)
     return s && memcmp(s, &before, sizeof before) != 0;
 }
 
+static int rows_in(int t)
+{
+    if (t == TAB_CONTROLS)
+        return ACT_COUNT;
+    int n = 0;
+    while (n < 8 && tab_rows[t][n] >= 0)
+        n++;
+    return n;
+}
+
+static int row_id(int r)
+{
+    return tab == TAB_CONTROLS ? A_CONTROL : tab_rows[tab][r];
+}
+
 static int wrap(int v, int d, int n)
 {
     return ((v + d) % n + n) % n;
 }
 
-/* Left/Right (d -1, +1) on a setting; MENU_LIVE when it applies at once */
+/* Left/Right (d -1, +1) on an option; MENU_LIVE when it applies at once */
 static int change(int d)
 {
-    switch (row) {
-    case R_CREDITS: s->coins = wrap(s->coins, d, 2); return MENU_STAY;
-    case R_PICTURE: s->picture = wrap(s->picture, d, 2); return MENU_LIVE;
-    case R_FILTER: s->filter = wrap(s->filter, d, 2); return MENU_LIVE;
-    case R_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; return MENU_LIVE;
-    case R_VOLUME:
-        if (!run.sound)
-            return MENU_STAY;
-        s->volume += 10 * d;
-        if (s->volume < 0) s->volume = 0;
-        if (s->volume > 100) s->volume = 100;
-        return MENU_LIVE;
-    case R_RENDERER: s->renderer = wrap(s->renderer, d, 2); return MENU_STAY;
-    case R_SCALE: s->scale = wrap(s->scale - 1, d, 4) + 1; return MENU_STAY;
-    case R_CARDS: s->cards = !s->cards; return MENU_STAY;
-    }
-    return MENU_STAY;
+    int id = row_id(row);
+    if (id >= OPT_COUNT)
+        return MENU_STAY;
+    if (id == OPT_VOLUME && !run.sound)
+        return MENU_STAY;
+    if (id == OPT_SCALE && s->renderer != RENDERER_GPU)
+        return MENU_STAY;
+    option_change(s, id, d);
+    return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_VOLUME ? MENU_LIVE
+                                                                                            : MENU_STAY;
 }
 
 int menu_command(int cmd)
@@ -60,24 +78,29 @@ int menu_command(int cmd)
     int was_armed = armed;
     armed = -1;
     switch (cmd) {
-    case MENU_UP: row = wrap(row, -1, R_COUNT); return MENU_STAY;
-    case MENU_DOWN: row = wrap(row, 1, R_COUNT); return MENU_STAY;
+    case MENU_UP: row = wrap(row, -1, rows_in(tab)); return MENU_STAY;
+    case MENU_DOWN: row = wrap(row, 1, rows_in(tab)); return MENU_STAY;
+    case MENU_PREV:
+    case MENU_NEXT:
+        tab = wrap(tab, cmd == MENU_PREV ? -1 : 1, TABS);
+        row = top = 0;
+        return MENU_STAY;
     case MENU_LEFT: return change(-1);
     case MENU_RIGHT: return change(1);
     case MENU_BACK: return MENU_RESUME;
     case MENU_OK:
-        switch (row) {
-        case R_RESUME: return MENU_RESUME;
-        case R_TEST: return run.test_program ? MENU_OPERATOR : MENU_TEST;
-        case R_RESTART:
-        case R_QUIT:
-            if (was_armed != row) {
-                armed = row;        /* asks once more */
+        switch (row_id(row)) {
+        case A_RESUME: return MENU_RESUME;
+        case A_TEST: return run.test_program ? MENU_OPERATOR : MENU_TEST;
+        case A_RESTART:
+        case A_QUIT:
+            if (was_armed != row_id(row)) {
+                armed = row_id(row);    /* asks once more */
                 return MENU_STAY;
             }
-            return row == R_RESTART ? MENU_RESTART : MENU_QUIT;
-        default:
-            return change(1);
+            return row_id(row) == A_RESTART ? MENU_RESTART : MENU_QUIT;
+        case A_CONTROL: return MENU_STAY;
+        default: return change(1);
         }
     }
     return MENU_STAY;
@@ -85,118 +108,172 @@ int menu_command(int cmd)
 
 /* ---- drawing ---- */
 
-static SDL_Renderer *ren;
-
-static void text(float x, float y, const char *t, Uint8 r, Uint8 g, Uint8 b)
+/* the option's value differs from the run's and it applies at the next start */
+static int later(int id)
 {
-    SDL_SetRenderDrawColor(ren, r, g, b, 255);
-    SDL_RenderDebugText(ren, x, y, t);
+    switch (id) {
+    case OPT_CREDITS: return s->coins != run.start.coins;
+    case OPT_CARDS: return s->cards != run.start.cards;
+    case OPT_RENDERER: return s->renderer != run.start.renderer;
+    case OPT_SCALE: return s->scale != run.start.scale;
+    case OPT_SOUND: return s->sound != run.start.sound;
+    }
+    return 0;
 }
 
-static void fill(float x, float y, float w, float h, Uint8 r, Uint8 g, Uint8 b)
+static void about_of(int id, const char **title, const char **text, const char **note)
 {
-    SDL_SetRenderDrawColor(ren, r, g, b, 255);
-    SDL_RenderFillRect(ren, &(SDL_FRect){ x, y, w, h });
+    *note = NULL;
+    if (id < OPT_COUNT) {
+        *title = options[id].label;
+        *text = options[id].about;
+        if (id == OPT_CREDITS)
+            *note = "Applies when the game restarts (Restart the game).";
+        else if (id == OPT_VOLUME && !run.sound)
+            *note = "Sound is off: turn it on below, for the next start.";
+        else if (id == OPT_SCALE && s->renderer != RENDERER_GPU)
+            *note = "The Software renderer does not use it.";
+        else if (options[id].at_start)
+            *note = later(id) ? "Changed: applies the next time the game starts." : "Applies the next time the game starts.";
+        return;
+    }
+    switch (id) {
+    case A_RESUME: *title = "Resume"; *text = "Back to the game, where it paused."; break;
+    case A_TEST:
+        if (run.test_program) {
+            *title = "Operator buttons";
+            *text = "The test menu runs. While the operator bar shows, A is the Test switch (it chooses) "
+                    "and X is Service (it moves). B gives the buttons back to the game.";
+        } else {
+            *title = "Operator test menu";
+            *text = "The cabinet's Test switch: the game's own test menu, for its settings, records and "
+                    "checks. Then A is Test (it chooses) and X is Service (it moves), as F2 and F3 are.";
+        }
+        break;
+    case A_RESTART:
+        *title = "Restart the game";
+        *text = "Off and on again, as the cabinet's power switch. Records and settings are kept.";
+        break;
+    case A_QUIT: *title = "Quit"; *text = "Saves the records and closes the game."; break;
+    default:
+        *title = "Controls";
+        *text = ui_device() == UI_DEV_KEYS
+                    ? "The keyboard's keys for player 1. Change them in the launcher's Settings."
+                    : "Every gamepad's buttons (the first is player 1, the second player 2). Change them in "
+                      "the launcher's Settings; the left stick always moves.";
+        break;
+    }
 }
 
-static const char *row_label(int r)
+void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
 {
-    static const char *const labels[R_COUNT] = {
-        "Resume", "Credits", "Picture", "Scaling", "Fullscreen", "Volume", "Renderer", "Resolution", "Card units",
-        "Operator test menu", "Restart the game", "Quit",
+    (void)r;
+    ui_set_scale(1, 0, 0);
+    if (backdrop)
+        ui_image(backdrop, 0, 0, (float)pw, (float)ph);     /* blurred and darkened already (main.c) */
+    else
+        ui_fill(0, 0, (float)pw, (float)ph, UI_BG);
+
+    /* the panel: 1100 x 620 units in the middle */
+    ui_fit(1180, 680, pw, ph);
+    const float X = 40, Y = 30, W = 1100, H = 620;
+    ui_round_line(X, Y, W, H, 20, 1, UI_LINE, UI_PANEL);
+    ui_text(UI_BOLD, 21, X + 34, Y + 40, UI_TEXT, "Virtua Fighter 4 Final Tuned");
+    float cw = ui_text_w(UI_MEDIUM, 13.5f, "PAUSED") + 26;
+    ui_round(X + W - 34 - cw, Y + 27, cw, 26, 13, UI_RAISED);
+    ui_text(UI_MEDIUM, 13.5f, X + W - 34 - cw + 13, Y + 40, UI_MUTED, "PAUSED");
+    ui_tabs(X + 30, Y + 70, W - 60, 46, tab_names, TABS, tab);
+    ui_fill(X + 30, Y + 132, W - 60, 1, UI_LINE);
+
+    /* the rows */
+    ui_row rows[ACT_COUNT];
+    char vals[ACT_COUNT][160];
+    int n = rows_in(tab);
+    for (int i = 0; i < n; i++) {
+        int id = row_id(i);
+        ui_row *w = &rows[i];
+        if (id < OPT_COUNT) {
+            option_row(s, id, w, vals[i], sizeof vals[i]);
+            w->later = options[id].at_start && later(id);
+            if (id == OPT_CREDITS)
+                w->later = later(id);
+            if (id == OPT_VOLUME && !run.sound)
+                w->off = 1;
+            continue;
+        }
+        SDL_zerop(w);
+        w->kind = UI_ROW_ACTION;
+        switch (id) {
+        case A_RESUME: w->label = "Resume"; break;
+        case A_TEST: w->label = run.test_program ? "Operator buttons" : "Operator test menu"; break;
+        case A_RESTART: w->label = armed == A_RESTART ? "Restart the game? Choose it again" : "Restart the game"; break;
+        case A_QUIT: w->label = armed == A_QUIT ? "Quit? Choose it again" : "Quit"; break;
+        default: {
+            int keys = ui_device() == UI_DEV_KEYS;
+            w->label = settings_action_text[i];
+            w->kind = keys ? UI_ROW_KEYS : UI_ROW_PAD;
+            settings_binding_text(keys ? &s->key[0][i] : &s->pad[i], vals[i], sizeof vals[i]);
+            w->value = vals[i];
+            break;
+        }
+        }
+        w->warn = armed >= 0 && armed == id;
+    }
+    float ry = Y + 150, rh = H - 150 - 76;
+    ui_rows(X + 30, ry, 640, rh, 46, rows, n, row, &top);
+
+    const char *title, *text, *note;
+    about_of(row_id(row), &title, &text, &note);
+    ui_about(X + 694, ry, W - 694 - 30, rh, title, text, note);
+
+    ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
+    static const ui_hint hints[] = {
+        { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Change", { UI_IN_LEFTRIGHT, UI_IN_NONE } },
+        { "Tabs", { UI_IN_PREV, UI_IN_NEXT } }, { "Select", { UI_IN_OK, UI_IN_NONE } },
+        { "Close", { UI_IN_BACK, UI_IN_NONE } },
     };
-    if (r == R_TEST && run.test_program)
-        return "Operator buttons";
-    if (r == armed)
-        return r == R_RESTART ? "Restart the game? A again" : "Quit? A again";
-    return labels[r];
-}
-
-/* the value; *later: it applies at the next start and differs from this run */
-static void row_value(int r, char *v, size_t n, int *later)
-{
-    static const char *const fs[] = { "Auto", "Off", "On" };
-    *later = 0;
-    v[0] = 0;
-    switch (r) {
-    case R_CREDITS: SDL_strlcpy(v, s->coins == COINS_ARCADE ? "Arcade coins" : "Free play", n); break;
-    case R_PICTURE: SDL_strlcpy(v, s->picture == PICTURE_STRETCH ? "Stretch" : "4:3", n); break;
-    case R_FILTER: SDL_strlcpy(v, s->filter == FILTER_SHARP ? "Sharp" : "Smooth", n); break;
-    case R_FULLSCREEN: SDL_strlcpy(v, fs[s->fullscreen + 1], n); break;
-    case R_VOLUME:
-        if (run.sound)
-            SDL_snprintf(v, n, "%d%%", s->volume);
-        else
-            SDL_strlcpy(v, "(sound off)", n);
-        break;
-    case R_RENDERER:
-        SDL_strlcpy(v, s->renderer == RENDERER_GPU ? "GPU (Vulkan)" : "Software", n);
-        *later = s->renderer != run.renderer;
-        break;
-    case R_SCALE:
-        SDL_snprintf(v, n, "%d x %d", 640 * s->scale, 480 * s->scale);
-        *later = s->scale != run.scale;
-        break;
-    case R_CARDS:
-        SDL_strlcpy(v, s->cards ? "On" : "Off", n);
-        *later = s->cards != run.cards;
-        break;
-    }
-}
-
-static const char *row_note(int r)
-{
-    switch (r) {
-    case R_RESUME: return "Back to the game";
-    case R_CREDITS: return "Applies when the game restarts";
-    case R_PICTURE: return "4:3, or stretched to the screen";
-    case R_FILTER: return "How the picture is scaled up";
-    case R_FULLSCREEN: return "Auto: on for Steam Deck, Big Picture";
-    case R_VOLUME: return run.sound ? "The game's sound" : "Sound is off: the launcher's Settings";
-    case R_RENDERER: return "* applies the next time it starts";
-    case R_SCALE: return s->renderer == RENDERER_GPU ? "* GPU only; applies at the next start"
-                                                     : "The GPU renderer's (not in use)";
-    case R_CARDS: return "* VF.NET cards; applies at next start";
-    case R_TEST: return run.test_program ? "A: Test, X: Service (F2, F3)" : "The cabinet's Test switch";
-    case R_RESTART: return "Off and on again; records are kept";
-    case R_QUIT: return "Saves, then closes the game";
-    }
-    return "";
-}
-
-void menu_draw(SDL_Renderer *r)
-{
-    ren = r;
-    fill(0, 0, MENU_W, MENU_H, 90, 100, 130);           /* the border */
-    fill(1, 1, MENU_W - 2, MENU_H - 2, 20, 22, 30);
-    text(8, 7, "Virtua Fighter 4 Final Tuned", 255, 200, 80);
-    text(MENU_W - 8 - 6 * 8, 7, "PAUSED", 140, 150, 170);
-    fill(6, 18, MENU_W - 12, 1, 60, 66, 86);
-    for (int i = 0; i < R_COUNT; i++) {
-        float y = 24.0f + 12.0f * (float)i;
-        if (i == row)
-            fill(4, y - 2, MENU_W - 8, 12, 50, 70, 110);
-        char v[40];
-        int later;
-        row_value(i, v, sizeof v, &later);
-        int red = i == armed;
-        text(12, y, row_label(i), 255, red ? 140 : 255, red ? 120 : 255);
-        if (v[0]) {
-            text(164, y, v, 255, 220, 140);
-            if (later)
-                text(164 + 8.0f * (float)strlen(v), y, "*", 255, 140, 120);
+    static const ui_hint view_hints[] = {
+        { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Tabs", { UI_IN_PREV, UI_IN_NEXT } },
+        { "Close", { UI_IN_BACK, UI_IN_NONE } },
+    };
+    if (tab == TAB_CONTROLS)
+        ui_hints(X + W - 32, Y + H - 31, 26, view_hints, (int)SDL_arraysize(view_hints), 2);
+    else
+        ui_hints(X + W - 32, Y + H - 31, 26, hints, (int)SDL_arraysize(hints), 2);
+    if (tab != TAB_CONTROLS) {
+        int any = 0;
+        for (int i = 0; i < n; i++)
+            any |= rows[i].later;
+        if (any) {
+            ui_icon(UI_I_DOT, X + 40, Y + H - 31, 14, UI_ACCENT);
+            ui_text(UI_REGULAR, 14, X + 52, Y + H - 31, UI_MUTED, "Applies at the next start");
         }
     }
-    fill(6, 170, MENU_W - 12, 1, 60, 66, 86);
-    text(12, 176, row_note(row), 170, 200, 230);
-    text(8, 192, "Up/Down choose, Left/Right change", 150, 170, 150);
-    text(8, 203, "A or Enter: select  B or Esc: back", 150, 170, 150);
 }
 
-void menu_draw_bar(SDL_Renderer *r)
+int menu_bar_height(int ph)
 {
-    ren = r;
-    fill(0, 0, MENU_W, MENU_BAR_H, 90, 100, 130);
-    fill(1, 1, MENU_W - 2, MENU_BAR_H - 2, 20, 22, 30);
-    text(6, 2, "Test: A/F2  Service: X/F3  Close: B", 255, 220, 140);
+    int h = ph * 6 / 100;
+    return h < 30 ? 30 : h;
+}
+
+void menu_draw_bar(SDL_Renderer *r, int pw, int ph)
+{
+    (void)r;
+    float k = (float)ph / 44;
+    ui_set_scale(k, 0, 0);
+    float w = (float)pw / k;
+    ui_fill(0, 0, w, 44, UI_PANEL);
+    ui_fill(0, 43, w, 1, UI_LINE);
+    float x = 16 + ui_text(UI_BOLD, 16, 16, 22, UI_ACCENT, "Operator");
+    x += 20;
+    float h = 26;
+    x += ui_text(UI_REGULAR, 15, x, 22, UI_MUTED, "Test") + 8;
+    x += ui_cap_input(x, 22, h, "a", 1) + 6;
+    x += ui_cap_input(x, 22, h, "F2", 0) + 22;
+    x += ui_text(UI_REGULAR, 15, x, 22, UI_MUTED, "Service") + 8;
+    x += ui_cap_input(x, 22, h, "x", 1) + 6;
+    x += ui_cap_input(x, 22, h, "F3", 0) + 22;
+    x += ui_text(UI_REGULAR, 15, x, 22, UI_MUTED, "Done") + 8;
+    ui_cap_input(x, 22, h, "b", 1);
 }
