@@ -1282,8 +1282,29 @@ footer looked at 1:1. Each style showed its own names, `steamvirtual` as
 Xbox, and `steamvirtual` with `SteamDeck=1` as the Deck. Linux and Windows
 build without warnings.
 
+**Menus go by label, the game by place** (asked for by David). The game's
+controls stay where the buttons sit, so the PlayStation 2 layout is the
+same on every pad. In the game's menu, the operator bar and the launcher,
+a face button does what its label says (`ui_pad_face`, from the pad's own
+labels as SDL gives them):
+
+| Label | In menus | Xbox, PlayStation, Steam | Switch | GameCube |
+|---|---|---|---|---|
+| A or ✕ | select; the bar's Test | bottom | right | bottom |
+| B or ○ | back; the bar's Done | right | bottom | left |
+| X or □ | the launcher's Clear; the bar's Service | left | top | right |
+| Y or △ | the launcher's Default | top | left | top |
+
+A pad whose labels SDL does not know goes by place, as an Xbox pad. The
+caps and hints show the button that does the job (`ui_pad_face_name`), so
+"Select" shows A on every pad. While the operator bar is up it keeps each
+pad's A, X and B from the game by label, so Y stays the game's. Checked
+with a headless test of every pad type (each job once, and the caps
+matching the pad) and in the game on virtual Xbox, Switch and GameCube
+pads: back at Restart closed the menu, select armed it, the bar's caps
+were A, X and B, and its B gave the buttons back. The launcher's hints were
+checked offscreen; its input was not driven.
+
 **Not done:** real pads other than a DualSense, and Steam Input on a Deck
 or under Proton with a real pad (whether Steam tells SDL which pad is
-behind its own). The menu selects with the bottom button and goes back
-with the right one on every pad, so on a Nintendo pad B selects and A goes
-back, the reverse of Nintendo's own habit; the caps show it as it is.
+behind its own).

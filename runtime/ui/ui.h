@@ -128,6 +128,18 @@ typedef struct ui_hint {
  * returns the width */
 float ui_hints(float x, float y, float h, const ui_hint *hints, int n, int align);
 
+/* a gamepad face button's job in a menu. Menus go by the buttons' labels,
+ * the game by their places: select is the button labeled A or ✕, back B or
+ * ○, the launcher's clear X or □ and default Y or △. So on a Switch pad
+ * select is the right button and back the bottom one, and on a GameCube pad
+ * back is the left one. Returns UI_IN_OK, _BACK, _CLEAR or _DEFAULT, or
+ * UI_IN_NONE for a button that is not a face button. */
+int ui_pad_face(SDL_JoystickID pad, int button);
+/* the SDL name of the face button that does UI_IN_OK, _BACK, _CLEAR or
+ * _DEFAULT on the pad last used ("a", "b", "x" or "y": names by place),
+ * for its cap */
+const char *ui_pad_face_name(int in);
+
 /* ---- widgets ---- */
 /* the tabs bar: the previous and next caps at its ends */
 void ui_tabs(float x, float y, float w, float h, const char *const *names, int n, int cur);

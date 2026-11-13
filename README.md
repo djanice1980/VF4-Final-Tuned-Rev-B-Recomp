@@ -36,7 +36,9 @@ next start keep a dot until then.
 
 Each kind of gamepad has its own names for the buttons: Xbox One and
 Series, Xbox 360, DualSense, DualShock 4 and 3, Switch, GameCube, the
-Steam Deck and Steam Controller, and any other pad.
+Steam Deck and Steam Controller, and any other pad. In the menus a button
+does what its label says (A or ✕ selects, B or ○ goes back, wherever a
+Nintendo pad has them); the game's controls go by where the buttons sit.
 
 <img src="docs/images/glyphs.png" alt="Every gamepad input as each kind of pad names it: Xbox, Xbox 360, PS5, PS4, PS3, Switch, GameCube, Steam and generic">
 
@@ -329,7 +331,8 @@ puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 **The game's menu** pauses the game until it closes, over a blurred copy of
 the picture. Its tabs are Game, Picture, Sound and Controls: Q and E (or
 LB and RB) switch them. Up and Down choose, Left and Right change, A or
-Enter selects, B or Esc goes back; the keys or buttons for each are shown
+Enter selects, B or Esc goes back (A and B by their labels, so on a Switch
+pad A is the right button); the keys or buttons for each are shown
 at its foot, as the keyboard or the gamepad last used names them, and the
 panel on the right says what the chosen row does. Picture,
 scaling, fullscreen and volume change at once; renderer, resolution and

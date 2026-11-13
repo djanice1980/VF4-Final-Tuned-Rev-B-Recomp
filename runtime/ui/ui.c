@@ -746,6 +746,68 @@ int ui_pad_style(void)
     return s;
 }
 
+/* ---- face buttons in menus: by their labels ---- */
+
+static const int face_in[4] = { UI_IN_OK, UI_IN_BACK, UI_IN_CLEAR, UI_IN_DEFAULT };
+
+/* a face button's job in a menu from its label (0 select, 1 back, 2 clear,
+ * 3 default), or -1 */
+static int face_job(SDL_GamepadButtonLabel l)
+{
+    switch (l) {
+    case SDL_GAMEPAD_BUTTON_LABEL_A: case SDL_GAMEPAD_BUTTON_LABEL_CROSS: return 0;
+    case SDL_GAMEPAD_BUTTON_LABEL_B: case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE: return 1;
+    case SDL_GAMEPAD_BUTTON_LABEL_X: case SDL_GAMEPAD_BUTTON_LABEL_SQUARE: return 2;
+    case SDL_GAMEPAD_BUTTON_LABEL_Y: case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE: return 3;
+    default: return -1;
+    }
+}
+
+/* the jobs of the four face buttons (SDL_GAMEPAD_BUTTON_SOUTH..NORTH) from
+ * their labels; by place (south select, east back, west clear, north
+ * default) when the labels are not known or do not give each job once */
+static void face_jobs(const SDL_GamepadButtonLabel l[4], int job[4])
+{
+    int seen = 0;
+    for (int b = 0; b < 4; b++) {
+        job[b] = face_job(l[b]);
+        if (job[b] >= 0)
+            seen |= 1 << job[b];
+    }
+    if (seen != 15)
+        for (int b = 0; b < 4; b++)
+            job[b] = b;
+}
+
+int ui_pad_face(SDL_JoystickID pad, int button)
+{
+    if (button < SDL_GAMEPAD_BUTTON_SOUTH || button > SDL_GAMEPAD_BUTTON_NORTH)
+        return UI_IN_NONE;
+    SDL_Gamepad *g = SDL_GetGamepadFromID(pad);
+    SDL_GamepadType type = SDL_GetGamepadTypeForID(pad);
+    SDL_GamepadButtonLabel l[4];
+    int job[4];
+    for (int b = 0; b < 4; b++)
+        l[b] = g ? SDL_GetGamepadButtonLabel(g, (SDL_GamepadButton)b)
+                 : SDL_GetGamepadButtonLabelForType(type, (SDL_GamepadButton)b);
+    face_jobs(l, job);
+    return face_in[job[button]];
+}
+
+const char *ui_pad_face_name(int in)
+{
+    const pad_style *ps = &styles[ui_pad_style()];
+    SDL_GamepadButtonLabel l[4];
+    int job[4];
+    for (int b = 0; b < 4; b++)
+        l[b] = last_face[b] ? last_face[b] : SDL_GetGamepadButtonLabelForType(ps->type, (SDL_GamepadButton)b);
+    face_jobs(l, job);
+    for (int b = 0; b < 4; b++)
+        if (face_in[job[b]] == in)
+            return SDL_GetGamepadStringForButton((SDL_GamepadButton)b);
+    return NULL;
+}
+
 /* a cap: draw 0 measures it */
 static float cap_box(float x, float y, float h, const char *label, int icon, int round, SDL_Color c, int draw)
 {
@@ -894,12 +956,17 @@ static int hint_names(int in, int pad, const char **out)
         { "Up", "Down" }, { "Left", "Right" }, { "Return", NULL }, { "Escape", NULL }, { "Q", NULL }, { "E", NULL },
         { "Delete", NULL }, { "Backspace", NULL },
     };
-    static const char *const pads[][2] = {
-        { "dpup", "dpdown" }, { "dpleft", "dpright" }, { "a", NULL }, { "b", NULL }, { "leftshoulder", NULL },
-        { "rightshoulder", NULL }, { "x", NULL }, { "y", NULL },
+    static const char *const pads[][2] = {      /* the face buttons go by label: ui_pad_face_name */
+        { "dpup", "dpdown" }, { "dpleft", "dpright" }, { NULL, NULL }, { NULL, NULL }, { "leftshoulder", NULL },
+        { "rightshoulder", NULL }, { NULL, NULL }, { NULL, NULL },
     };
     if (in < 0 || in >= UI_IN_NONE)
         return 0;
+    if (pad && (in == UI_IN_OK || in == UI_IN_BACK || in == UI_IN_CLEAR || in == UI_IN_DEFAULT)) {
+        out[0] = ui_pad_face_name(in);
+        out[1] = NULL;
+        return out[0] ? 1 : 0;
+    }
     const char *const *t = pad ? pads[in] : keys[in];
     out[0] = t[0];
     out[1] = t[1];

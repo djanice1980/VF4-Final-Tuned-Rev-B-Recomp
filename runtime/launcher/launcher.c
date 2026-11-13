@@ -683,7 +683,8 @@ static void settings_event(const SDL_Event *e)
                 capturing = 0;
             else
                 capture(SDL_GetScancodeName(e->key.scancode));
-        } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
+        } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                   ui_pad_face(e->gbutton.which, e->gbutton.button) == UI_IN_BACK) {
             capturing = 0;          /* B on a pad: a keyboard row cannot take a pad button */
         }
         return;
@@ -692,6 +693,7 @@ static void settings_event(const SDL_Event *e)
         return;
     int k = e->type == SDL_EVENT_KEY_DOWN ? (int)e->key.key : -1;
     int g = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.button : -1;
+    int face = g >= 0 ? ui_pad_face(e->gbutton.which, g) : UI_IN_NONE;     /* by label */
     int n = tab_count();
     if (k == SDLK_DOWN || g == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
         st_row = (st_row + 1) % n;
@@ -705,16 +707,16 @@ static void settings_event(const SDL_Event *e)
         option_change(&st, tab_rows[st_tab][st_row], -1);
     else if (!controls_tab() && (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
         option_change(&st, tab_rows[st_tab][st_row], 1);
-    else if (k == SDLK_RETURN || k == SDLK_SPACE || g == SDL_GAMEPAD_BUTTON_SOUTH)
+    else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK)
         settings_press(st_row);
-    else if (controls_tab() && (k == SDLK_DELETE || g == SDL_GAMEPAD_BUTTON_WEST))
+    else if (controls_tab() && (k == SDLK_DELETE || face == UI_IN_CLEAR))
         memset(tab_binding(st_row), 0, sizeof(binding));
-    else if (controls_tab() && (k == SDLK_BACKSPACE || g == SDL_GAMEPAD_BUTTON_NORTH)) {
+    else if (controls_tab() && (k == SDLK_BACKSPACE || face == UI_IN_DEFAULT)) {
         /* the defaults back on this row */
         settings d;
         settings_defaults(&d);
         *tab_binding(st_row) = st_tab == T_PAD ? d.pad[st_row] : d.key[st_tab == T_KEY2][st_row];
-    } else if (k == SDLK_ESCAPE || g == SDL_GAMEPAD_BUTTON_EAST)
+    } else if (k == SDLK_ESCAPE || face == UI_IN_BACK)
         settings_close();
 }
 
@@ -1212,6 +1214,7 @@ static void page_event(const SDL_Event *e)
         return;
     int k = e->type == SDL_EVENT_KEY_DOWN ? (int)e->key.key : -1;
     int g = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.button : -1;
+    int face = g >= 0 ? ui_pad_face(e->gbutton.which, g) : UI_IN_NONE;     /* by label */
     if (page == P_BUILD && focus == B_TARGET &&
         (k == SDLK_LEFT || k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) {
         press(B_TARGET);
@@ -1222,12 +1225,12 @@ static void page_event(const SDL_Event *e)
         move_focus(1);
     else if (k == SDLK_LEFT || k == SDLK_UP || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_UP)
         move_focus(-1);
-    else if (k == SDLK_RETURN || k == SDLK_SPACE || g == SDL_GAMEPAD_BUTTON_SOUTH) {
+    else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK) {
         if (focus < 0 || !enabled(focus))
             move_focus(1);
         else
             press(focus);
-    } else if (k == SDLK_ESCAPE || g == SDL_GAMEPAD_BUTTON_EAST) {
+    } else if (k == SDLK_ESCAPE || face == UI_IN_BACK) {
         if (page == P_BUILD || page == P_FAIL)
             press(B_BACK);
         else if (k == SDLK_ESCAPE && page != P_WORK)

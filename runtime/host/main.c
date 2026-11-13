@@ -558,8 +558,11 @@ static void bindings_compile(void)
  * menu's chord or operator bar has them, or until they are let go after the
  * menu closed (the button that closed it is not the game's) */
 static unsigned pad_ignore;
+static int pad_ignore_bar;              /* and each pad's operator bar buttons (they go by label: ui_pad_face) */
 static bool key_ignore[SDL_SCANCODE_COUNT];
 static unsigned pads_raw;               /* the buttons of every gamepad, together */
+static unsigned pad_raw[2];             /* the first two gamepads' buttons */
+static SDL_JoystickID pad_id[2];
 #define CHORD ((1u << SDL_GAMEPAD_BUTTON_BACK) | (1u << SDL_GAMEPAD_BUTTON_START))     /* View + Menu: the menu */
 
 /* everything at once; returns CHORD when a player's gamepad holds View + Menu */
@@ -579,22 +582,26 @@ static unsigned read_controls(game_input *in)
 
     unsigned first = 0;
     int n = 0;
-    pads_raw = 0;
+    pads_raw = pad_raw[0] = pad_raw[1] = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     for (int i = 0; ids && i < n && i < 2; i++) {
         SDL_Gamepad *g = SDL_GetGamepadFromID(ids[i]);
         if (!g)
             continue;
-        unsigned b = 0, raw = 0;
+        unsigned b = 0, raw = 0, ignore = pad_ignore;
         for (int j = 0; j < SDL_GAMEPAD_BUTTON_COUNT && j < 32; j++)
             if (SDL_GetGamepadButton(g, (SDL_GamepadButton)j))
                 raw |= 1u << j;
+        if (pad_ignore_bar)     /* A, X and B by label: Y stays the game's */
+            for (int f = SDL_GAMEPAD_BUTTON_SOUTH; f <= SDL_GAMEPAD_BUTTON_NORTH; f++)
+                if (ui_pad_face(ids[i], f) != UI_IN_DEFAULT)
+                    ignore |= 1u << f;
         b |= stick_bits(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f,
                         SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f);
         for (int a = 0; a < ACT_COUNT; a++)
             for (int j = 0; j < pads[a].n; j++) {
                 int x = pads[a].in[j];
-                int on = x >= 0 ? (x < 32 && (raw >> x & 1) && !(pad_ignore >> x & 1))
+                int on = x >= 0 ? (x < 32 && (raw >> x & 1) && !(ignore >> x & 1))
                                 : SDL_GetGamepadAxis(g, (SDL_GamepadAxis)(-1 - x)) > 16000;
                 if (on) {
                     b |= act_bits[a];
@@ -603,6 +610,8 @@ static unsigned read_controls(game_input *in)
             }
         in->player[i] |= b;
         pads_raw |= raw;
+        pad_raw[i] = raw;
+        pad_id[i] = ids[i];
         if ((raw & CHORD) == CHORD)
             first |= CHORD;
     }
@@ -664,13 +673,10 @@ static struct {
 static SDL_Window *main_win;
 static settings start_cfg;              /* as this run started (what applies at the next start differs) */
 static char settings_path[4300];
-static int menu_on, bar_on, ov_dirty;   /* bar_on: the operator bar's buttons (A Test, X Service) */
+static int menu_on, bar_on, ov_dirty;   /* bar_on: the operator bar's buttons (A Test, X Service, by label) */
 static Uint64 bar_until;                /* the bar is drawn until then (ms); its buttons work until it closes */
 static unsigned pad_hold;               /* buttons held as the menu closed: not the game's until let go */
 static int live_fullscreen;
-
-#define BAR_BUTTONS ((1u << SDL_GAMEPAD_BUTTON_SOUTH) | (1u << SDL_GAMEPAD_BUTTON_WEST) | \
-                     (1u << SDL_GAMEPAD_BUTTON_EAST))
 
 static int fullscreen_wanted(void)
 {
@@ -1311,19 +1317,20 @@ int main(int argc, char **argv)
             }
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
                 int b = ev.gbutton.button;
+                int face = ui_pad_face(ev.gbutton.which, b);    /* A selects, B goes back: by label */
                 if (b == SDL_GAMEPAD_BUTTON_GUIDE) {
                     if (menu_on)
                         menu_do(MENU_RESUME);
                     else
                         menu_show();
-                } else if (menu_on && b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                } else if (menu_on && face == UI_IN_OK) {
                     if (!menu_do(menu_command(MENU_OK)))
                         running = 0;
-                } else if (menu_on && (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START)) {
+                } else if (menu_on && (face == UI_IN_BACK || b == SDL_GAMEPAD_BUTTON_START)) {
                     menu_do(menu_command(MENU_BACK));
                 } else if (menu_on && (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
                     menu_do(menu_command(b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER ? MENU_PREV : MENU_NEXT));
-                } else if (!menu_on && bar_on && b == SDL_GAMEPAD_BUTTON_EAST) {
+                } else if (!menu_on && bar_on && face == UI_IN_BACK) {
                     bar_on = 0;
                     pad_hold |= 1u << b;
                     logf_("menu: the operator's buttons are the game's again");
@@ -1350,7 +1357,8 @@ int main(int argc, char **argv)
         /* the controls: the menu's chord and the operator bar's buttons are
          * kept from the game, as is what was held when the menu closed */
         static unsigned last_pad;
-        pad_ignore = pad_hold | ((last_pad & CHORD) == CHORD ? CHORD : 0) | (bar_on ? BAR_BUTTONS : 0);
+        pad_ignore = pad_hold | ((last_pad & CHORD) == CHORD ? CHORD : 0);
+        pad_ignore_bar = bar_on;
         game_input in;
         unsigned pad = read_controls(&in);
         last_pad = pad;
@@ -1387,13 +1395,18 @@ int main(int argc, char **argv)
             }
             last_program = program;
         }
-        if (bar_on && !menu_on) {
-            unsigned b = pads_raw & ~pad_hold;
-            if (b & (1u << SDL_GAMEPAD_BUTTON_SOUTH))
-                in.sys |= GAME_SYS_TEST;
-            if (b & (1u << SDL_GAMEPAD_BUTTON_WEST))
-                in.sys |= GAME_SYS_SERVICE;
-        }
+        if (bar_on && !menu_on)
+            for (int i = 0; i < 2; i++) {
+                unsigned b = pad_raw[i] & ~pad_hold;
+                for (int f = SDL_GAMEPAD_BUTTON_SOUTH; f <= SDL_GAMEPAD_BUTTON_NORTH; f++)
+                    if (b >> f & 1) {
+                        int face = ui_pad_face(pad_id[i], f);
+                        if (face == UI_IN_OK)
+                            in.sys |= GAME_SYS_TEST;
+                        else if (face == UI_IN_CLEAR)       /* the X button */
+                            in.sys |= GAME_SYS_SERVICE;
+                    }
+            }
         /* in the menu: the D-pad or left stick of any pad moves, held it repeats */
         if (menu_on) {
             memset(&in, 0, sizeof in);

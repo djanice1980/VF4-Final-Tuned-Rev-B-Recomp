@@ -269,11 +269,11 @@ void menu_draw_bar(SDL_Renderer *r, int pw, int ph)
     x += 20;
     float h = 26;
     x += ui_text(UI_REGULAR, 15, x, 22, UI_MUTED, "Test") + 8;
-    x += ui_cap_input(x, 22, h, "a", 1) + 6;
+    x += ui_cap_input(x, 22, h, ui_pad_face_name(UI_IN_OK), 1) + 6;        /* A, X and B by label */
     x += ui_cap_input(x, 22, h, "F2", 0) + 22;
     x += ui_text(UI_REGULAR, 15, x, 22, UI_MUTED, "Service") + 8;
-    x += ui_cap_input(x, 22, h, "x", 1) + 6;
+    x += ui_cap_input(x, 22, h, ui_pad_face_name(UI_IN_CLEAR), 1) + 6;
     x += ui_cap_input(x, 22, h, "F3", 0) + 22;
     x += ui_text(UI_REGULAR, 15, x, 22, UI_MUTED, "Done") + 8;
-    ui_cap_input(x, 22, h, "b", 1);
+    ui_cap_input(x, 22, h, ui_pad_face_name(UI_IN_BACK), 1);
 }
