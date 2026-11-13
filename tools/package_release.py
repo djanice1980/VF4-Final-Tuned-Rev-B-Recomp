@@ -11,7 +11,10 @@ usage: python3 -I tools/package_release.py windows LAUNCHER.exe OUTDIR
            (the embeddable Python from python.org), builder/
   linux:   vf4ft-launcher, builder/ (Python and SDL3 are the system's)
 
-OUTDIR is made fresh, then zipped beside itself as OUTDIR.zip.
+OUTDIR is made fresh, then zipped beside itself as OUTDIR.zip. When LAUNCHER
+is in a CMake build folder it is rebuilt there first, so a launcher older
+than its sources cannot get in (M5's first release had one built before
+--do and --exit existed).
 """
 import hashlib
 import os
@@ -36,6 +39,23 @@ def tracked(paths):
     return [p for p in r.stdout.decode().split("\0") if p]
 
 
+def fresh_launcher(launcher):
+    """rebuilds the launcher in its CMake build folder, if it is in one"""
+    d = os.path.dirname(os.path.abspath(launcher))
+    if not os.path.isfile(os.path.join(d, "CMakeCache.txt")):
+        print("%s: not in a CMake build folder; packaged as it is" % launcher)
+        return
+    print("rebuilding the launcher in", d, flush=True)
+    r = subprocess.run(["cmake", "--build", d, "--target", "vf4ft-launcher"])
+    if r.returncode != 0:
+        sys.exit("the launcher did not build")
+
+
+def uncommitted(paths):
+    r = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--"] + paths, capture_output=True, check=True)
+    return [line[3:] for line in r.stdout.decode().splitlines()]
+
+
 def python_embed(dest):
     url, sha = PYTHON_EMBED
     cache = os.path.join(toolchain.cache_dir(), os.path.basename(url))
@@ -56,6 +76,9 @@ def main():
     if len(sys.argv) != 4 or sys.argv[1] not in ("windows", "linux"):
         sys.exit(__doc__)
     kind, launcher, out = sys.argv[1], sys.argv[2], os.path.abspath(sys.argv[3])
+    fresh_launcher(launcher)
+    for p in uncommitted(BUILDER_PATHS):
+        print("warning: not committed, packaged as it is now:", p)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     files = tracked(BUILDER_PATHS)

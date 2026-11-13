@@ -769,8 +769,22 @@ native Linux target uses the system's compiler and SDL3.
   dialog), Build, Play. Its scripted mode (`--do build|update --exit`) ran
   Build and Update and showed the builder's output as it came.
 - The first scripted Build, in the brand-new prefix, did not start; the same
-  command worked twice afterwards. The cause was not found: the launcher had
-  no log yet, and now writes `launcher.log`.
+  command worked twice afterwards. Found later (2026-11-12, after M6): the
+  release zip's launcher was built at 19:08:58, before `--do` and `--exit`
+  were added at 19:09:17, and `package_release.py` packaged
+  `build/win64/vf4ft-launcher.exe` as it found it. That launcher has no
+  `--do` or `--exit` in it at all, so it ignored both and waited for a hand
+  on its buttons (which is how the hand-run Build and Play above were done,
+  in that same window). The two runs that worked had a rebuilt launcher
+  copied in. Not a Proton or first-run problem: the current release builds
+  in a brand-new prefix with the same command (100 s with the machine
+  loaded). Three things in our code let it pass in silence, now changed:
+  `package_release.py` rebuilds the launcher in its CMake build folder
+  first, and warns about builder files that are not committed; the launcher
+  logs an option it does not know; and `--exit` ends with 1 when `--do`
+  started nothing (it ended with 0, and `umu-run` passes the code on). The
+  same look found `--do steam` pressing Settings (the action list and the
+  buttons were in different orders); `--do` now names the buttons.
 - Development builds are unchanged: CMake still makes the tables from the
   decompilation when both checkouts are there (`-DVF4FT_TABLES=meta` for the
   player's way), and the game falls back to `data/main.bin` and

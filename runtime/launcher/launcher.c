@@ -27,7 +27,8 @@
  *
  * For testing: --game DIR (another install folder), --set DIR, --do ACTION
  * (build, update, play or steam: pressed at the start) and --exit (quit when
- * that action's process ends, with its result as the exit code); --shot
+ * that action's process ends, with its result as the exit code; 1 when the
+ * action started nothing); --shot
  * PAGE FILE draws one page (main, settings, pad, key1, key2) to a BMP file
  * and quits (with SDL_VIDEO_DRIVER=offscreen no window shows).
  */
@@ -728,13 +729,15 @@ static void draw(void)
 int main(int argc, char **argv)
 {
     const char *opt_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL;
-    int opt_exit = 0;
+    const char *unknown[8];
+    int opt_exit = 0, nunknown = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) opt_game = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc) opt_set = argv[++i];
         else if (!strcmp(argv[i], "--do") && i + 1 < argc) opt_do = argv[++i];
         else if (!strcmp(argv[i], "--exit")) opt_exit = 1;
         else if (!strcmp(argv[i], "--shot") && i + 2 < argc) shot_page = argv[++i], shot_file = argv[++i];
+        else if (nunknown < 8) unknown[nunknown++] = argv[i];
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         SDL_Log("SDL_Init: %s", SDL_GetError());
@@ -757,23 +760,37 @@ int main(int argc, char **argv)
     load_state();
     if (opt_set)
         SDL_strlcpy(set_path, opt_set, sizeof set_path);
+    for (int i = 0; i < nunknown; i++)
+        say("not an option: %s (ignored)", unknown[i]);
     say("builder files: %s", root[0] ? root : "(not found)");
     say("install folder: %s", game);
     if (!set_path[0])
         find_set();
     say(built ? "Play, or Update after a new release." : set_path[0] ? "Press Build." : "Choose your MAME set's folder, then Build.");
     SDL_strlcpy(status, "ready", sizeof status);
+    int do_failed = 0;      /* --do started nothing: --exit's result is then 1 */
     if (opt_do) {
-        static const char *const acts[] = {"set", "build", "update", "play", "steam"};
+        /* by name: the buttons' order (B_*) is the window's, not this list's */
+        static const struct { const char *name; int button; } acts[] = {
+            {"set", B_SET}, {"build", B_BUILD}, {"update", B_UPDATE}, {"play", B_PLAY}, {"steam", B_STEAM},
+        };
         int found = 0;
-        for (int i = 0; i < 5; i++)
-            if (!strcmp(opt_do, acts[i])) {
+        for (size_t i = 0; i < SDL_arraysize(acts); i++)
+            if (!strcmp(opt_do, acts[i].name)) {
+                int b = acts[i].button, on = enabled(b);
                 found = 1;
-                say("--do %s (%s)", opt_do, enabled(i) ? "pressing" : "not available now");
-                press(i);
+                say("--do %s (%s)", opt_do, on ? "pressing" : "not available now");
+                if (on)
+                    press(b);
+                if (b != B_SET && !proc && !game_proc)
+                    do_failed = 1;
             }
-        if (!found)
-            say("--do %s: not an action (build, update, play, steam)", opt_do);
+        if (!found) {
+            say("--do %s: not an action (set, build, update, play, steam)", opt_do);
+            do_failed = 1;
+        }
+        if (do_failed && opt_exit)
+            say("--do %s started nothing: exit code 1", opt_do);
     }
     if (shot_page) {
         static const char *const pages[] = {"main", "settings", "pad", "key1", "key2"};
@@ -789,7 +806,7 @@ int main(int argc, char **argv)
         SDL_Quit();
         return ok ? 0 : 1;
     }
-    int running = 1, result = 0;
+    int running = 1, result = do_failed;
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
