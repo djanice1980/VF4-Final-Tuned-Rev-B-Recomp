@@ -942,7 +942,14 @@ program: `test.bin` from the game, the game from `test.bin`'s EXIT.
   there, and `TEST_EXTRA` is gone. The busy wait is hooked as before:
   headless (`--sound chip --cards`), 3,000 test mode frames add 1.0 s to
   the 4.96 s of the boot alone, 0.33 ms a frame (the workaround's run
-  measured 0.82 ms the same way).
+  measured 0.82 ms the same way). `work/gen/test` translated again from
+  the new list: 2,128 routines (2,119 before; the nine new ones and
+  nothing else). Over the same 3,000 test mode frames the guest runs the
+  same 2,182,233,602 instructions to the same place; the calls that leave
+  translated code fall from 123,916 to 49,981 and the instructions
+  interpreted from 5.90 to 5.60 million. The test mode tour (its screens,
+  EXIT, attract 6,312 vertical blanks later, test mode again) stops at the
+  same frame and mode at every step as before.
 - The test program has no sound (the sound test is the BIOS's system
   menu): the sound CPU stays in reset while it runs, as on a cold start of
   that program. This found a bug in M4's code: the sound chip's state was
