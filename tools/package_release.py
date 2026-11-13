@@ -99,8 +99,8 @@ ON WINDOWS
 4. Build: the game goes into game\\ beside the launcher, or elsewhere with
    Change.... Press Build. The first build downloads about 200 MB of
    compiler and takes a few minutes.
-5. Play. Add to Steam (on the Play page, with Steam closed) adds the game
-   to your Steam library.
+5. Play. Optional: to have the game in your Steam library too, exit
+   Steam (Steam menu, Exit), then press Add to Steam on the Play page.
 
 ON LINUX OR A STEAM DECK (through Steam's Proton)
 1. Extract this zip into a folder of its own, for example ~/Games/vf4ft.
@@ -110,8 +110,10 @@ ON LINUX OR A STEAM DECK (through Steam's Proton)
 3. Right-click the new entry, Properties, Compatibility: tick "Force the
    use of a specific Steam Play compatibility tool" and choose Proton
    Experimental.
-4. Start it from your Steam library, then do steps 3 to 5 above (Play
-   starts the game under the same Proton).
+4. Start it from your Steam library, do steps 3 and 4 above, and press
+   Play: the game starts under the same Proton. This entry is how you
+   play from now on; Add to Steam is not needed here (it cannot work
+   while Steam runs).
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
 Plain Wine is not supported: run the launcher through Proton.
 
