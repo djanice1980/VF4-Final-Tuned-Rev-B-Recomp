@@ -96,7 +96,9 @@ def main():
                 "Run vf4ft-launcher, choose the folder with your MAME vf4tuned set\n"
                 "(gds-0036f.chd and vf4tuned.zip), press Build, then Play.\n"
                 "The game is built into game/ beside the launcher, from your own set;\n"
-                "this download contains none of the game. Details: builder/README.md\n")
+                "this download contains none of the game. Details: builder/README.md\n\n"
+                "The launcher's fonts are Noto Sans and Noto Sans Mono, under the SIL\n"
+                "Open Font License 1.1: builder/runtime/ui/OFL.txt.\n")
     zpath = out.rstrip(os.sep) + ".zip"
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for dirpath, _, names in os.walk(out):

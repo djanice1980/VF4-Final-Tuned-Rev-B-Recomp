@@ -90,10 +90,16 @@ python3 -I tools/make_game.py --update ~/Games/vf4ft
 
 **With the launcher.** A release will be a zip with `vf4ft-launcher` and
 everything it runs (on Windows also SDL3.dll and Python's embeddable
-package, so nothing has to be installed). Run it, press Choose set, pick the
-set's folder, press Build, then Play. Update rebuilds after a new release;
-Add to Steam adds the game as a non-Steam game (close Steam first). The
-game goes into `game/` beside the launcher. To build the launcher from this
+package, so nothing has to be installed). It walks through three steps,
+shown at its top: Game files (choose the set's folder; it looks in the
+usual places first), Build (the stage, a progress bar, the time so far and
+the builder's last lines; Cancel stops it cleanly), and Play. The Play page
+also has Settings (the game's settings and controls, in tabs), Add to Steam
+(adds the game as a non-Steam game; close Steam first), Build again, and an
+Update card when the builder is newer than the game it built. The mouse,
+the keyboard (arrows, Enter, Esc; Q and E switch tabs) and a gamepad
+(D-pad, A, B; LB and RB switch tabs) all work it. The game goes into
+`game/` beside the launcher. To build the launcher from this
 repository: `cmake --build build/linux --target vf4ft-launcher` (it needs no
 translated code), then `build/linux/vf4ft-launcher`. A release folder is put
 together by `tools/package_release.py` (its usage is at its top).
@@ -124,7 +130,7 @@ Proton on a desktop PC.
    by itself in EmuDeck's ROM folders (`Emulation/roms/arcade`, `naomi2`,
    `naomi` or `mame`, on the Deck or the SD card), or in `~/Games`,
    `~/Games/naomi2`, `~/roms`, `~/Downloads` or `~/Desktop`. Anywhere else,
-   pick it with Choose set.
+   pick it with Choose folder… on the Game files page.
 4. **Add it to Steam:** open Steam on the desktop, Games menu, "Add a
    Non-Steam Game to My Library", Browse, set the file type to "All Files",
    pick `vf4ft-launcher.exe` in the release folder, then "Add Selected
@@ -132,7 +138,8 @@ Proton on a desktop PC.
    "Force the use of a specific Steam Play compatibility tool" and choose
    Proton Experimental.
 5. **In Game Mode**, start it from the library (the Non-Steam tab). The
-   D-pad and A work the buttons: Build (the first run downloads about 190
+   D-pad and A work the buttons (B goes back, LB and RB switch tabs):
+   Continue, Build (the first run downloads about 190
    MB of compiler, and takes several minutes on the Deck), then Play. The
    game runs fullscreen in the same Proton prefix and the launcher comes
    back when it ends. Settings is where controls, the coin setting, the
@@ -287,17 +294,21 @@ puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 | Fullscreen | F11 or Alt+Enter | |
 | The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox or PS button), or hold View + Menu for a second |
 
-**The game's menu** pauses the game until it closes. Up and Down choose,
-Left and Right change, A or Enter selects, B or Esc goes back. Picture,
+**The game's menu** pauses the game until it closes, over a blurred copy of
+the picture. Its tabs are Game, Picture, Sound and Controls: Q and E (or
+LB and RB) switch them. Up and Down choose, Left and Right change, A or
+Enter selects, B or Esc goes back; the keys or buttons for each are shown
+at its foot, as the keyboard or the gamepad last used names them, and the
+panel on the right says what the chosen row does. Picture,
 scaling, fullscreen and volume change at once; renderer, resolution and
-the card units are kept for the next start (marked `*` until then), and
-credits (free play or arcade coins) apply at the next restart. Operator
+the card units are kept for the next start (marked with a dot until then),
+and credits (free play or arcade coins) apply at the next restart. Operator
 test menu presses the cabinet's Test switch and shows the operator bar,
 where A is Test and X is Service until B or the test menu's EXIT. Restart
 the game turns the cabinet off and on (records, settings and cards are
 kept); it and Quit ask for a second A. Changes are saved to
-`settings.txt` when the menu closes. Controls are changed in the
-launcher's Controls page, not here.
+`settings.txt` when the menu closes. The Controls tab shows the controls;
+they are changed in the launcher's Settings, not here.
 
 **Test mode,** the operator's: Test (F2) opens the game's test menu (its
 own test program, `test.bin`, as the cabinet's BIOS starts it). Service
@@ -419,3 +430,14 @@ build makes the runtime's tables (`tables.c`, `tables_test.c`) from it.
 
 MIT, for this project's own work: see [LICENSE](LICENSE). The game and
 everything made from it belong to Sega.
+
+Others' work in it:
+
+- The fonts of the launcher and the game's menu, Noto Sans and Noto Sans
+  Mono (cut down by `tools/make_fonts.py` into `runtime/ui/fonts.c`): SIL
+  Open Font License 1.1, [runtime/ui/OFL.txt](runtime/ui/OFL.txt). The
+  builder puts a copy in the game's folder as `Font license.txt`.
+- [stb_truetype](runtime/ui/stb_truetype.h) 1.26, which draws them: public
+  domain or MIT, as its own end says.
+- SDL3, which the builder downloads and the Windows release carries as
+  `SDL3.dll`: zlib license.

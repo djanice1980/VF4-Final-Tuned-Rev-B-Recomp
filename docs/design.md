@@ -312,9 +312,10 @@ Built in M5 (results: section 19).
    <install folder>` rebuilds after a new release from the install's own
    data (the set is not needed), keeping `user/`. `--target linux` makes a
    native Linux program with the system's compiler and SDL3.
-2. `vf4ft-launcher` (`runtime/launcher/launcher.c`, SDL3 only): Choose set,
-   Build, Update, Play, Add to Steam; it runs step 1 and
-   `tools/steam_shortcut.py` and shows their output. The Windows release
+2. `vf4ft-launcher` (`runtime/launcher/launcher.c`, SDL3 and `runtime/ui`
+   only): Game files › Build › Play, with Update, Settings and Add to Steam;
+   it runs step 1 (with `--launcher`: progress lines, cancel by closing
+   its standard input, section 22) and `tools/steam_shortcut.py`. The Windows release
    carries SDL's official SDL3.dll and Python's embeddable package
    (`python/`), so nothing is installed; the builder downloads the pinned
    llvm-mingw and SDL3 on its first run. On Linux the launcher uses the
@@ -989,7 +990,7 @@ boots in the same 6,312 vertical blanks as from power on and reaches
 attract in the same state as a cold boot (the sound chip's included).
 
 Controls: Test is F2 and Service F3 by default; both are rebindable in the
-launcher's Controls page ("Test (operator)" and "Service (operator)") and
+launcher's Settings, Keyboard tabs ("Test (operator)" and "Service (operator)"), and
 have no gamepad default. In the menu Service moves and Test chooses;
 screens such as the input test end with Service and Test together. The
 coin and free play settings are not in the game's test mode (they are the
@@ -1013,7 +1014,9 @@ The game itself is not told: it is stopped between two vertical blanks.
 
 **Using it.** Up and Down choose (D-pad, left stick or the arrows; a held
 direction repeats after 350 ms, every 110 ms), Left and Right change, A or
-Enter selects. Any pad steers, so a second player can too. The rows:
+Enter selects; Q and E (Page Up and Page Down, LB and RB) switch its tabs,
+Game, Picture, Sound and Controls (section 22). Any pad steers, so a second
+player can too. The rows:
 
 | Row | What it does | When it applies |
 |---|---|---|
@@ -1021,13 +1024,15 @@ Enter selects. Any pad steers, so a second player can too. The rows:
 | Credits | free play or arcade coins | at a restart or the next start (the game reads the EEPROM as it starts) |
 | Picture, Scaling, Fullscreen | 4:3 or stretch, smooth or sharp, auto/off/on | at once |
 | Volume | the game's sound, 0 to 100% in tens (new `volume` setting) | at once; shown as "(sound off)" with the sound chip off |
-| Renderer, Resolution, Card units | GPU or software, 1 to 4 times 640 x 480, the card units | at the next start; marked `*` while they differ from this run |
+| Renderer, Resolution, Card units | GPU or software, 1 to 4 times 640 x 480, the card units | at the next start; marked with a dot while they differ from this run |
 | Operator test menu | presses the Test switch, then the operator bar | at once |
 | Restart the game | power off and on: the game starts again | at once, after a second A |
 | Quit | saves and closes | at once, after a second A |
 
 The settings file is written when the menu closes, if anything changed.
-The line under the rows says what the chosen one does.
+The panel beside the rows says what the chosen one does. The Controls tab
+lists the controls (the keyboard's or the gamepads', as the last input
+was); they are changed in the launcher.
 
 **Test mode from a gamepad.** Operator test menu holds the Test switch for
 six vertical blanks, which starts the test program, and shows the operator
@@ -1051,11 +1056,11 @@ event list keeps no state across a call.
 until it is let go, so it does not reach the game as a throw or a coin.
 The chord itself never reaches the game while both are held.
 
-**Drawing.** `runtime/host/menu.c` draws the panel (320 x 216) with SDL's
-software renderer and its 8 x 8 debug font into a surface. The surface is
-uploaded to a texture, and blitted over the swapchain after the picture
-with nearest filtering at the largest whole scale that fits 85% of the
-picture (3 times at 1280 x 960). No shaders, so it works on whatever
+**Drawing.** First a 320 x 216 panel in SDL's 8 x 8 debug font, scaled
+up by whole steps; since section 22, `runtime/ui` at the window's own
+pixel size, over a blurred copy of the picture. Either way SDL's software
+renderer draws it into a surface that is uploaded to a texture and blitted
+over the swapchain after the picture. No shaders, so it works on whatever
 device the window has, the software picture's included.
 
 **Tests.** `--keys "FRAME:item,..."` presses keys one after another once
@@ -1074,4 +1079,130 @@ Quit; View + Menu, Guide and the D-pad's repeat on the virtual gamepad.
 The Windows exe under Proton draws it through Vulkan the same way. Not
 done: a real gamepad and the Steam Deck (the virtual pad goes through the
 same SDL gamepad events, but Steam Input was not in the way), and changing
-controls from the menu (the launcher's Controls page does that).
+controls from the menu (the launcher's Settings does that).
+
+## 22. The launcher's and the menu's look (2026-11-12)
+
+Both were redrawn in the manner of Hookshot's recomp builder and in-game
+overlay, on request: a stepper, a progress card and a log for the builder;
+tabs switched with Q and E or the shoulder buttons, rows with ◀ value ▶
+and Off/On, a panel that explains the chosen row, and key caps at the
+foot. Only the layout ideas are taken. The name, colors, fonts and code are
+this project's own (Hookshot's are not copied), and nothing in it comes
+from an emulator.
+
+**runtime/ui** (`ui.h`) is one small kit for both, drawn with SDL's 2D
+renderer: the launcher's window renderer, and in the game the software
+renderer that draws the overlay (section 21).
+
+- *Units.* Pages are laid out in logical units, and a pixel is offset +
+  unit x scale; `ui_fit` letterboxes a page of W x H units into the target.
+  Text, rounded rectangles and icons are made at the pixel size they show
+  at, so nothing is scaled after it is drawn and nothing blurs.
+- *Fonts.* Noto Sans (Regular, Medium, Bold) and Noto Sans Mono, cut down
+  by `tools/make_fonts.py` to Latin-1 and a little punctuation and kept in
+  `fonts.c` as C arrays. That is 240 KB of source and no `#embed`, so the
+  player's own compiler builds it for the native Linux target. stb_truetype
+  1.26 packs each face at each pixel size into a sheet the first time it
+  is used. A text's y is the middle of its capitals, so text centers in a
+  box without fiddling. Their license, SIL OFL 1.1, is `runtime/ui/OFL.txt`.
+  The release carries it in `builder/`, and the builder copies it into the
+  game's folder as `Font license.txt`.
+- *Shapes.* Rounded rectangles come from quarter-disc textures plus fills.
+  Icons are made from signed distance functions at their size: arrows,
+  check, chevron, play, and the PlayStation shapes.
+- *Input.* `ui_note_event` keeps the device last used: the keyboard, or a
+  pad in Xbox, PlayStation or Nintendo style (from SDL's gamepad type). The
+  key caps and footer hints use that device's names, such as Enter and Esc,
+  A and B, or ✕ and ○, and they change as soon as another device is used.
+- *Widgets.* Tabs with their previous and next caps; rows (action, choice,
+  Off/On, slider, a control's binding, with a dot for "applies at the next
+  start"); the about panel; a progress bar (indeterminate when the stage
+  gives no number); footer hints.
+- `options.c` holds the player's settings as rows, with one text and one
+  step for each, shared by the launcher's Settings and the game's menu.
+
+**The launcher** is 960 x 600 units, letterboxed into any window. Its pages:
+
+- *Game files.* The set chosen or found, with Choose folder… and Continue.
+- *Build.* Back and Build.
+- *Working.* The stage's name, "Stage N of 6", a bar, the elapsed time,
+  the builder's last lines, and Cancel.
+- *Stopped.* The error lines, "Build cancelled" when it was, and Try
+  again.
+- *Play.* Play, Settings, Add to Steam, Build again and Game files, plus an
+  Update card when the builder (`tools/vf4build/__init__.py`) is newer than
+  the game it built (`build.json`).
+- *Settings.* Tabs Game, Picture, Sound, Gamepad, Keyboard 1 and
+  Keyboard 2. A control's row takes the next key or button; Del or X clears
+  it, and Backspace or Y restores the default.
+
+The stepper at the top lights the page's step and checks the steps that are
+done. The mouse, the keyboard and a gamepad all work every page.
+`--shot PAGE FILE` draws a page offscreen for tests, and `--cancel-after S`
+presses Cancel.
+
+**The builder's side** (`make_game.py --launcher`).
+
+- *Progress.* Six stages: reading the set, the compiler, translating,
+  compiling, linking, installing. Each is announced on standard output as
+  `@stage N 6 TEXT`, and its progress as `@pct P` from the download,
+  extraction and compile loops. The compile counts files as they finish
+  (`as_completed`), not in submission order, which held the bar until the
+  end. The launcher shows the other lines in its log box, and the `error:`
+  lines on the stopped page.
+- *Cancel.* The launcher closes the builder's standard input. A thread in
+  the builder (`tools/vf4build/proc.py`) reads it, and at its end kills
+  every child and exits with 3. The children (the translator and the
+  compiler) are started through `proc.run`. On POSIX each one is in its own
+  process group, and on Windows it gets `taskkill /T /F`, because
+  llvm-mingw's clang is a wrapper that starts clang.exe.
+- *Never mid-install.* A cancel waits while the install folder is being
+  changed, and once that is done there is nothing left to cancel.
+  `build.json` and `dimm.key` are written to `.part` files and renamed, so
+  a kill leaves no half file.
+- *The launcher's side.* If the builder has not ended 15 s after Cancel,
+  the launcher kills it. Closing the launcher during a build cancels it and
+  waits up to 10 s. The same end of input comes if the launcher dies, so a
+  build never runs on alone.
+
+**The game's menu** is drawn at the window's size in pixels. The overlay's
+surface and texture are made again when that size changes, and the 1100 x
+620 unit panel is letterboxed into it. The window's smallest size is now
+640 x 400, so the menu always fits.
+
+Behind it is the picture as the window last showed it:
+
+1. On the menu's first frame the window shows the picture alone.
+2. That frame is composed once more into a texture and read back.
+3. The copy is made small (by h / 90) and blurred by a 3 x 3 box twice:
+   about a 20-pixel blur at 1680 pixels high.
+4. It is scaled back up bilinearly and darkened to 42% over the
+   background color.
+
+The copy is taken again when the window's size changes (F11, for one).
+
+The operator bar is a strip across the top of the picture, 6% of its
+height and at least 30 pixels.
+
+**Fixed on the way.** After a good build the launcher aborted (exit 134):
+it closed the builder's input stream again after `SDL_DestroyProcess` had
+closed it. It now forgets the stream instead. The first backdrop was
+darkened twice, by the blur's mix and again by a fill under the panel, to
+about a fifth of the picture's brightness. The fill is gone.
+
+**Checked:**
+
+- The launcher's pages offscreen.
+- A full build from the launcher, and a cancel during translation and
+  during compiling: the builder exits with 3, and no translator or clang is
+  left running.
+- The menu in a window over the attract demo, with the GPU and the Software
+  renderers: every tab, the dot, and the pad's caps on the virtual pad.
+- F11 to 3840 x 2160 and back with the menu open.
+- The operator bar.
+- The Windows build compiles without warnings.
+
+**Not done:** a real gamepad and the Steam Deck (the glyphs change by pad
+type, which only a real pad shows), and a window resized by dragging while
+the menu is open (each new size takes the picture again).
