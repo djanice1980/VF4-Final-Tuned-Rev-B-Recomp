@@ -470,8 +470,12 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         }
         w->warn = armed >= 0 && armed == id;
     }
+    /* 43 units a row: a release's Game tab (nine rows, with Check for updates
+     * and Open the launcher) fits in rh = 394 without scrolling; at 46 Quit
+     * was below the fold. A tenth row there needs this looked at again. The
+     * Controls tab scrolls. */
     float ry = Y + 150, rh = H - 150 - 76;
-    ui_rows(X + 30, ry, 640, rh, 46, rows, n, row, &top);
+    ui_rows(X + 30, ry, 640, rh, 43, rows, n, row, &top);
 
     const char *title, *text, *note;
     about_of(row_id(row), &title, &text, &note);
