@@ -62,6 +62,8 @@ def _download(url, dest, sha256, size, log):
             f.write(b)
             h.update(b)
             done += len(b)
+            if size and hasattr(log, "pct"):
+                log.pct(min(100, 100 * done / size))
             if size and done * 10 // size > step:
                 step = done * 10 // size
                 log("  %d%%" % min(100, step * 10))

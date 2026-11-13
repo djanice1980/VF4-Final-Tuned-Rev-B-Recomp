@@ -128,6 +128,8 @@ def extract(folder, data_dir, log=print):
 
         def progress(done, size):
             pct = done * 100 // size
+            if hasattr(log, "pct"):
+                log.pct(pct)
             if pct // 10 != last[0]:
                 last[0] = pct // 10
                 log("  %d%%" % pct)
@@ -138,8 +140,10 @@ def extract(folder, data_dir, log=print):
             os.remove(img + ".part")
             raise SetError("the extracted image's SHA-1 is %s, not %s" % (h.hexdigest(), IMAGE_SHA1))
         os.replace(img + ".part", img)
-    with open(os.path.join(data_dir, "dimm.key"), "w") as f:
+    key_path = os.path.join(data_dir, "dimm.key")
+    with open(key_path + ".part", "w") as f:
         f.write(key.hex() + "\n")
+    os.replace(key_path + ".part", key_path)
     progs = {}
     with open(img, "rb") as f:
         for p, (off, size, sha1) in PROGRAMS.items():

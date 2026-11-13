@@ -16,6 +16,9 @@ Options:
   --target linux     a native Linux program (needs the system's clang or gcc and SDL3)
   --jobs N           compile N files at a time (default: one per processor)
   --keep             keep the build folder (translated code, objects) afterwards
+  --launcher         the launcher's way (runtime/launcher): progress lines for it
+                     ("@stage N OF TEXT", "@pct P") on standard output, and standard
+                     input closing cancels the build (exit code 3)
 
 The install folder holds only what your own set produced: never share it.
 """
@@ -24,12 +27,11 @@ import datetime
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vf4build import VERSION, build, naomi, toolchain  # noqa: E402
+from vf4build import VERSION, build, naomi, proc, toolchain  # noqa: E402
 import make_tables  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,13 +45,21 @@ tools/make_game.py --update <this folder>); your saves and settings in user/
 are kept.
 
 Run: %s
+
+The menu's fonts are Noto Sans and Noto Sans Mono, under the SIL Open Font
+License 1.1: Font license.txt.
 """
 
 
+STAGES = 6     # the stages the launcher shows: Log.stage
+
+
 class Log:
-    def __init__(self, path):
+    def __init__(self, path, launcher=False):
         self.f = open(path, "a", encoding="utf-8")
         self.t0 = time.monotonic()
+        self.launcher = launcher
+        self.last_pct = None
 
     def __call__(self, msg):
         line = "[%6.1f] %s" % (time.monotonic() - self.t0, msg)
@@ -57,11 +67,26 @@ class Log:
         self.f.write(line + "\n")
         self.f.flush()
 
+    def stage(self, n, text):
+        """--launcher: stage n of STAGES begins (its bar moves until pct)"""
+        if self.launcher:
+            print("@stage %d %d %s" % (n, STAGES, text), flush=True)
+            self.last_pct = None
+
+    def pct(self, value):
+        """--launcher: how far the stage is, 0..100"""
+        v = int(value)
+        if self.launcher and v != self.last_pct:
+            print("@pct %d" % v, flush=True)
+            self.last_pct = v
+
 
 def run(args):
     out = os.path.abspath(args.update or args.out)
     os.makedirs(out, exist_ok=True)
-    log = Log(os.path.join(out, "build.log"))
+    log = Log(os.path.join(out, "build.log"), args.launcher)
+    if args.launcher:
+        proc.watch_stdin(log)
     log("VF4 Final Tuned recomp builder %s; Python %s on %s" % (VERSION, sys.version.split()[0], sys.platform))
     info_path = os.path.join(out, "build.json")
     old = {}
@@ -74,6 +99,7 @@ def run(args):
     os.makedirs(os.path.join(out, "user"), exist_ok=True)
 
     # 1. the set: the disc's file and key into data/, the programs out of it
+    log.stage(1, "Checking your game files" if args.update else "Reading your game files")
     if args.update:
         if not os.path.isfile(os.path.join(data, "VF41_S.BIN")):
             raise naomi.SetError("%s has no data/VF41_S.BIN: build it with --set first" % out)
@@ -94,10 +120,12 @@ def run(args):
         progs = naomi.extract(args.set, data, log)
 
     # 2. the compiler (downloaded the first time)
+    log.stage(2, "Getting the compiler")
     tc = toolchain.Toolchain(target, log)
     log("compiler: %s" % tc.version)
 
     # 3. translate the game and its test program (the operator's test mode)
+    log.stage(3, "Translating the game's code")
     os.makedirs(work, exist_ok=True)
     gens = []
     with open(os.path.join(work, "translate.log"), "w") as tlog:
@@ -108,8 +136,8 @@ def run(args):
             gen = os.path.join(work, "gen", p)
             shutil.rmtree(gen, ignore_errors=True)
             log("translating %s.bin%s" % (p, how_long))
-            r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "translator", "translate.py"),
-                                "--program", p, "--image", img, "--out", gen], capture_output=True, text=True)
+            r = proc.run([sys.executable, "-I", os.path.join(ROOT, "translator", "translate.py"),
+                          "--program", p, "--image", img, "--out", gen])
             tlog.write("== %s.bin\n%s%s" % (p, r.stdout, r.stderr))
             if r.returncode != 0:
                 raise build.BuildError("the translator failed on %s.bin:\n%s" % (p, (r.stderr or r.stdout)[-4000:]))
@@ -120,6 +148,7 @@ def run(args):
     # 4. compile and link into a staging folder, then install over the old one
     jobs = args.jobs or os.cpu_count() or 4
     units = build.units(gens, [os.path.join(tables, "tables.c"), os.path.join(tables, "tables_test.c")], tc, VERSION)
+    log.stage(4, "Compiling")
     log("compiling %d files, %d at a time" % (len(units), jobs))
     objs, warnings = build.compile_all(units, os.path.join(work, "obj"), tc, jobs, log)
     if warnings:
@@ -127,21 +156,26 @@ def run(args):
             for src, w in warnings:
                 f.write("== %s\n%s\n" % (src, w))
         log("%d files had compiler warnings (build/warnings.log)" % len(warnings))
+    log.stage(5, "Linking")
     stage = os.path.join(work, "stage")
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
     build.link(objs, os.path.join(stage, tc.program), tc, log)
     for f in tc.extra_files:
         shutil.copy2(f, stage)
-    for name in os.listdir(stage):
-        os.replace(os.path.join(stage, name), os.path.join(out, name))
-    with open(os.path.join(out, "READ ME.txt"), "w") as f:
-        f.write(NOTICE % (VERSION, tc.program))
-    info = {"builder": VERSION, "target": target, "program": tc.program,
-            "built": datetime.datetime.now().isoformat(timespec="seconds"),
-            "compiler": tc.version, "set": os.path.abspath(args.set) if args.set else old.get("set")}
-    with open(info_path, "w") as f:
-        json.dump(info, f, indent=2)
+    log.stage(6, "Putting the game folder together")
+    with proc.installing():     # a cancel waits for this, and after it the build is done
+        for name in os.listdir(stage):
+            os.replace(os.path.join(stage, name), os.path.join(out, name))
+        with open(os.path.join(out, "READ ME.txt"), "w") as f:
+            f.write(NOTICE % (VERSION, tc.program))
+        shutil.copy2(os.path.join(ROOT, "runtime", "ui", "OFL.txt"), os.path.join(out, "Font license.txt"))
+        info = {"builder": VERSION, "target": target, "program": tc.program,
+                "built": datetime.datetime.now().isoformat(timespec="seconds"),
+                "compiler": tc.version, "set": os.path.abspath(args.set) if args.set else old.get("set")}
+        with open(info_path + ".part", "w") as f:
+            json.dump(info, f, indent=2)
+        os.replace(info_path + ".part", info_path)
     if not args.keep:
         shutil.rmtree(work, ignore_errors=True)
     log("done: %s" % os.path.join(out, tc.program))
@@ -157,11 +191,14 @@ def main():
     ap.add_argument("--target", choices=["windows", "linux"])
     ap.add_argument("--jobs", type=int)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--launcher", action="store_true")
     args = ap.parse_args()
     if args.set and not args.out:
         ap.error("--set needs --out <install folder>")
     try:
         return run(args)
+    except proc.Cancelled:
+        return proc.CANCELLED       # the cancel's own thread ends the program
     except (naomi.SetError, toolchain.ToolchainError, build.BuildError, OSError) as e:
         print("\nerror: %s" % e, file=sys.stderr)
         return 1

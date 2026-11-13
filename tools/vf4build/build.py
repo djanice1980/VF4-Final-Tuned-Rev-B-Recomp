@@ -3,7 +3,8 @@ build (CMakeLists.txt), run directly so that the player needs no CMake."""
 import concurrent.futures
 import glob
 import os
-import subprocess
+
+from . import proc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 R = lambda *p: os.path.join(ROOT, "runtime", *p)          # noqa: E731
@@ -35,25 +36,28 @@ def units(gen_dirs, tables_cs, tc, version):
         out.append((s, mflags))
     for tables_c in tables_cs:
         out.append((tables_c, mflags + ["-O0", "-g0"]))
-    hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ['-DVF4FT_VERSION="%s"' % version]
+    hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ["-I" + R("host"), "-I" + R("ui"),
+                                                     '-DVF4FT_VERSION="%s"' % version]
     for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c"):
         out.append((R("host", s), hflags))
+    for s in ("ui.c", "fonts.c", "options.c"):         # the menu's drawing kit (runtime/ui)
+        out.append((R("ui", s), hflags))
     return out
 
 
 def compile_all(units_, obj_dir, tc, jobs, log):
     os.makedirs(obj_dir, exist_ok=True)
-    objs, warnings = [], []
+    warnings = []
 
     def one(i, src, flags):
         obj = os.path.join(obj_dir, "%03d_%s.o" % (i, os.path.splitext(os.path.basename(src))[0]))
-        r = subprocess.run(tc.cc + flags + ["-c", src, "-o", obj], capture_output=True, text=True)
+        r = proc.run(tc.cc + flags + ["-c", src, "-o", obj])
         return src, obj, r
 
-    done = 0
+    done, by_index = 0, {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
-        futs = [ex.submit(one, i, s, f) for i, (s, f) in enumerate(units_)]
-        for fu in futs:
+        futs = {ex.submit(one, i, s, f): i for i, (s, f) in enumerate(units_)}
+        for fu in concurrent.futures.as_completed(futs):      # as they end, for the progress
             src, obj, r = fu.result()
             done += 1
             if r.returncode != 0:
@@ -62,14 +66,17 @@ def compile_all(units_, obj_dir, tc, jobs, log):
                 raise BuildError("compiling %s failed:\n%s" % (os.path.relpath(src, ROOT), (r.stderr or r.stdout)[-4000:]))
             if r.stderr.strip():
                 warnings.append((src, r.stderr))
-            objs.append(obj)
+            by_index[futs[fu]] = obj
+            if hasattr(log, "pct"):
+                log.pct(100 * done / len(futs))
             if done % 10 == 0 or done == len(futs):
                 log("  compiled %d of %d" % (done, len(futs)))
+    objs = [by_index[i] for i in range(len(units_))]      # the link's order: the units'
     return objs, warnings
 
 
 def link(objs, out_path, tc, log):
     log("linking %s" % os.path.basename(out_path))
-    r = subprocess.run(tc.cc + ["-O3"] + objs + ["-o", out_path] + tc.link, capture_output=True, text=True)
+    r = proc.run(tc.cc + ["-O3"] + objs + ["-o", out_path] + tc.link)
     if r.returncode != 0:
         raise BuildError("linking failed:\n%s" % (r.stderr or r.stdout)[-4000:])
