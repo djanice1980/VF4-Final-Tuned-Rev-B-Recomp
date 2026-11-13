@@ -71,6 +71,7 @@
 #include "gpu_render.h"
 #include "menu.h"
 #include "ui.h"
+#include "updates.h"
 
 #define VF4FT_TITLE "Virtua Fighter 4 Final Tuned"
 #ifndef VF4FT_VERSION
@@ -1133,6 +1134,7 @@ int main(int argc, char **argv)
         const char *appid = SDL_getenv("SteamAppId"), *deck = SDL_getenv("SteamDeck");
         logf_("steam: SteamAppId=%s SteamDeck=%s", appid ? appid : "-", deck ? deck : "-");
     }
+    gu_init(SDL_GetBasePath(), say_line);   /* the menu's Check for updates (updates.h) */
 
     /* the player's folder: settings, the backup, cards */
     if (user_arg) {
@@ -1273,6 +1275,8 @@ int main(int argc, char **argv)
     int chord_used = 0, last_dir = -1, last_program = 0, key_turns = 0;
     while (running) {
         const char *window_shot = NULL;
+        if (gu_poll() && menu_on)
+            ov_dirty = 1;           /* the Updates row's check answered */
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ui_note_event(&ev) && (menu_on || bar_on))
@@ -1662,6 +1666,7 @@ int main(int argc, char **argv)
     SDL_DestroyGPUDevice(gpu);
     SDL_DestroyWindow(win);
     SDL_DestroyMutex(shared.lock);
+    gu_quit();      /* the records are saved: an update asked for in the menu goes to the launcher */
     logf_("clean exit");
     SDL_Quit();
     if (log_file && log_file != stderr)

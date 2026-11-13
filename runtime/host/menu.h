@@ -6,7 +6,8 @@
  * the others are kept for the next start. The cabinet's Test switch and a
  * restart are here too, so a player with only a gamepad (the Steam Deck)
  * can reach the operator's test menu: in it the operator bar turns A and X
- * into Test and Service.
+ * into Test and Service. A release's game also has Check for updates
+ * (updates.h).
  *
  * This file draws and keeps the menu's state (with runtime/ui); main.c
  * pauses the machine, reads the controls, and puts the drawing over the

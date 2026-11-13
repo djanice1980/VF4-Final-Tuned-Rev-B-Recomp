@@ -5,18 +5,20 @@
 
 #include "options.h"
 #include "ui.h"
+#include "updates.h"
 
 enum { TAB_GAME, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
 static const char *const tab_names[TABS] = { "Game", "Picture", "Sound", "Controls" };
 
 /* a row: an option (options.h), one of these actions, or a control */
-enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_QUIT, A_CONTROL };
+enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_QUIT, A_CONTROL };
 
 static const int tab_rows[TABS][8] = {
-    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_QUIT, -1 },
+    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_UPDATES, A_QUIT, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
+static int shown_rows[TABS][8], nshown[TABS];   /* tab_rows without Updates outside a release folder */
 
 static settings *s;
 static menu_run run;
@@ -31,6 +33,12 @@ void menu_open(settings *cfg, const menu_run *r)
     tab = TAB_GAME;
     row = top = 0;
     armed = -1;
+    for (int t = 0; t < TABS; t++) {
+        nshown[t] = 0;
+        for (int i = 0; i < 8 && tab_rows[t][i] >= 0; i++)
+            if (tab_rows[t][i] != A_UPDATES || gu_state() != GU_OFF)
+                shown_rows[t][nshown[t]++] = tab_rows[t][i];
+    }
 }
 
 int menu_changed(void)
@@ -40,17 +48,18 @@ int menu_changed(void)
 
 static int rows_in(int t)
 {
-    if (t == TAB_CONTROLS)
-        return ACT_COUNT;
-    int n = 0;
-    while (n < 8 && tab_rows[t][n] >= 0)
-        n++;
-    return n;
+    return t == TAB_CONTROLS ? ACT_COUNT : nshown[t];
 }
 
 static int row_id(int r)
 {
-    return tab == TAB_CONTROLS ? A_CONTROL : tab_rows[tab][r];
+    return tab == TAB_CONTROLS ? A_CONTROL : shown_rows[tab][r];
+}
+
+/* Updates is a toggle once a newer release is out: "Update when I quit" */
+static int updates_toggle(void)
+{
+    return gu_state() == GU_AVAILABLE || gu_state() == GU_ASKED;
 }
 
 static int wrap(int v, int d, int n)
@@ -62,6 +71,8 @@ static int wrap(int v, int d, int n)
 static int change(int d)
 {
     int id = row_id(row);
+    if (id == A_UPDATES && updates_toggle())
+        gu_press();
     if (id >= OPT_COUNT)
         return MENU_STAY;
     if (id == OPT_VOLUME && !run.sound)
@@ -99,6 +110,7 @@ int menu_command(int cmd)
                 return MENU_STAY;
             }
             return row_id(row) == A_RESTART ? MENU_RESTART : MENU_QUIT;
+        case A_UPDATES: gu_press(); return MENU_STAY;
         case A_CONTROL: return MENU_STAY;
         default: return change(1);
         }
@@ -155,6 +167,39 @@ static void about_of(int id, const char **title, const char **text, const char *
         *text = "Off and on again, as the cabinet's power switch. Records and settings are kept.";
         break;
     case A_QUIT: *title = "Quit"; *text = "Saves the records and closes the game."; break;
+    case A_UPDATES: {
+        static char t[600], mb[48];
+        *title = "Check for updates";
+        switch (gu_state()) {
+        case GU_CHECKING: *text = "Asking GitHub\xE2\x80\xA6"; break;
+        case GU_NONE: SDL_snprintf(t, sizeof t, "%s is the newest release.", gu_version()); *text = t; break;
+        case GU_FAILED: SDL_snprintf(t, sizeof t, "The check did not work: %s", gu_error()); *text = t; break;
+        case GU_AVAILABLE:
+        case GU_ASKED:
+            *title = "Update when I quit";
+            mb[0] = 0;
+            if (gu_size() > 0)
+                SDL_snprintf(mb, sizeof mb, " (%lld MB)", SDL_max(gu_size() / 1000000, 1));
+            SDL_snprintf(t, sizeof t,
+                         gu_by_launcher()
+                             ? "%s is out (this is %s). With this on, when you quit, the launcher downloads it%s, "
+                               "puts it in place and builds the game again. Your records and settings stay."
+                             : "%s is out (this is %s). With this on, quitting the game starts the launcher: it "
+                               "downloads the update%s, puts it in place, builds the game again and closes. Your "
+                               "records and settings stay.",
+                         gu_newer(), gu_version(), mb);
+            *text = t;
+            if (gu_state() == GU_ASKED)
+                *note = "On: it goes in when you quit.";
+            break;
+        default:
+            SDL_snprintf(t, sizeof t, "Asks GitHub whether a newer release of the launcher and builder is out. "
+                         "This is %s.", gu_version());
+            *text = t;
+            break;
+        }
+        break;
+    }
     default:
         *title = "Controls";
         *text = ui_device() == UI_DEV_KEYS
@@ -208,6 +253,21 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         case A_TEST: w->label = run.test_program ? "Operator buttons" : "Operator test menu"; break;
         case A_RESTART: w->label = armed == A_RESTART ? "Restart the game? Choose it again" : "Restart the game"; break;
         case A_QUIT: w->label = armed == A_QUIT ? "Quit? Choose it again" : "Quit"; break;
+        case A_UPDATES: {
+            static char label[96];
+            int st = gu_state();
+            w->label = "Check for updates";
+            if (updates_toggle()) {
+                SDL_snprintf(label, sizeof label, "Update to %s when I quit", gu_newer());
+                w->label = label;
+                w->kind = UI_ROW_TOGGLE;
+                w->on = st == GU_ASKED;
+            } else if (st != GU_IDLE) {
+                w->kind = UI_ROW_TEXT;
+                w->value = st == GU_CHECKING ? "Checking\xE2\x80\xA6" : st == GU_NONE ? "Up to date" : "Could not check";
+            }
+            break;
+        }
         default: {
             int keys = ui_device() == UI_DEV_KEYS;
             w->label = settings_action_text[i];

@@ -1427,9 +1427,81 @@ wrong digest, and a throttled download).
   running exe can be renamed, but this was not tried on Windows itself.
 - Steam's own tracking across the restart (umu-run's was).
 - The game added to Steam with Add to Steam starts without the launcher,
-  so it never checks; the launcher has to be started now and then.
+  so it never checks by itself. Its menu has the check instead (section
+  25).
 - Release 0.5.0 has no updater: going from it to the first release with
   one is by hand.
 - The SHA-256 comes from the same GitHub answer as the download, so it
   catches a damaged download, not a changed release. There is no
   signature.
+
+## 25. Updates from the game's menu (2026-11-13)
+
+Asked for by David: Add to Steam starts the game without the launcher, so
+the game's own menu should have a check for updates, with the update
+going in when the game closes.
+
+**In the game** (`runtime/host/updates.c`, the menu's Game tab, before
+Quit):
+
+- The row is there only when the game is a release's: its folder's parent
+  has `release.json`, `builder/tools/update.py`, the launcher and, on
+  Windows, `python/pythonw.exe`. A development build has no row.
+- **Check for updates** runs the release's `update.py check`, as the
+  launcher does, while the menu stays open. The row then says *Checking…*,
+  *Up to date* or *Could not check* (the reason is in the panel beside it).
+- A newer release makes the row a switch: **Update to X when I quit**.
+  On writes `update/at-game-quit` (`{"version": X}`) in the release
+  folder; Off removes it. The game itself downloads nothing.
+- When the game quits, after its window is gone and the records are saved:
+  - If the launcher started it, it does nothing more. The launcher gives
+    the game `VF4FT_LAUNCHER=1` in its environment. That is an environment
+    variable, not an option, so an older game ignores it.
+  - If it started on its own (from Steam), it starts the launcher with
+    `--after-game` in the background, and exits.
+- A request left from an earlier run (the game killed before it could hand
+  it over, by Steam's Exit game for one) shows as On, and goes at the next
+  quit.
+
+**In the launcher:**
+
+- `take_game_request`, when the launcher starts and when the game it
+  started ends, removes `update/at-game-quit`. It then does Update now
+  after a fresh check (`upd_auto`): download, swap, restart, rebuild.
+- With `--after-game` the launcher closes once that is done and the Play
+  page shows. A failure (check, download, swap or build) stays on screen
+  with its reason. It passes `--after-game` to the new launcher, which
+  skips its own check, builds the game again and closes.
+- Started from the launcher's Play, the launcher comes back when the game
+  ends, does the update, and the new one stays open on Play.
+
+**Fixed on the way.** The first run of the game's path closed the
+launcher without updating. A check's `update.py` prints `@update` a
+moment before it exits, and the step pressed Update now in that moment:
+the download did not start while the check's process was still there, and
+the one-shot step was spent. Update now and When I close are now enabled
+only once no `update.py` runs, and the step waits for that too.
+
+**Checked** against a stand-in for GitHub:
+
+- Natively: the Linux game started on its own, its menu driven by
+  `--keys`. Check found the newer release; Update when I quit wrote the
+  request; Quit started the launcher. It downloaded, swapped and restarted,
+  and the new one built the game again with the new builder (68 s) and
+  closed.
+- The launcher's Play, offscreen, with a stand-in game: a script that
+  recorded `VF4FT_LAUNCHER=1` and wrote the request. When it ended the
+  launcher updated, and the new launcher built the game and stayed open.
+- Under Proton: the Windows game started on its own, as from Steam, the
+  same way. The update and rebuild (70 s) went through, and umu-run stayed
+  up until the launcher closed.
+- The menu's row in each state was looked at 1:1, natively and under
+  Proton.
+
+**Not done.**
+
+- Steam itself and a real Deck. Whether Steam keeps the game running while
+  the launcher works is shown only by umu-run's waiting.
+- A game killed before it hands the update over (the request then waits
+  for the next quit or launcher start) was not tried.
+- The real check needs the releases to be public (section 24).

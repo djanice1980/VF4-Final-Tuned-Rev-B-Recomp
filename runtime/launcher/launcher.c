@@ -346,11 +346,21 @@ static int start(int kind, const char **args, int capture)
         SDL_SetBooleanProperty(pr, SDL_PROP_PROCESS_CREATE_STDERR_TO_STDOUT_BOOLEAN, true);
         if (kind == K_BUILD || kind == K_UPDATE)    /* closing it cancels the build */
             SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_APP);
-    } else {
+    }
+    SDL_Environment *env = NULL;
+    if (!capture) {
         SDL_SetBooleanProperty(pr, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+        /* the game: it knows the launcher waits for it, so an update asked for
+         * in its menu is the launcher's to do when it ends (runtime/host/updates.h).
+         * An environment variable, not an option: an older game ignores it */
+        env = SDL_CreateEnvironment(true);
+        if (env && SDL_SetEnvironmentVariable(env, "VF4FT_LAUNCHER", "1", true))
+            SDL_SetPointerProperty(pr, SDL_PROP_PROCESS_CREATE_ENVIRONMENT_POINTER, env);
     }
     SDL_Process *p = SDL_CreateProcessWithProperties(pr);
     SDL_DestroyProperties(pr);
+    if (env)
+        SDL_DestroyEnvironment(env);
     if (!p) {
         snprintf(error_line, sizeof error_line, "cannot start %s: %s", args[0], SDL_GetError());
         say("%s", error_line);
@@ -483,6 +493,8 @@ static int pump_process(void)
     return code;
 }
 
+static void take_game_request(void);
+
 static void watch_game(void)
 {
     if (!game_proc)
@@ -494,6 +506,7 @@ static void watch_game(void)
         SDL_ShowWindow(win);
         SDL_RaiseWindow(win);
         say("the game ended");
+        take_game_request();        /* "Update when I quit" in the game's menu */
     }
 }
 
@@ -610,6 +623,31 @@ static void upd_startup(void)
         say("update: %s is downloaded; it goes in when the launcher closes", v);
     }
     SDL_free(s);
+}
+
+static int upd_start(int kind);
+static int upd_auto;        /* the update at once (Update now), as soon as there is one: the game asked for it */
+static int after_game;      /* --after-game: the game started this launcher as it quit, for that update */
+
+/* update/at-game-quit: "Update when I quit" in the game's menu
+ * (runtime/host/updates.h). Taken (removed) when the launcher starts or
+ * when the game it started ends: the update then goes as Update now, after
+ * a fresh check. */
+static void take_game_request(void)
+{
+    char p[1100];
+    upd_path(p, sizeof p, "at-game-quit");
+    if (upd == U_OFF || !exists(p))
+        return;
+    char *s = SDL_LoadFile(p, NULL), v[64] = "";
+    json_str(s, "version", v, sizeof v);
+    SDL_free(s);
+    SDL_RemovePath(p);
+    say("update: the game's menu asked for %s when the game quits: updating now", v[0] ? v : "an update");
+    upd_auto = 1;
+    upd_manual = 1;             /* a failed check says why on the Play page */
+    if (!uproc && (upd == U_IDLE || upd == U_NONE || upd == U_CHECK_FAILED))
+        upd_start(1);
 }
 
 /* starts tools/update.py: kind 1 checks, 2 downloads upd_version */
@@ -852,7 +890,7 @@ static int restart_launcher(const char *opt_game, int opt_exit)
 {
     char exe[1100];
     snprintf(exe, sizeof exe, "%s%s", base, LAUNCHER_EXE);
-    const char *args[6];
+    const char *args[8];
     int n = 0;
     args[n++] = exe;
     if (opt_game) {
@@ -861,6 +899,8 @@ static int restart_launcher(const char *opt_game, int opt_exit)
     }
     if (opt_exit)
         args[n++] = "--exit";
+    if (after_game)
+        args[n++] = "--after-game";     /* the new one closes too once the game is built */
     args[n] = NULL;
     SDL_PropertiesID pr = SDL_CreateProperties();
     SDL_SetPointerProperty(pr, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
@@ -920,9 +960,12 @@ static int enabled(int b)
     case B_STEAM: return built && root[0] && !proc && !built_linux;
     case B_CANCEL: return (proc || shot_working) && !cancel_at;
     case B_REBUILD: return root[0] && !proc;
+    /* a download starts only once the check's update.py has ended (it says
+     * "@update" a moment before it does) */
     case B_UPD_NOW:
-        return upd == U_AVAILABLE || upd == U_FAILED || ((upd == U_READY || upd == U_FETCHING) && upd_when == UW_CLOSE);
-    case B_UPD_CLOSE: return upd == U_AVAILABLE;
+        return ((upd == U_AVAILABLE || upd == U_FAILED) && !uproc) ||
+               ((upd == U_READY || upd == U_FETCHING) && upd_when == UW_CLOSE);
+    case B_UPD_CLOSE: return upd == U_AVAILABLE && !uproc;
     case B_UPD_CANCEL: return upd == U_FETCHING && uproc_in != NULL;
     case B_CHECK: return upd == U_IDLE || upd == U_NONE || upd == U_CHECK_FAILED;
 #ifdef _WIN32
@@ -1815,6 +1858,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--set") && i + 1 < argc) opt_set = argv[++i];
         else if (!strcmp(argv[i], "--do") && i + 1 < argc) opt_do = argv[++i];
         else if (!strcmp(argv[i], "--exit")) opt_exit = 1;
+        else if (!strcmp(argv[i], "--after-game")) after_game = 1;
         else if (!strcmp(argv[i], "--cancel-after") && i + 1 < argc) opt_cancel = SDL_atof(argv[++i]);
         else if (!strcmp(argv[i], "--shot") && i + 2 < argc) shot_page = argv[++i], shot_file = argv[++i];
         else if (!strcmp(argv[i], "--shot-device") && i + 1 < argc) shot_device = argv[++i];
@@ -1855,6 +1899,12 @@ int main(int argc, char **argv)
     say("builder files: %s", root[0] ? root : "(not found)");
     say("install folder: %s", game);
     upd_startup();
+    if (!shot_page)
+        take_game_request();    /* the game's "Update when I quit" (a game that did not hand it over itself) */
+    if (after_game && !shot_page)
+        say("--after-game: %s", upd_auto       ? "started by the game for the update it asked for"
+                                : just_updated ? "the new launcher: it builds the game again, then closes"
+                                               : "nothing asked for: closing");
     if (!set_path[0] && !built)
         find_set();
     go(built ? P_PLAY : set_ok() ? P_BUILD : P_FILES);
@@ -1945,7 +1995,7 @@ int main(int argc, char **argv)
         SDL_Quit();
         return ok ? 0 : 1;
     }
-    if (upd == U_IDLE)
+    if (upd == U_IDLE && !after_game)
         upd_start(1);       /* the check at every start: a line on GitHub's API, no download */
     int running = 1, result = do_failed, restarting = 0;
     while (running) {
@@ -2005,6 +2055,25 @@ int main(int argc, char **argv)
                 continue;
             }
             upd = U_FAILED;
+        }
+        /* the game asked for it: Update now as soon as there is one (or close: nothing newer) */
+        if (upd_auto) {
+            if ((upd == U_AVAILABLE || upd == U_FAILED) && !uproc) {
+                press(B_UPD_NOW);
+                upd_auto = 0;
+            } else if (upd == U_READY || upd == U_FETCHING) {
+                upd_when = UW_NOW;
+                upd_auto = 0;
+            } else if (upd == U_NONE || upd == U_CHECK_FAILED) {
+                upd_auto = 0;
+            }
+        }
+        /* --after-game: closes once its work is done and the Play page shows;
+         * a failure stays on screen */
+        if (after_game && running && !proc && !uproc && !game_proc && !upd_auto && page == P_PLAY &&
+            !(upd == U_READY && upd_when == UW_NOW) && upd != U_CHECK_FAILED && upd != U_FAILED) {
+            say("--after-game: done; closing");
+            running = 0;
         }
         if (auto_upd == 1 || auto_upd == 2) {
             if (upd == U_AVAILABLE)

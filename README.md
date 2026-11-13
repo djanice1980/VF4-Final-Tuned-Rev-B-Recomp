@@ -151,8 +151,11 @@ release is out, the Play page says so:
 Saves and settings stay. **Check for updates**, at the foot of the Play
 page, asks again. A development build never updates itself; only a
 release folder does (it has `release.json`). The game added with Add to
-Steam starts without the launcher, so start the launcher now and then to
-get updates ([details](docs/design.md#24-updates-2026-11-13)).
+Steam starts without the launcher, so its own menu has **Check for
+updates** too (Game tab). When a newer release is out, turn on **Update
+when I quit**: quitting the game then starts the launcher, which updates,
+builds the game again and closes ([details](docs/design.md#24-updates-2026-11-13),
+[from the game](docs/design.md#25-updates-from-the-games-menu-2026-11-13)).
 
 Release 0.5.0 has no updater. To leave it, extract the new zip, copy
 everything inside its folder into your 0.5.0 folder, replacing the files,

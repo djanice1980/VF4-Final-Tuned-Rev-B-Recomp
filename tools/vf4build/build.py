@@ -38,7 +38,7 @@ def units(gen_dirs, tables_cs, tc, version):
         out.append((tables_c, mflags + ["-O0", "-g0"]))
     hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ["-I" + R("host"), "-I" + R("ui"),
                                                      '-DVF4FT_VERSION="%s"' % version]
-    for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c"):
+    for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c", "updates.c"):
         out.append((R("host", s), hflags))
     for s in ("ui.c", "fonts.c", "options.c"):         # the menu's drawing kit (runtime/ui)
         out.append((R("ui", s), hflags))

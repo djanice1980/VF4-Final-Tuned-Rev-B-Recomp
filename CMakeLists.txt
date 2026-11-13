@@ -104,7 +104,7 @@ if(TARGET vf4ft_gen_main AND TARGET vf4ft_gen_test)
     # gets data/main.bin and data/vf41_s.dec as links to the decompilation's
     # files.
     add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c runtime/host/dimm_image.c
-                         runtime/host/settings.c runtime/host/gpu_render.c runtime/host/menu.c ${VF4FT_UI})
+                         runtime/host/settings.c runtime/host/gpu_render.c runtime/host/menu.c runtime/host/updates.c ${VF4FT_UI})
     target_include_directories(vf4ft PRIVATE runtime/host runtime/ui)
     target_link_libraries(vf4ft PRIVATE SDL3::SDL3 vf4ft_machine)
     target_compile_options(vf4ft PRIVATE -Wall -Wextra ${VF4FT_FP_FLAGS})
