@@ -138,9 +138,9 @@ Proton on a desktop PC.
    back when it ends. Settings is where controls, the coin setting, the
    resolution and the rest are changed.
 
-On the Deck's controls the game's defaults are: X guard, Y punch, B kick,
-A throw (P+G), L1 P+K, R1 P+K+G, Menu start, View coin (not needed with free
-play). Holding View + Menu for a second opens the game's menu (below,
+On the Deck's controls the game's defaults are the PlayStation 2 versions'
+layout: X guard, Y and A punch, B kick, L1 throw (P+G), R1 P+K, L2 P+K+G,
+R2 K+G, Menu start, View coin (not needed with free play). Holding View + Menu for a second opens the game's menu (below,
 "Playing"): settings, the operator's test mode, restart and quit. The Steam
 button stays Steam's.
 
@@ -269,14 +269,18 @@ as fast as it can, so the warning screen shows after 2 to 3 seconds. The
 game runs at 60 frames a second from then on. It is Japanese settings with
 free play: press Start.
 
-The default controls (all of them can be changed, below):
+The default controls (all of them can be changed, below). The gamepad's
+are the PlayStation 2 versions' (VF4 and VF4 Evolution, from their manuals:
+square guard, triangle and cross punch, circle kick; Evolution's TYPE A
+puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 
 | | Keyboard (player 1) | Gamepad (first: player 1, second: player 2) |
 |---|---|---|
 | Move | arrows or WASD | left stick or D-pad |
-| Guard / Punch / Kick | J / K / L | X / Y / B (West / North / East) |
-| Punch + Guard (throw) | U | A (South) |
-| Punch + Kick / Punch + Kick + Guard | I / O | LB / RB |
+| Guard / Punch / Kick | J / K / L | X (square) / Y (triangle) and A (cross) / B (circle) |
+| Punch + Guard (throw) | U | LB (L1) |
+| Punch + Kick / Punch + Kick + Guard | I / O | RB (R1) / LT (L2) |
+| Kick + Guard | P | RT (R2) |
 | Start | Enter | Menu |
 | Coin | 5 (slot 1), 6 (slot 2) | View |
 | Test / Service (the operator's) | F2 / F3 | A / X on the operator bar (the menu's Operator test menu) |

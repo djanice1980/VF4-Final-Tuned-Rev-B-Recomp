@@ -7,10 +7,11 @@
 #include <string.h>
 
 const char *const settings_action_name[ACT_COUNT] = {
-    "up", "down", "left", "right", "guard", "punch", "kick", "throw", "pk", "pkg", "start", "coin", "test", "service",
+    "up", "down", "left", "right", "guard", "punch", "kick", "throw", "pk", "pkg", "kg", "start", "coin", "test",
+    "service",
 };
 const char *const settings_action_text[ACT_COUNT] = {
-    "Up", "Down", "Left", "Right", "Guard", "Punch", "Kick", "Throw (P+G)", "P+K", "P+K+G", "Start", "Coin",
+    "Up", "Down", "Left", "Right", "Guard", "Punch", "Kick", "Throw (P+G)", "P+K", "P+K+G", "K+G", "Start", "Coin",
     "Test (operator)", "Service (operator)",
 };
 
@@ -47,6 +48,7 @@ void settings_defaults(settings *s)
     set(&k[ACT_THROW], "U", NULL);
     set(&k[ACT_PK], "I", NULL);
     set(&k[ACT_PKG], "O", NULL);
+    set(&k[ACT_KG], "P", NULL);
     set(&k[ACT_START], "Return", NULL);
     set(&k[ACT_COIN], "5", NULL);
     set(&k[ACT_TEST], "F2", NULL);          /* M3's keys; no gamepad button by default, so a match */
@@ -59,12 +61,16 @@ void settings_defaults(settings *s)
     set(&p[ACT_DOWN], "dpdown", NULL);
     set(&p[ACT_LEFT], "dpleft", NULL);
     set(&p[ACT_RIGHT], "dpright", NULL);
+    /* the PlayStation 2 versions' defaults, by position (their manuals: square
+     * guard, triangle and cross punch, circle kick; VF4 Evolution's TYPE A:
+     * L1 P+G, R1 P+K, L2 P+K+G, R2 K+G) */
     set(&p[ACT_GUARD], "x", NULL);
-    set(&p[ACT_PUNCH], "y", NULL);
+    set(&p[ACT_PUNCH], "y", "a");
     set(&p[ACT_KICK], "b", NULL);
-    set(&p[ACT_THROW], "a", NULL);
-    set(&p[ACT_PK], "leftshoulder", NULL);
-    set(&p[ACT_PKG], "rightshoulder", NULL);
+    set(&p[ACT_THROW], "leftshoulder", NULL);
+    set(&p[ACT_PK], "rightshoulder", NULL);
+    set(&p[ACT_PKG], "lefttrigger", NULL);
+    set(&p[ACT_KG], "righttrigger", NULL);
     set(&p[ACT_START], "start", NULL);
     set(&p[ACT_COIN], "back", NULL);
 }

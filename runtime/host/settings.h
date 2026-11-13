@@ -21,6 +21,7 @@ enum {
     ACT_THROW,          /* P+G */
     ACT_PK,             /* P+K */
     ACT_PKG,            /* P+K+G */
+    ACT_KG,             /* K+G (the PlayStation 2 version's R2) */
     ACT_START, ACT_COIN,
     ACT_TEST, ACT_SERVICE,
     ACT_COUNT

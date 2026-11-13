@@ -850,7 +850,8 @@ arcade), `fullscreen` (auto | on | off; auto is on when Steam sets
 `cards`, and every control: `key1.*` and `key2.*` (keyboard, players 1 and
 2) and `pad.*` (every gamepad; the first is player 1), up to four inputs
 each, by SDL's key and gamepad names. Besides the game's three buttons
-there are buttons for P+G (throw), P+K and P+K+G. A line the game does not
+there are buttons for P+G (throw), P+K, P+K+G and K+G; the gamepad's
+defaults are the PlayStation 2 versions' layout (section 21). A line the game does not
 know is skipped with a message in `vf4ft.log`, so an old file or a hand
 edit never stops the game. The launcher's Settings page writes the file:
 one row per setting, and a Controls page per device where A takes the next

@@ -40,10 +40,11 @@
  * Settings page: free play or coins, fullscreen, picture, sound, the card
  * units and every control. The defaults:
  *   keyboard (player 1): arrows or WASD, J guard, K punch, L kick, U throw
- *     (P+G), I P+K, O P+K+G, Enter start, 5 coin, F2 test, F3 service
- *   gamepads (first is player 1, second player 2): left stick or D-pad,
- *     X/West guard, Y/North punch, B/East kick, A/South throw (P+G), LB P+K,
- *     RB P+K+G, Menu start, View coin
+ *     (P+G), I P+K, O P+K+G, P K+G, Enter start, 5 coin, F2 test, F3 service
+ *   gamepads (first is player 1, second player 2), the PlayStation 2
+ *     versions' layout by position: left stick or D-pad, X/West (square)
+ *     guard, Y/North (triangle) and A/South (cross) punch, B/East (circle)
+ *     kick, LB P+G, RB P+K, LT P+K+G, RT K+G, Menu start, View coin
  *   always: 6 coin for slot 2
  * Test mode: Test starts the game's test program (runtime/native/rt_native.c),
  * where Service moves the cursor and Test chooses; its EXIT starts the game
@@ -484,7 +485,8 @@ static key_set keys[2][ACT_COUNT];
 static pad_set pads[ACT_COUNT];
 static const unsigned act_bits[ACT_COUNT] = {
     GAME_BTN_UP, GAME_BTN_DOWN, GAME_BTN_LEFT, GAME_BTN_RIGHT, GAME_BTN_G, GAME_BTN_P, GAME_BTN_K,
-    GAME_BTN_P | GAME_BTN_G, GAME_BTN_P | GAME_BTN_K, GAME_BTN_P | GAME_BTN_K | GAME_BTN_G, GAME_BTN_START, 0,
+    GAME_BTN_P | GAME_BTN_G, GAME_BTN_P | GAME_BTN_K, GAME_BTN_P | GAME_BTN_K | GAME_BTN_G, GAME_BTN_K | GAME_BTN_G,
+    GAME_BTN_START, 0,
     0, 0,                   /* test and service: the cabinet's switches (act_sys) */
 };
 
