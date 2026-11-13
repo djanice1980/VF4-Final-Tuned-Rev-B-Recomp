@@ -724,18 +724,307 @@ static int dev = UI_DEV_KEYS, last_pad_style = -1;
  * as an 8BitDo pad in its Switch layout); 0 when not known */
 static SDL_GamepadButtonLabel last_face[4];
 
-/* the style of a gamepad SDL has */
-static int style_of(SDL_JoystickID id)
+/* ---- Steam Input's twin pads (docs/design.md s30) ----
+ * With Steam Input on for the game, Steam reads the real pad itself and
+ * gives the game a virtual pad of its own (Valve's 28de:11ff, an XInput
+ * pad), and names the real pad behind each of its slots in a file whose
+ * path is in SteamVirtualGamepadInfo: "[slot N]", then name=, VID=, PID=,
+ * type= (SDL's names: ps5, xboxone...). Run natively, SDL reads the file
+ * and gives the virtual pad the real one's ids and type. Under Proton it
+ * does not (the path is a Linux one, and SDL takes it that Wine leaves out
+ * the real pads, SDL_gamepad.c's SDL_ShouldIgnoreGamepad), but Proton also
+ * shows the real pad (a DualSense through its HID driver): one press was
+ * player 1's (the virtual pad) and player 2's (the real one).
+ *
+ * So a real pad with the ids the file gives for a virtual pad's slot is
+ * left out, one per virtual pad. A virtual pad's slot is its player index
+ * (SDL's: Steam's slot when XInput tells it, else XInput's user index),
+ * else its place among the virtual pads. If the file cannot be read and
+ * Steam says it filters (SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD),
+ * every real pad is left out while a virtual one is there. The pads are
+ * looked at again when SDL's list changes, and every second. */
+
+#define STEAM_SLOTS 8
+#define TWIN_MAX 16
+typedef struct steam_slot {
+    int set;
+    Uint16 vendor, product;
+    SDL_GamepadType type;
+    char name[64];
+} steam_slot;
+static steam_slot steam_info[STEAM_SLOTS];
+static char steam_path[1024];           /* the file as this program opens it; "" when none */
+static int steam_tried, steam_read;     /* steam_read: the file was read */
+static SDL_Time steam_mtime;
+static SDL_JoystickID twin_seen[TWIN_MAX], twin_hidden[TWIN_MAX], twin_by[TWIN_MAX];
+static int twin_by_slot[TWIN_MAX];      /* twin_hidden's: the virtual pad and its slot (0: none) */
+static int twin_slot[TWIN_MAX];         /* a virtual pad's slot in steam_info (twin_seen's order), or -1 */
+static int twin_seen_n = -1, twin_hidden_n;
+static Uint64 twin_at;
+static void (*twin_log)(const char *);
+
+void ui_pad_logger(void (*log)(const char *line))
 {
-    Uint16 vendor = SDL_GetGamepadVendorForID(id), product = SDL_GetGamepadProductForID(id);
-    if (vendor == 0x28DE && product == 0x11FF) {
-        /* Steam Input's own pad, when SDL could not learn from Steam which
-         * pad is behind it (SteamVirtualGamepadInfo): on a Steam Deck it is
-         * most likely the Deck's own controls; elsewhere it is an Xbox pad */
-        const char *deck = SDL_getenv("SteamDeck");
-        return deck && !SDL_strcmp(deck, "1") ? UI_DEV_STEAM : UI_DEV_XBOX;
+    twin_log = log;
+}
+
+static void twin_say(const char *fmt, ...) SDL_PRINTF_VARARG_FUNC(1);
+static void twin_say(const char *fmt, ...)
+{
+    if (!twin_log)
+        return;
+    char line[512];
+    va_list ap;
+    va_start(ap, fmt);
+    SDL_vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    twin_log(line);
+}
+
+/* Steam's own pad: its ids, or (when SDL took the real pad's ids for it from
+ * Steam's file, run natively) a Steam handle */
+static int steam_virtual(SDL_JoystickID id)
+{
+    if (SDL_GetGamepadVendorForID(id) == 0x28DE && SDL_GetGamepadProductForID(id) == 0x11FF)
+        return 1;
+    SDL_Gamepad *g = SDL_GetGamepadFromID(id);
+    return g && SDL_GetGamepadSteamHandle(g) != 0;
+}
+
+/* Steam's file into steam_info, when it is new: 1 when it was read */
+static int steam_load(void)
+{
+    if (!steam_tried) {
+        steam_tried = 1;
+        const char *p = SDL_getenv("SteamVirtualGamepadInfo");
+        if (p && *p) {
+            SDL_strlcpy(steam_path, p, sizeof steam_path);
+#ifdef _WIN32
+            /* under Proton the path is the Linux one; Wine's Z: drive is / */
+            if (p[0] == '/' && !SDL_GetPathInfo(steam_path, NULL))
+                SDL_snprintf(steam_path, sizeof steam_path, "Z:%s", p);
+#endif
+            twin_say("Steam's pad list: %s", steam_path);
+        }
     }
-    switch (SDL_GetGamepadTypeForID(id)) {
+    if (!steam_path[0])
+        return 0;
+    SDL_PathInfo pi;
+    if (!SDL_GetPathInfo(steam_path, &pi)) {
+        if (steam_read)
+            twin_say("Steam's pad list: cannot be read now: %s", SDL_GetError());
+        steam_read = 0;
+        return 0;
+    }
+    if (steam_read && pi.modify_time == steam_mtime)
+        return 1;
+    size_t size = 0;
+    char *data = SDL_LoadFile(steam_path, &size);      /* ends with a 0 */
+    if (!data) {
+        if (steam_read || !steam_mtime)
+            twin_say("Steam's pad list: cannot be read: %s", SDL_GetError());
+        steam_read = 0;
+        steam_mtime = pi.modify_time;
+        return 0;
+    }
+    SDL_zeroa(steam_info);
+    int slot = -1;
+    char *save = NULL;
+    for (char *line = SDL_strtok_r(data, "\r\n", &save); line; line = SDL_strtok_r(NULL, "\r\n", &save)) {
+        int n;
+        if (SDL_sscanf(line, "[slot %d]", &n) == 1) {
+            slot = n >= 0 && n < STEAM_SLOTS ? n : -1;
+            if (slot >= 0)
+                steam_info[slot].set = 1;
+            continue;
+        }
+        char *v = SDL_strchr(line, '=');
+        if (slot < 0 || !v)
+            continue;
+        *v++ = 0;
+        steam_slot *s = &steam_info[slot];
+        if (!SDL_strcmp(line, "VID"))
+            s->vendor = (Uint16)SDL_strtoul(v, NULL, 0);
+        else if (!SDL_strcmp(line, "PID"))
+            s->product = (Uint16)SDL_strtoul(v, NULL, 0);
+        else if (!SDL_strcmp(line, "type"))
+            s->type = SDL_GetGamepadTypeFromString(v);
+        else if (!SDL_strcmp(line, "name"))
+            SDL_strlcpy(s->name, v, sizeof s->name);
+    }
+    SDL_free(data);
+    steam_read = 1;
+    steam_mtime = pi.modify_time;
+    for (int i = 0; i < STEAM_SLOTS; i++)
+        if (steam_info[i].set)
+            twin_say("Steam's pad list: slot %d \"%s\" %04x:%04x %s", i, steam_info[i].name, steam_info[i].vendor,
+                     steam_info[i].product,
+                     steam_info[i].type ? SDL_GetGamepadStringForType(steam_info[i].type) : "(no type)");
+    return 1;
+}
+
+static int twin_is_hidden(SDL_JoystickID id)
+{
+    for (int i = 0; i < twin_hidden_n; i++)
+        if (twin_hidden[i] == id)
+            return 1;
+    return 0;
+}
+
+/* looks at the pads again when SDL's list (ids) changed, or a second on */
+static void twin_update(const SDL_JoystickID *ids, int n)
+{
+    if (n > TWIN_MAX)
+        n = TWIN_MAX;
+    Uint64 now = SDL_GetTicks();
+    if (n == twin_seen_n && !SDL_memcmp(ids, twin_seen, (size_t)n * sizeof *ids) && now - twin_at < 1000)
+        return;
+    twin_at = now;
+    SDL_JoystickID was[TWIN_MAX];
+    int was_n = twin_hidden_n;
+    SDL_memcpy(was, twin_hidden, sizeof was);
+    if (n)
+        SDL_memcpy(twin_seen, ids, (size_t)n * sizeof *ids);
+    twin_seen_n = n;
+    twin_hidden_n = 0;
+    int virtuals = 0;
+    for (int i = 0; i < n; i++) {
+        twin_slot[i] = -1;
+        if (!steam_virtual(ids[i]))
+            continue;
+        if (!virtuals++)
+            steam_load();
+        if (!steam_read)
+            continue;
+        int s = SDL_GetGamepadPlayerIndexForID(ids[i]);
+        if (s < 0 || s >= STEAM_SLOTS || !steam_info[s].set)       /* else its place among the virtual pads */
+            for (int k = 0, at = virtuals - 1; k < STEAM_SLOTS; k++)
+                if (steam_info[k].set && !at--) {
+                    s = k;
+                    break;
+                }
+        if (s < 0 || s >= STEAM_SLOTS || !steam_info[s].set)
+            continue;
+        twin_slot[i] = s;
+        for (int j = 0; j < n; j++)
+            if (!steam_virtual(ids[j]) && !twin_is_hidden(ids[j]) && steam_info[s].vendor &&
+                SDL_GetGamepadVendorForID(ids[j]) == steam_info[s].vendor &&
+                SDL_GetGamepadProductForID(ids[j]) == steam_info[s].product) {
+                twin_by[twin_hidden_n] = ids[i];
+                twin_by_slot[twin_hidden_n] = s;
+                twin_hidden[twin_hidden_n++] = ids[j];
+                break;
+            }
+    }
+    const char *allow = SDL_getenv("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD");   /* Steam sets "1" */
+    if (virtuals && !steam_read && allow && (!SDL_strcmp(allow, "1") || !SDL_strcasecmp(allow, "true")))
+        for (int j = 0; j < n; j++)
+            if (!steam_virtual(ids[j])) {
+                twin_by[twin_hidden_n] = 0;
+                twin_hidden[twin_hidden_n++] = ids[j];
+            }
+    /* the log says what changed */
+    for (int i = 0; i < twin_hidden_n; i++) {
+        int old = 0;
+        for (int k = 0; k < was_n; k++)
+            old |= was[k] == twin_hidden[i];
+        if (old)
+            continue;
+        SDL_JoystickID r = twin_hidden[i], v = twin_by[i];
+        if (v)
+            twin_say("gamepad %u \"%s\" %04x:%04x left out: Steam Input gives it as its pad %u (slot %d)",
+                     (unsigned)r, SDL_GetGamepadNameForID(r), SDL_GetGamepadVendorForID(r),
+                     SDL_GetGamepadProductForID(r), (unsigned)v, twin_by_slot[i]);
+        else
+            twin_say("gamepad %u \"%s\" %04x:%04x left out: a Steam Input pad is there and Steam's pad list "
+                     "cannot be read", (unsigned)r, SDL_GetGamepadNameForID(r), SDL_GetGamepadVendorForID(r),
+                     SDL_GetGamepadProductForID(r));
+    }
+    for (int k = 0; k < was_n; k++)
+        if (!twin_is_hidden(was[k])) {
+            int there = 0;
+            for (int j = 0; j < n; j++)
+                there |= ids[j] == was[k];
+            if (there)
+                twin_say("gamepad %u is used again", (unsigned)was[k]);
+        }
+}
+
+static Uint64 twin_polled;
+static int twin_dirty = 1;
+
+static void twin_poll(void)
+{
+    Uint64 now = SDL_GetTicks();
+    if (!twin_dirty && now - twin_polled < 250)
+        return;
+    twin_dirty = 0;
+    twin_polled = now;
+    int n = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    twin_update(ids, ids ? n : 0);
+    SDL_free(ids);
+}
+
+SDL_JoystickID *ui_gamepads(int *count)
+{
+    int n = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    if (!ids) {
+        *count = 0;
+        return NULL;
+    }
+    twin_update(ids, n);
+    twin_polled = SDL_GetTicks();
+    int k = 0;
+    for (int i = 0; i < n; i++)
+        if (!twin_is_hidden(ids[i]))
+            ids[k++] = ids[i];
+    ids[k] = 0;
+    *count = k;
+    return ids;
+}
+
+int ui_pad_hidden(SDL_JoystickID id)
+{
+    twin_poll();
+    return twin_is_hidden(id);
+}
+
+int ui_pad_event_hidden(const SDL_Event *e)
+{
+    SDL_JoystickID id;
+    switch (e->type) {
+    case SDL_EVENT_GAMEPAD_ADDED:
+    case SDL_EVENT_GAMEPAD_REMOVED:
+    case SDL_EVENT_GAMEPAD_REMAPPED:
+        twin_dirty = 1;
+        return 0;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP: id = e->gbutton.which; break;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION: id = e->gaxis.which; break;
+    case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+    case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+    case SDL_EVENT_GAMEPAD_TOUCHPAD_UP: id = e->gtouchpad.which; break;
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: id = e->gsensor.which; break;
+    default: return 0;
+    }
+    return ui_pad_hidden(id);
+}
+
+/* the real pad behind a Steam virtual pad, from Steam's file; NULL when not known */
+static const steam_slot *twin_info(SDL_JoystickID id)
+{
+    twin_poll();
+    for (int i = 0; i < twin_seen_n; i++)
+        if (twin_seen[i] == id && twin_slot[i] >= 0)
+            return &steam_info[twin_slot[i]];
+    return NULL;
+}
+
+static int style_of_type(SDL_GamepadType type)
+{
+    switch (type) {
     case SDL_GAMEPAD_TYPE_XBOX360: return UI_DEV_XBOX360;
     case SDL_GAMEPAD_TYPE_XBOXONE: return UI_DEV_XBOX;
     case SDL_GAMEPAD_TYPE_PS3: return UI_DEV_PS3;
@@ -751,12 +1040,35 @@ static int style_of(SDL_JoystickID id)
     }
 }
 
+/* the style of a gamepad SDL has */
+static int style_of(SDL_JoystickID id)
+{
+    if (SDL_GetGamepadVendorForID(id) == 0x28DE && SDL_GetGamepadProductForID(id) == 0x11FF) {
+        /* Steam Input's own pad: the real pad behind it from Steam's file
+         * (s30), else a guess: on a Steam Deck most likely the Deck's own
+         * controls, elsewhere an Xbox pad */
+        const steam_slot *s = twin_info(id);
+        if (s && s->type != SDL_GAMEPAD_TYPE_UNKNOWN)
+            return style_of_type(s->type);
+        const char *deck = SDL_getenv("SteamDeck");
+        return deck && !SDL_strcmp(deck, "1") ? UI_DEV_STEAM : UI_DEV_XBOX;
+    }
+    return style_of_type(SDL_GetGamepadTypeForID(id));
+}
+
 static void note_pad(SDL_JoystickID id)
 {
     dev = last_pad_style = style_of(id);
     SDL_Gamepad *g = SDL_GetGamepadFromID(id);     /* opened by the program already */
+    /* a Steam virtual pad's own labels are an Xbox pad's (A at the bottom):
+     * the real pad's by place, from its type in Steam's file */
+    const steam_slot *s = SDL_GetGamepadVendorForID(id) == 0x28DE && SDL_GetGamepadProductForID(id) == 0x11FF
+                              ? twin_info(id) : NULL;
     for (int b = 0; b < 4; b++)
-        last_face[b] = g ? SDL_GetGamepadButtonLabel(g, (SDL_GamepadButton)b) : SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
+        last_face[b] = s && s->type != SDL_GAMEPAD_TYPE_UNKNOWN
+                           ? SDL_GetGamepadButtonLabelForType(s->type, (SDL_GamepadButton)b)
+                       : g ? SDL_GetGamepadButtonLabel(g, (SDL_GamepadButton)b)
+                           : SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
 }
 
 int ui_note_event(const SDL_Event *e)
@@ -796,7 +1108,7 @@ int ui_pad_style(void)
     if (last_pad_style >= 0)
         return last_pad_style;
     int n = 0, s = UI_DEV_XBOX;
-    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    SDL_JoystickID *ids = ui_gamepads(&n);
     if (ids && n > 0)
         s = style_of(ids[0]);
     SDL_free(ids);

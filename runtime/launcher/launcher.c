@@ -137,6 +137,11 @@ static void say(const char *fmt, ...)
     SDL_strlcpy(lines[nlines++], b, LOG_W);
 }
 
+static void say_line(const char *line)
+{
+    say("%s", line);
+}
+
 static int exists(const char *p)
 {
     return SDL_GetPathInfo(p, NULL);
@@ -2300,6 +2305,7 @@ int main(int argc, char **argv)
         SDL_Log("SDL_Init: %s", SDL_GetError());
         return 1;
     }
+    ui_pad_logger(say_line);    /* which pad is left out: Steam Input's twins (ui.h) */
     if (!shot_page || shot_scale < 1 || shot_scale > 4)
         shot_scale = 1;     /* --shot-scale: the window made K times as big, as on a high-DPI screen */
     int win_w = (int)LW * shot_scale, win_h = (int)LH * shot_scale, min_w = 640, min_h = 400;
@@ -2471,6 +2477,8 @@ int main(int argc, char **argv)
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (ui_pad_event_hidden(&e))
+                continue;       /* the real pad behind a Steam Input pad: its presses are that pad's too */
             ui_note_event(&e);
             if (e.type == SDL_EVENT_RENDER_DEVICE_RESET || e.type == SDL_EVENT_RENDER_DEVICE_LOST ||
                 e.type == SDL_EVENT_RENDER_TARGETS_RESET)

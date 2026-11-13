@@ -1748,3 +1748,71 @@ entry (the README's install steps say so).
 
 Not tried: a real Steam session and the Deck's Game Mode.
 
+
+## 30. Steam Input's twin pads (2026-11-13)
+
+David played a release under Steam (Proton) with a DualSense: every
+button moved player 1 and player 2 at once.
+
+**Why (from his `vf4ft.log` and Steam's environment):** with Steam Input
+on for the game, Steam reads the DualSense itself and gives the game its
+own virtual pad (Valve's 28de:11ff, an XInput pad: `XInput#0`, type
+xboxone, Steam handle 0). Steam names the real pad behind each of its
+slots in a file whose path is in `SteamVirtualGamepadInfo`
+(`~/.local/share/Steam/config/virtualgamepadinfo.txt`: `[slot 0]`,
+`name=DualSense Wireless Controller`, `VID=0x054c`, `PID=0x0ce6`,
+`type=ps5`). Natively, SDL reads that file and the real pad is not
+shown. Under Proton, SDL takes it that Wine leaves out the real pads
+(`SDL_ShouldIgnoreGamepad` in SDL_gamepad.c: with
+`SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD` set and Wine found it
+ignores nothing, not even Steam's `SDL_GAMECONTROLLER_IGNORE_DEVICES`),
+but Proton shows the DualSense through its HID driver as well. So SDL had
+two pads, the virtual one first: player 1, and the DualSense: player 2.
+
+**What (runtime/ui/ui.c, for the game and the launcher):**
+- `ui_gamepads()` is `SDL_GetGamepads()` without the pads left out; the
+  game's players (`read_controls`) and its menu's D-pad use it.
+  `ui_pad_event_hidden()` is called with every event, first: the game's and
+  the launcher's loops skip the button, axis, touchpad and sensor events
+  of a pad left out.
+- A real pad is left out when Steam's file gives its vendor and product
+  for a Steam virtual pad's slot, one real pad per virtual pad. The slot
+  is SDL's player index (Steam's slot when XInput tells it, else
+  XInput's user index), else the virtual pad's place among them. A
+  virtual pad is 28de:11ff, or one with a Steam handle (run natively, SDL
+  gives it the real pad's ids).
+- If the file cannot be read while a virtual pad is there and Steam says
+  it filters (`SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1`), every
+  real pad is left out: under Steam Input every pad the player uses is a
+  virtual one.
+- The pads are looked at again when SDL's list changes and every second;
+  the file is read again when its time changes (Steam writes it as pads
+  come and go). The path is used as Steam gives it; on Windows a Linux
+  path that cannot be opened is tried on Wine's Z: drive (Proton opened
+  it as it is).
+- **Glyphs:** a Steam virtual pad is drawn as the pad the file names
+  (`type=ps5`: PlayStation shapes), its face labels by place from that
+  type. Before, it was an Xbox pad (or the Deck's, under `SteamDeck=1`).
+- The log says which pad is left out and why ("gamepad 5 "DualSense
+  Wireless Controller" 054c:0ce6 left out: Steam Input gives it as its
+  pad 3 (slot 0)"), and the game's "gamepad added" line has the player
+  index.
+
+**Checked:** a test program with SDL's virtual joysticks standing in for
+Steam's pad, a DualSense and an Xbox pad (an empty `/dev`, so none of the
+machine's own), natively and as a Windows build under Proton (Steam's
+file at its Linux path):
+- the file names the DualSense: players are Steam's pad and the Xbox
+  pad; one press on all three counts twice, not three times; PlayStation
+  glyphs; the DualSense taken out and put back is left out again;
+- two virtual pads and two DualSenses: both DualSenses left out;
+- the file cannot be read: every real pad left out, Xbox glyphs;
+- no Steam virtual pad (Steam Input off for the game), or not started by
+  Steam: nothing left out;
+- the file written after the start: the DualSense is left out a second
+  later.
+The game itself, offscreen with a stand-in Steam pad (`--keys
+padtype=steamvirtual`) and the file, logs the list and its slot.
+
+Not tried: a real DualSense under Steam (David's next run will say: the
+log's "left out" line).

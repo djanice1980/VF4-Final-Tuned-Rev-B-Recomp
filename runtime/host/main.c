@@ -589,7 +589,7 @@ static unsigned read_controls(game_input *in)
     unsigned first = 0;
     int n = 0;
     pads_raw = pad_raw[0] = pad_raw[1] = 0;
-    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    SDL_JoystickID *ids = ui_gamepads(&n);     /* without Steam Input's twins (ui.h) */
     for (int i = 0; ids && i < n && i < 2; i++) {
         SDL_Gamepad *g = SDL_GetGamepadFromID(ids[i]);
         if (!g)
@@ -632,14 +632,21 @@ static unsigned read_controls(game_input *in)
     return first;
 }
 
+/* ui.c's lines (which pad is left out) */
+static void log_line(const char *line)
+{
+    logf_("%s", line);
+}
+
 static void log_gamepad_added(SDL_JoystickID which)
 {
-    /* Under Steam with Steam Input on, the pad seen here is Steam's virtual
-     * one (Valve vendor 28de; on Windows and under Proton it looks like an
-     * Xbox 360 pad, product 11ff), and the physical device is hidden from
-     * SDL through SDL_GAMECONTROLLER_IGNORE_DEVICES. Logged so a run can show
-     * which it was. Valve's own pads (Steam Controller, the Deck's 1205) share
-     * the vendor, so only 11ff is tagged virtual. */
+    /* Under Steam with Steam Input on, a pad seen here can be Steam's
+     * virtual one (Valve vendor 28de, product 11ff: an Xbox pad to SDL on
+     * Windows and under Proton). Under Proton the real pad behind it is seen
+     * too, and ui.c leaves it out (design.md s30, its own log lines). Logged
+     * so a run shows which pads were there. Valve's own pads (Steam
+     * Controller, the Deck's 1205) share the vendor, so only 11ff is tagged
+     * virtual. */
     SDL_Gamepad *g = SDL_OpenGamepad(which);
     if (!g) {
         logf_("gamepad %u: open failed: %s", (unsigned)which, SDL_GetError());
@@ -647,10 +654,10 @@ static void log_gamepad_added(SDL_JoystickID which)
     }
     Uint16 vid = SDL_GetGamepadVendor(g), pid = SDL_GetGamepadProduct(g);
     const char *path = SDL_GetGamepadPath(g);
-    logf_("gamepad added: id %u \"%s\" type %s vid %04x pid %04x%s steam-handle %llx path %s", (unsigned)which,
-          SDL_GetGamepadName(g), SDL_GetGamepadStringForType(SDL_GetGamepadType(g)), vid, pid,
+    logf_("gamepad added: id %u \"%s\" type %s vid %04x pid %04x%s steam-handle %llx player %d path %s",
+          (unsigned)which, SDL_GetGamepadName(g), SDL_GetGamepadStringForType(SDL_GetGamepadType(g)), vid, pid,
           vid == 0x28de && pid == 0x11ff ? " (Steam virtual)" : "", (unsigned long long)SDL_GetGamepadSteamHandle(g),
-          path ? path : "-");
+          SDL_GetGamepadPlayerIndex(g), path ? path : "-");
 }
 
 /* ---- the menu's drawing ----
@@ -1270,6 +1277,7 @@ int main(int argc, char **argv)
         return 1;
     }
     logf_("video driver: %s", SDL_GetCurrentVideoDriver());
+    ui_pad_logger(log_line);
     bindings_compile();     /* key names need the video subsystem */
     for (int i = 0; i < key_items; i++)
         if (!strncmp(key_item[i], "pad:", 4) || !strncmp(key_item[i], "padtype=", 8)) {
@@ -1373,6 +1381,8 @@ int main(int argc, char **argv)
             ov_dirty = 1;           /* the Updates row's check answered */
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            if (ui_pad_event_hidden(&ev))
+                continue;           /* the real pad behind a Steam Input pad (ui.h) */
             if (ui_note_event(&ev) && (menu_on || bar_on))
                 ov_dirty = 1;       /* its hints show the keys or the buttons of the pad last used */
             if (ev.type == machine_event) {
@@ -1507,7 +1517,7 @@ int main(int argc, char **argv)
         if (menu_on) {
             memset(&in, 0, sizeof in);
             int dir = -1, n = 0;
-            SDL_JoystickID *ids = SDL_GetGamepads(&n);
+            SDL_JoystickID *ids = ui_gamepads(&n);
             for (int i = 0; ids && i < n && dir < 0; i++) {
                 SDL_Gamepad *g = SDL_GetGamepadFromID(ids[i]);
                 if (!g)

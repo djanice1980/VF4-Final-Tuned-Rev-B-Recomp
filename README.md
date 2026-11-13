@@ -332,7 +332,9 @@ CPU runtime is built and there is no `vf4ft` program.
    (`*.vf4ft-backup-<time>`) and changes nothing if it cannot read them
    exactly. `python3 -I tools/steam_shortcut.py list` shows the non-Steam
    games. Start Steam, launch the entry, and check `build/win64/vf4ft.log`:
-   with Steam Input on, the pad reads "Steam virtual" (vendor 28de).
+   with Steam Input on, the pad reads "Steam virtual" (vendor 28de). Under
+   Proton the real pad behind it is seen too, and a line says it is left
+   out ([design.md s30](docs/design.md#30-steam-inputs-twin-pads-2026-11-13)).
 
 ## Translating the game (development, M1)
 
@@ -413,6 +415,12 @@ puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 | Test / Service (the operator's) | F2 / F3 | A / X on the operator bar (the menu's Operator test menu) |
 | Fullscreen | F11 or Alt+Enter | |
 | The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox, PS, Home or Steam button), or hold View + Menu for a second |
+
+Each pad is one player, also through Steam Input: under Proton the game
+sees both Steam's pad and the real pad behind it, and leaves the real one
+out, so one press is never player 1's and player 2's at once ([design.md
+s30](docs/design.md#30-steam-inputs-twin-pads-2026-11-13)). The buttons
+shown are the real pad's (a DualSense's shapes, not Xbox letters).
 
 **The game's menu** pauses the game until it closes, over a blurred copy of
 the picture. Its tabs are Game, Picture, Sound and Controls: Q and E (or

@@ -117,6 +117,20 @@ void ui_set_device(int dev);
 /* the style of gamepad glyphs: the last pad used, else the first one there */
 int ui_pad_style(void);
 
+/* Steam Input's twin pads (docs/design.md s30). Under Proton with Steam
+ * Input on, SDL sees Steam's virtual pad and also the real pad behind it, so
+ * one press would be two players'. The real pad Steam names for a virtual
+ * pad's slot (its SteamVirtualGamepadInfo file) is left out; when the file
+ * cannot be read, every real pad is while a virtual one is there.
+ * ui_gamepads: SDL_GetGamepads without the pads left out (SDL_free it).
+ * ui_pad_event_hidden: 1 for an event of a pad left out (skip it; call it
+ * with every event, before ui_note_event). ui_pad_logger: where the lines
+ * saying which pad is left out go. */
+SDL_JoystickID *ui_gamepads(int *count);
+int ui_pad_hidden(SDL_JoystickID id);
+int ui_pad_event_hidden(const SDL_Event *e);
+void ui_pad_logger(void (*log)(const char *line));
+
 /* a key cap with a label (middle at y, h high); returns its width */
 float ui_cap(float x, float y, float h, const char *label);
 /* a cap with an icon in it */
