@@ -144,3 +144,138 @@ const char *game_machine_why(void)
 {
     return why;
 }
+
+/* ---- the backup: battery-backed RAM and the settings EEPROM ---- */
+
+#define BACKUP_RAM 0xa0200000u
+#define BACKUP_RAM_SIZE 0x10000u
+#define EEPROM_SIZE 0x80u
+_Static_assert(GAME_BACKUP_SIZE == BACKUP_RAM_SIZE + EEPROM_SIZE, "the backup file's size");
+
+/* The EEPROM's system area, as the game's sdk/libam/eeprom.c keeps it: two
+ * copies of 0x12 bytes at 0x00 and 0x12, each a 16-bit check (stored low
+ * byte first) over the 0x10 bytes after it, then the board settings (5
+ * bytes) and the coin settings (11; coin_config_pack: maximum credit,
+ * chutes, the coin setting, ...). eeprom_check_copies takes copy A when its
+ * check holds, else B, else clears both. */
+#define EEP_COPY_A 0x00u
+#define EEP_COPY_B 0x12u
+#define EEP_COPY_LEN 0x12u
+#define EEP_COIN_SETTING 9u     /* copy + 2 (check) + 5 (board) + 2 */
+#define COIN_SETTING_FREE_PLAY 26u
+#define COIN_SETTING_DEFAULT 0u /* the BIOS stand-in's default: 1 coin, 1 credit */
+
+/* the check the game computes (crc16_ccitt, sdk/libam/getcrc.c): CCITT's
+ * polynomial on a register that starts at 0xdeb, the data followed by a
+ * zero byte */
+static unsigned eeprom_check(const u8 *p, unsigned n)
+{
+    u32 c = 0xdebdeb00u;
+    for (unsigned i = 0; i <= n; i++) {
+        c = (c & 0xffffff00u) + (i < n ? p[i] : 0);
+        for (int j = 0; j < 8; j++)
+            c = (c & 0x80000000u) ? (c << 1) + 0x10210000u : c << 1;
+    }
+    return c >> 16;
+}
+
+static int eeprom_copy_good(const u8 *e, unsigned at)
+{
+    return (unsigned)(e[at] | e[at + 1] << 8) == eeprom_check(e + at + 2, 0x10);
+}
+
+static void eeprom_copy_seal(u8 *e, unsigned at)
+{
+    unsigned c = eeprom_check(e + at + 2, 0x10);
+    e[at] = (u8)c;
+    e[at + 1] = (u8)(c >> 8);
+}
+
+/* the system area the game writes when it starts on a blank part with this
+ * BIOS stand-in (board settings of country 0, which is all the window's
+ * machine runs; coin settings from the stand-in's service 0x2c): read back
+ * from a run, not made up */
+static const u8 eeprom_first_start[EEP_COPY_LEN] = {
+    0xf0, 0xc6, 0x10, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x11, 0x11,
+};
+
+static const char *eeprom_coins(u8 *e, int coins)
+{
+    if (coins == GAME_COINS_KEEP)
+        return NULL;
+    int a = eeprom_copy_good(e, EEP_COPY_A), b = eeprom_copy_good(e, EEP_COPY_B);
+    if (!a && !b) {
+        /* blank (or both copies bad, which the game would clear): what it
+         * would write on its first start */
+        memcpy(e + EEP_COPY_A, eeprom_first_start, EEP_COPY_LEN);
+        a = 1;
+    }
+    u8 *src = e + (a ? EEP_COPY_A : EEP_COPY_B);
+    u8 setting = src[EEP_COIN_SETTING], want = setting;
+    if (coins == GAME_COINS_FREE_PLAY)
+        want = COIN_SETTING_FREE_PLAY;
+    else if (setting == COIN_SETTING_FREE_PLAY)
+        want = COIN_SETTING_DEFAULT;    /* arcade coins: an operator's own setting is kept */
+    /* both copies the same, both sealed: as eeprom_sync_from_a leaves them */
+    memmove(e + EEP_COPY_A, src, EEP_COPY_LEN);
+    e[EEP_COPY_A + EEP_COIN_SETTING] = want;
+    eeprom_copy_seal(e, EEP_COPY_A);
+    memcpy(e + EEP_COPY_B, e + EEP_COPY_A, EEP_COPY_LEN);
+    return want == COIN_SETTING_FREE_PLAY ? "free play" : "arcade coins";
+}
+
+static u8 backup_last[GAME_BACKUP_SIZE];        /* what was last put or got */
+
+static void backup_take(u8 *b)
+{
+    g_read(BACKUP_RAM, b, BACKUP_RAM_SIZE);
+    memcpy(b + BACKUP_RAM_SIZE, hw_maple_eeprom(), EEPROM_SIZE);
+}
+
+const char *game_machine_backup_put(const unsigned char *b, int coins)
+{
+    if (b) {
+        g_write(BACKUP_RAM, b, BACKUP_RAM_SIZE);
+        memcpy(hw_maple_eeprom(), b + BACKUP_RAM_SIZE, EEPROM_SIZE);
+    }
+    /* what is in the machine before the coin choice counts as saved: a run
+     * that changes nothing has nothing to save, and a blank one no file */
+    backup_take(backup_last);
+    return eeprom_coins(hw_maple_eeprom(), coins);
+}
+
+int game_machine_backup_get(unsigned char *b)
+{
+    backup_take(b);
+    if (!memcmp(b, backup_last, GAME_BACKUP_SIZE))
+        return 0;
+    memcpy(backup_last, b, GAME_BACKUP_SIZE);
+    return 1;
+}
+
+/* ---- the card units ---- */
+
+static u8 card_last[2][GAME_CARD_SIZE];
+
+void game_machine_cards(int on)
+{
+    hw_card_option = on;
+}
+
+int game_machine_card_put(int side, const unsigned char *card)
+{
+    if (!hw_card_option || hw_card_put(side, card))
+        return -1;
+    hw_card_get(side, card_last[side]);
+    return 0;
+}
+
+int game_machine_card_get(int side, unsigned char *card)
+{
+    if (side < 0 || side > 1 || hw_card_get(side, card))
+        return -1;
+    if (!memcmp(card, card_last[side], GAME_CARD_SIZE))
+        return 0;
+    memcpy(card_last[side], card, GAME_CARD_SIZE);
+    return 1;
+}

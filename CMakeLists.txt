@@ -13,7 +13,8 @@ find_package(SDL3 3.4 REQUIRED CONFIG COMPONENTS SDL3-shared)
 
 # The launcher (M5): the builder's window, Build / Update / Play / Add to
 # Steam. It holds no game code, so it builds without the translation.
-add_executable(vf4ft-launcher runtime/launcher/launcher.c)
+add_executable(vf4ft-launcher runtime/launcher/launcher.c runtime/host/settings.c)
+target_include_directories(vf4ft-launcher PRIVATE runtime/host)
 target_link_libraries(vf4ft-launcher PRIVATE SDL3::SDL3)
 target_compile_options(vf4ft-launcher PRIVATE -Wall -Wextra)
 if(WIN32)
@@ -91,7 +92,8 @@ if(TARGET vf4ft_gen_main)
     # disc's file and its key from data/ beside itself; a development build
     # gets data/main.bin and data/vf41_s.dec as links to the decompilation's
     # files.
-    add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c runtime/host/dimm_image.c)
+    add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c runtime/host/dimm_image.c
+                         runtime/host/settings.c)
     target_link_libraries(vf4ft PRIVATE SDL3::SDL3 vf4ft_machine)
     target_compile_options(vf4ft PRIVATE -Wall -Wextra ${VF4FT_FP_FLAGS})
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/data")

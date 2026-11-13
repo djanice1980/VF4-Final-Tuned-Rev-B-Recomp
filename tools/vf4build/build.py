@@ -33,7 +33,7 @@ def units(gen_dir, tables_c, tc, version):
         out.append((s, mflags))
     out.append((tables_c, mflags + ["-O0", "-g0"]))
     hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ['-DVF4FT_VERSION="%s"' % version]
-    for s in ("main.c", "game_machine.c", "dimm_image.c"):
+    for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c"):
         out.append((R("host", s), hflags))
     return out
 

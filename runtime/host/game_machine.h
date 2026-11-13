@@ -47,6 +47,43 @@ typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int boot
  * stderr. Call on the thread that will run. */
 int game_machine_init(const char *image, const char *dimm, const char *dimm_key, int sound_chip, game_frame_fn fn);
 
+/* The cabinet's memory that outlives a power-off: the battery-backed RAM
+ * (64 KiB at 0x00200000: records, rankings, the operator's bookkeeping)
+ * and the settings EEPROM (128 bytes: the board and coin settings). The
+ * file is the two one after the other, 65,664 bytes, the format of the
+ * harness's "backup save" (runtime/machine/control.c). */
+#define GAME_BACKUP_SIZE (0x10000 + 0x80)
+
+/* how credits work, set the way an operator sets it: the coin setting in
+ * the EEPROM's two system copies (the BIOS stand-in reads setting 26 as
+ * free play, runtime/machine/hle_boot.c coin_config_fix) */
+enum { GAME_COINS_KEEP, GAME_COINS_FREE_PLAY, GAME_COINS_ARCADE };
+
+/* after game_machine_init, before game_machine_run: the backup as a file
+ * held it (b NULL: the machine's blank one), then the coin choice. Returns
+ * what the coin setting became ("free play", "arcade coins") or NULL for
+ * GAME_COINS_KEEP */
+const char *game_machine_backup_put(const unsigned char *b, int coins);
+
+/* on the machine's thread (the frame function, or after game_machine_run):
+ * the backup as it is now into b (GAME_BACKUP_SIZE bytes); 1 when it
+ * differs from what was last put or got, else 0 */
+int game_machine_backup_get(unsigned char *b);
+
+/* The two card reader/writer units (VF.NET cards: ring name, rank, record,
+ * items). game_machine_cards before game_machine_init fits them (the game
+ * looks for them once, early in its boot). A card is 128 bytes. */
+#define GAME_CARD_SIZE 128
+void game_machine_cards(int on);
+
+/* after init: a card goes into player side's unit (0 or 1) and stays; card
+ * NULL is a card never used. 0, or -1 (no units, or a card in already) */
+int game_machine_card_put(int side, const unsigned char *card);
+
+/* on the machine's thread: the card in the unit as it is now; 1 when it
+ * differs from what was last put or got, 0 when not, -1 when there is none */
+int game_machine_card_get(int side, unsigned char *card);
+
 /* from the frame function: the sound the chip made since the last call, up
  * to max stereo frames (44,100 a second); with sound_chip 0 there is none */
 unsigned game_machine_audio(short *dst, unsigned max);

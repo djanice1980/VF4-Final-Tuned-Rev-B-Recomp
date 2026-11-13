@@ -467,6 +467,34 @@ int hw_card_command(char **tok, int n, char *msg, size_t len)
                 "status, delay N|default, fault ...)");
 }
 
+/* recomp (M6): the game window keeps the players' cards in files of its
+ * own (runtime/host/game_machine.c): a card goes in from bytes (NULL: one
+ * never used), and the card in a unit comes out as it is now. Same effect
+ * as "card pN insert" and "card pN save". */
+int hw_card_put(int n, const u8 *card)
+{
+    if (n < 0 || n > 1 || cs.u[n].present)
+        return -1;
+    card_unit *u = &cs.u[n];
+    if (card)
+        memcpy(u->card, card, CARD_BYTES);
+    else
+        card_fresh(u->card, 0x20040000u + ++cs.serial_next);
+    u->present = 1;
+    u->eject_wanted = 0;
+    u->n_inserted++;
+    note("card unit %d: card in (from the game window, number %08x)", n + 1, get_be32(u->card + 4));
+    return 0;
+}
+
+int hw_card_get(int n, u8 *card)
+{
+    if (n < 0 || n > 1 || !cs.u[n].present)
+        return -1;
+    memcpy(card, cs.u[n].card, CARD_BYTES);
+    return 0;
+}
+
 void hw_card_stats(FILE *f)
 {
     if (!cs.fitted)

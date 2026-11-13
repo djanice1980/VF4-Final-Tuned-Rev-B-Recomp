@@ -56,5 +56,9 @@ What the recomp changed:
   in memory. The installed game keeps the disc's encrypted file and decrypts
   it at start (`runtime/host/dimm_image.c`); `hw_cart_init` and its file
   mapping are unchanged for development builds.
+- `hw.h`, `hw_card.c` (M6): `hw_card_put` and `hw_card_get`, a card in
+  from bytes and the card in a unit out as bytes, for the game window's
+  card files (`runtime/host/game_machine.c`). The same as the controller's
+  `card pN insert` and `card pN save`, without files.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`.

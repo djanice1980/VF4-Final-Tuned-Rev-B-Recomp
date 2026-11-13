@@ -23,14 +23,25 @@
  *   --silent          no sound chip: VF4debug's mailbox model in its place (as M3)
  *   --gpu NAME        SDL_GPU driver: direct3d12 (or d3d12) or vulkan (default: SDL's choice)
  *   --log FILE        log somewhere else
+ *   --press LIST      for tests: buttons pressed for 6 vertical blanks at given ones, as
+ *                     "6500:p1:start,6800:p1:p+g" (p1 or p2; up down left right p k g start coin)
+ *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
+ *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
  *
- * Controls (rebinding is M6):
- *   keyboard (player 1): arrows or WASD, J guard, K punch, L kick, Enter start,
- *     5 / 6 coin for slot 1 / 2, F2 test, F3 service
+ * Settings (M6): user/settings.txt (settings.h), written by the launcher's
+ * Settings page: free play or coins, fullscreen, picture, sound, the card
+ * units and every control. The defaults:
+ *   keyboard (player 1): arrows or WASD, J guard, K punch, L kick, U throw
+ *     (P+G), I P+K, O P+K+G, Enter start, 5 coin
  *   gamepads (first is player 1, second player 2): left stick or D-pad,
- *     X/West guard, Y/North punch, B/East kick, A/South punch+guard (throw),
- *     Menu start, View coin
+ *     X/West guard, Y/North punch, B/East kick, A/South throw (P+G), LB P+K,
+ *     RB P+K+G, Menu start, View coin
+ *   always: F2 test, F3 service, 6 coin for slot 2
  * Quit: Esc, closing the window, or holding View + Menu on a controller.
+ *
+ * The backup is written every 10 seconds when it has changed, and when the
+ * game ends; a file that is there and not a backup is left alone (the run
+ * starts blank and does not write over it).
  */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -40,6 +51,7 @@
 #include <string.h>
 
 #include "game_machine.h"
+#include "settings.h"
 
 #define VF4FT_TITLE "Virtua Fighter 4 Final Tuned"
 #ifndef VF4FT_VERSION
@@ -87,6 +99,143 @@ static struct {
 
 static const char *image_path, *dimm_path, *dimm_key;
 static int unpaced, real_boot, silent;
+static settings cfg_;                   /* user/settings.txt over the defaults */
+static char user_dir[4096];             /* ends in a separator */
+static char backup_path[4200];
+static int backup_ok = 1;               /* 0: the file there is not a backup; never written over */
+#define BACKUP_EVERY 600                /* vertical blanks: 10 seconds */
+
+/* --press: scripted presses for tests */
+#define PRESS_MAX 64
+static struct { unsigned frame, side, bits, coin; } press[PRESS_MAX];
+static int presses;
+
+static int press_parse(const char *list)
+{
+    static const struct { const char *name; unsigned bit; } names[] = {
+        { "up", GAME_BTN_UP }, { "down", GAME_BTN_DOWN }, { "left", GAME_BTN_LEFT }, { "right", GAME_BTN_RIGHT },
+        { "p", GAME_BTN_P }, { "k", GAME_BTN_K }, { "g", GAME_BTN_G }, { "start", GAME_BTN_START }, { "coin", 0 },
+    };
+    char buf[2048];
+    SDL_strlcpy(buf, list, sizeof buf);
+    char *save = NULL;
+    for (char *item = SDL_strtok_r(buf, ",", &save); item; item = SDL_strtok_r(NULL, ",", &save)) {
+        char *who = SDL_strchr(item, ':'), *what = who ? SDL_strchr(who + 1, ':') : NULL;
+        if (!what || presses == PRESS_MAX)
+            return -1;
+        *who++ = 0;
+        *what++ = 0;
+        press[presses].frame = (unsigned)SDL_strtoul(item, NULL, 10);
+        press[presses].side = !SDL_strcasecmp(who, "p2");
+        char *save2 = NULL;
+        for (char *b = SDL_strtok_r(what, "+", &save2); b; b = SDL_strtok_r(NULL, "+", &save2)) {
+            size_t i = 0;
+            while (i < SDL_arraysize(names) && SDL_strcasecmp(b, names[i].name))
+                i++;
+            if (i == SDL_arraysize(names))
+                return -1;
+            press[presses].bits |= names[i].bit;
+            press[presses].coin |= names[i].bit == 0;
+        }
+        presses++;
+    }
+    return 0;
+}
+
+static void backup_save(void)
+{
+    static unsigned char b[GAME_BACKUP_SIZE];
+    if (!backup_ok || !game_machine_backup_get(b))
+        return;
+    char tmp[4300];
+    SDL_snprintf(tmp, sizeof tmp, "%s.tmp", backup_path);
+    if (!SDL_SaveFile(tmp, b, sizeof b) || !SDL_RenamePath(tmp, backup_path)) {
+        logf_("cannot write the backup %s: %s", backup_path, SDL_GetError());
+        SDL_RemovePath(tmp);
+    }
+}
+
+/* the players' cards: user/cards/p1.card and p2.card, 128 bytes each. A
+ * player without one gets a card never used, which is written to the file
+ * once the game has made it theirs. */
+static int card_ok[2];                  /* 1: the file is ours to write */
+
+static void card_path(char *buf, size_t n, int side)
+{
+    SDL_snprintf(buf, n, "%scards/p%d.card", user_dir, side + 1);
+}
+
+static void cards_save(void)
+{
+    for (int side = 0; side < 2; side++) {
+        unsigned char c[GAME_CARD_SIZE];
+        char path[4300], tmp[4400];
+        if (!card_ok[side] || game_machine_card_get(side, c) != 1)
+            continue;
+        card_path(path, sizeof path, side);
+        SDL_snprintf(tmp, sizeof tmp, "%s.tmp", path);
+        if (!SDL_SaveFile(tmp, c, sizeof c) || !SDL_RenamePath(tmp, path)) {
+            logf_("cannot write the card %s: %s", path, SDL_GetError());
+            SDL_RemovePath(tmp);
+        }
+    }
+}
+
+static void cards_load(void)
+{
+    if (!cfg_.cards)
+        return;
+    char dir[4300];
+    SDL_snprintf(dir, sizeof dir, "%scards", user_dir);
+    if (!SDL_GetPathInfo(dir, NULL) && !SDL_CreateDirectory(dir))
+        logf_("cannot make %s: %s", dir, SDL_GetError());
+    for (int side = 0; side < 2; side++) {
+        char path[4300];
+        size_t n = 0;
+        unsigned char *c = NULL;
+        card_path(path, sizeof path, side);
+        card_ok[side] = 1;
+        if (SDL_GetPathInfo(path, NULL)) {
+            c = SDL_LoadFile(path, &n);
+            if (!c || n != GAME_CARD_SIZE) {
+                logf_("%s is not a card (%d bytes): it is left alone, and player %d's unit stays empty", path,
+                      GAME_CARD_SIZE, side + 1);
+                SDL_free(c);
+                card_ok[side] = 0;
+                continue;
+            }
+        }
+        if (game_machine_card_put(side, c))
+            card_ok[side] = 0;
+        else
+            logf_("player %d: %s", side + 1, c ? path : "a new card (kept once the game has written it)");
+        SDL_free(c);
+    }
+}
+
+static void backup_load(void)
+{
+    size_t n = 0;
+    unsigned char *b = NULL;
+    if (SDL_GetPathInfo(backup_path, NULL)) {
+        b = SDL_LoadFile(backup_path, &n);
+        if (!b || n != GAME_BACKUP_SIZE) {
+            logf_("%s is not a backup (%d bytes; it has %u): it is left alone, the run starts blank and "
+                  "nothing is saved", backup_path, GAME_BACKUP_SIZE, (unsigned)n);
+            SDL_free(b);
+            b = NULL;
+            backup_ok = 0;
+        } else {
+            logf_("backup loaded from %s", backup_path);
+        }
+    } else {
+        logf_("no backup yet (%s): the cabinet starts blank", backup_path);
+    }
+    const char *how = game_machine_backup_put(b, cfg_.coins == COINS_ARCADE ? GAME_COINS_ARCADE : GAME_COINS_FREE_PLAY);
+    if (how)
+        logf_("coins: %s", how);
+    SDL_free(b);
+}
 static SDL_AudioStream *audio;          /* NULL: no sound */
 
 /* Sound: the chip's samples of this vertical blank go to the stream. The
@@ -152,8 +301,18 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
     }
     *in = shared.in;
     SDL_UnlockMutex(shared.lock);
+    for (int i = 0; i < presses; i++)
+        if (frame >= press[i].frame && frame < press[i].frame + 6) {
+            in->player[press[i].side] |= press[i].bits;
+            if (press[i].coin)
+                in->coin[press[i].side] = 1;
+        }
     if (frames_max && frame >= frames_max)
         game_machine_stop();
+    if (frame % BACKUP_EVERY == 0) {
+        backup_save();
+        cards_save();
+    }
 
     /* the frame is due 1/60 s after the one before; a long stall (loading)
      * is not caught up in a burst. The game's first start-up step runs as
@@ -176,12 +335,17 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
 static int SDLCALL machine_main(void *arg)
 {
     (void)arg;
+    game_machine_cards(cfg_.cards);
     if (game_machine_init(image_path, dimm_path, dimm_key, !silent, on_frame)) {
         SDL_SetAtomicInt(&machine_state, 2);
     } else {
+        backup_load();
+        cards_load();
         SDL_SetAtomicInt(&machine_state, 1);
         int bad = game_machine_run();
         logf_("machine stopped%s: %s", bad ? " by itself" : "", game_machine_why());
+        backup_save();
+        cards_save();
         SDL_SetAtomicInt(&machine_state, 3);
     }
     SDL_Event ev;
@@ -203,21 +367,65 @@ static unsigned stick_bits(float x, float y)
     return b;
 }
 
+/* the bindings of settings.txt, turned into SDL's numbers once */
+typedef struct { int n; SDL_Scancode sc[BIND_MAX]; } key_set;
+typedef struct { int n; int in[BIND_MAX]; } pad_set;   /* >= 0 a button, < 0 a trigger: -1 - its axis */
+static key_set keys[2][ACT_COUNT];
+static pad_set pads[ACT_COUNT];
+static const unsigned act_bits[ACT_COUNT] = {
+    GAME_BTN_UP, GAME_BTN_DOWN, GAME_BTN_LEFT, GAME_BTN_RIGHT, GAME_BTN_G, GAME_BTN_P, GAME_BTN_K,
+    GAME_BTN_P | GAME_BTN_G, GAME_BTN_P | GAME_BTN_K, GAME_BTN_P | GAME_BTN_K | GAME_BTN_G, GAME_BTN_START, 0,
+};
+
+static void bindings_compile(void)
+{
+    for (int a = 0; a < ACT_COUNT; a++) {
+        for (int p = 0; p < 2; p++) {
+            key_set *k = &keys[p][a];
+            k->n = 0;
+            for (int i = 0; i < BIND_MAX; i++) {
+                const char *name = cfg_.key[p][a].name[i];
+                if (!name[0])
+                    continue;
+                SDL_Scancode sc = SDL_GetScancodeFromName(name);
+                if (sc == SDL_SCANCODE_UNKNOWN)
+                    logf_("settings: key%d.%s: no key is called \"%s\"", p + 1, settings_action_name[a], name);
+                else
+                    k->sc[k->n++] = sc;
+            }
+        }
+        pad_set *g = &pads[a];
+        g->n = 0;
+        for (int i = 0; i < BIND_MAX; i++) {
+            const char *name = cfg_.pad[a].name[i];
+            if (!name[0])
+                continue;
+            SDL_GamepadButton bt = SDL_GetGamepadButtonFromString(name);
+            SDL_GamepadAxis ax = SDL_GetGamepadAxisFromString(name);
+            if (bt != SDL_GAMEPAD_BUTTON_INVALID)
+                g->in[g->n++] = bt;
+            else if (ax == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || ax == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+                g->in[g->n++] = -1 - ax;
+            else
+                logf_("settings: pad.%s: no gamepad button is called \"%s\"", settings_action_name[a], name);
+        }
+    }
+}
+
 /* everything at once; returns the buttons of the first gamepad (for the quit chord) */
 static unsigned read_controls(game_input *in)
 {
     memset(in, 0, sizeof *in);
     const bool *k = SDL_GetKeyboardState(NULL);
-    unsigned *p1 = &in->player[0];
-    if (k[SDL_SCANCODE_UP] || k[SDL_SCANCODE_W]) *p1 |= GAME_BTN_UP;
-    if (k[SDL_SCANCODE_DOWN] || k[SDL_SCANCODE_S]) *p1 |= GAME_BTN_DOWN;
-    if (k[SDL_SCANCODE_LEFT] || k[SDL_SCANCODE_A]) *p1 |= GAME_BTN_LEFT;
-    if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) *p1 |= GAME_BTN_RIGHT;
-    if (k[SDL_SCANCODE_J]) *p1 |= GAME_BTN_G;
-    if (k[SDL_SCANCODE_K]) *p1 |= GAME_BTN_P;
-    if (k[SDL_SCANCODE_L]) *p1 |= GAME_BTN_K;
-    if (k[SDL_SCANCODE_RETURN]) *p1 |= GAME_BTN_START;
-    if (k[SDL_SCANCODE_5]) in->coin[0] = 1;
+    for (int p = 0; p < 2; p++)
+        for (int a = 0; a < ACT_COUNT; a++)
+            for (int i = 0; i < keys[p][a].n; i++)
+                if (k[keys[p][a].sc[i]]) {
+                    in->player[p] |= act_bits[a];
+                    if (a == ACT_COIN)
+                        in->coin[p] = 1;
+                }
+    /* fixed: the cabinet's own switches, and slot 2's coin as M3 had it */
     if (k[SDL_SCANCODE_6]) in->coin[1] = 1;
     if (k[SDL_SCANCODE_F2]) in->sys |= GAME_SYS_TEST;
     if (k[SDL_SCANCODE_F3]) in->sys |= GAME_SYS_SERVICE;
@@ -235,16 +443,17 @@ static unsigned read_controls(game_input *in)
                 raw |= 1u << j;
         b |= stick_bits(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f,
                         SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f);
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_DPAD_UP) b |= GAME_BTN_UP;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_DPAD_DOWN) b |= GAME_BTN_DOWN;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_DPAD_LEFT) b |= GAME_BTN_LEFT;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_DPAD_RIGHT) b |= GAME_BTN_RIGHT;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_WEST) b |= GAME_BTN_G;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_NORTH) b |= GAME_BTN_P;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_EAST) b |= GAME_BTN_K;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_SOUTH) b |= GAME_BTN_P | GAME_BTN_G;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_START) b |= GAME_BTN_START;
-        if (raw & 1u << SDL_GAMEPAD_BUTTON_BACK) in->coin[i] = 1;
+        for (int a = 0; a < ACT_COUNT; a++)
+            for (int j = 0; j < pads[a].n; j++) {
+                int x = pads[a].in[j];
+                int on = x >= 0 ? (x < 32 && (raw >> x & 1))
+                                : SDL_GetGamepadAxis(g, (SDL_GamepadAxis)(-1 - x)) > 16000;
+                if (on) {
+                    b |= act_bits[a];
+                    if (a == ACT_COIN)
+                        in->coin[i] = 1;
+                }
+            }
         in->player[i] |= b;
         if (i == 0)
             first = raw;
@@ -282,6 +491,11 @@ static void log_gamepad_added(SDL_JoystickID which)
 
 /* ---- set-up ---- */
 
+static void say_line(const char *msg)
+{
+    logf_("%s", msg);
+}
+
 static const char *beside_exe(char *buf, size_t n, const char *name)
 {
     const char *base = SDL_GetBasePath();
@@ -291,7 +505,7 @@ static const char *beside_exe(char *buf, size_t n, const char *name)
 
 int main(int argc, char **argv)
 {
-    const char *gpu_name = NULL, *log_path = NULL;
+    const char *gpu_name = NULL, *log_path = NULL, *user_arg = NULL;
     int fullscreen = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -307,6 +521,10 @@ int main(int argc, char **argv)
             if (!SDL_strcasecmp(gpu_name, "d3d12")) gpu_name = "direct3d12";   /* SDL's name for it */
         }
         else if (!strcmp(a, "--log") && v) log_path = argv[++i];
+        else if (!strcmp(a, "--user") && v) user_arg = argv[++i];
+        else if (!strcmp(a, "--press") && v) {
+            if (press_parse(argv[++i])) { fprintf(stderr, "vf4ft: --press: FRAME:p1|p2:BUTTON[+BUTTON],...\n"); return 2; }
+        }
         else { fprintf(stderr, "vf4ft: unknown option %s (see the top of runtime/host/main.c)\n", a); return 2; }
     }
 
@@ -349,6 +567,38 @@ int main(int argc, char **argv)
         const char *appid = SDL_getenv("SteamAppId"), *deck = SDL_getenv("SteamDeck");
         logf_("steam: SteamAppId=%s SteamDeck=%s", appid ? appid : "-", deck ? deck : "-");
     }
+
+    /* the player's folder: settings, the backup, cards */
+    if (user_arg) {
+        size_t ul = strlen(user_arg);
+        SDL_snprintf(user_dir, sizeof user_dir, "%s%s", user_arg,
+                     ul && (user_arg[ul - 1] == '/' || user_arg[ul - 1] == '\\') ? "" : "/");
+    } else {
+        beside_exe(user_dir, sizeof user_dir, "user/");
+    }
+    if (!SDL_GetPathInfo(user_dir, NULL) && !SDL_CreateDirectory(user_dir))
+        logf_("cannot make %s: %s", user_dir, SDL_GetError());
+    {
+        char sp[4300];
+        SDL_snprintf(sp, sizeof sp, "%ssettings.txt", user_dir);
+        settings_defaults(&cfg_);
+        if (!SDL_GetPathInfo(sp, NULL))
+            logf_("no %s: the defaults", sp);
+        else if (!settings_load(&cfg_, sp, say_line))
+            logf_("settings from %s", sp);
+        SDL_snprintf(backup_path, sizeof backup_path, "%sbackup.bin", user_dir);
+    }
+    if (!cfg_.sound)
+        silent = 1;
+    if (!fullscreen) {
+        const char *deck = SDL_getenv("SteamDeck"), *tenfoot = SDL_getenv("SteamTenfoot");
+        fullscreen = cfg_.fullscreen == FULLSCREEN_ON ||
+                     (cfg_.fullscreen == FULLSCREEN_AUTO && ((deck && atoi(deck)) || (tenfoot && atoi(tenfoot))));
+    }
+    logf_("settings: coins %s, fullscreen %s, picture %s, filter %s, sound %s, cards %s",
+          cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
+          cfg_.picture == PICTURE_STRETCH ? "stretch" : "4:3", cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
+          silent ? "off" : "on", cfg_.cards ? "on" : "off");
     logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
           dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
 
@@ -358,6 +608,7 @@ int main(int argc, char **argv)
         return 1;
     }
     logf_("video driver: %s", SDL_GetCurrentVideoDriver());
+    bindings_compile();     /* key names need the video subsystem */
     if (!silent) {
         SDL_AudioSpec as = { SDL_AUDIO_S16, 2, 44100 };
         audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &as, NULL, NULL);
@@ -503,9 +754,12 @@ int main(int argc, char **argv)
             break;
         }
         if (sc) {
-            /* 4:3, as large as fits, black bars on the other sides */
+            /* 4:3, as large as fits, black bars on the other sides (or stretched) */
             Uint32 dw = w, dh = h;
-            if ((Uint64)w * 3 > (Uint64)h * 4) dw = h * 4 / 3; else dh = w * 3 / 4;
+            if (cfg_.picture == PICTURE_STRETCH)
+                ;       /* the whole window */
+            else if ((Uint64)w * 3 > (Uint64)h * 4) dw = h * 4 / 3;
+            else dh = w * 3 / 4;
             if (have_picture) {
                 SDL_GPUBlitInfo bl;
                 SDL_zero(bl);
@@ -519,7 +773,7 @@ int main(int argc, char **argv)
                 bl.destination.h = dh;
                 bl.load_op = SDL_GPU_LOADOP_CLEAR;
                 bl.clear_color = (SDL_FColor){ 0, 0, 0, 1 };
-                bl.filter = SDL_GPU_FILTER_LINEAR;
+                bl.filter = cfg_.filter == FILTER_SHARP ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
                 SDL_BlitGPUTexture(cmd, &bl);
             } else {
                 SDL_GPUColorTargetInfo target;
