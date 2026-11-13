@@ -2365,3 +2365,44 @@ Not tried: Windows itself, Proton and the Deck (its keyboard in the
 notes), a cabinet card from VF.NET with a Japanese ring name, and which
 item numbers each character has (the editor goes by number; David's
 earlier choice).
+
+## 38. The sky above a victory pose: the guard band (2026-11-13)
+
+David saw the top of the screen black at the end of a fight, while the
+winner did a victory pose. Reproduced with `--press` (player 1 mashing
+kick and punch, so that player 1 wins; `--press` now takes 8,192 presses
+for that): on the stage with the orange cloud sky, player 1's victory
+pose (vertical blanks 10,362 to 10,662 of that run) showed the background
+plane's black above a ragged line, on the GPU renderer and the software
+one alike, so not a renderer's fault. The other stages' poses were whole.
+
+**Cause:** `view.c`'s `tri_fill` left out any triangle whose corners lie
+more than a million pixels from the screen (the rasterizers' floats no
+longer place an edge to the pixel out there). The low camera looks up
+past the sky dome's huge triangles; cut at the near plane (z 0.1, 1/w 10)
+close to the eye, their corners land 1.5 million pixels above the screen.
+A temporary count in `tri_fill` found 13 such triangles every frame of
+the pose, each overlapping the screen from its top down to rows 142 to
+341: the black area.
+
+**Fix:** such a triangle is cut in view space at four planes 4,096 pixels
+outside the target (`guard_cut`; a plane is linear in X, Y, Z because x =
+cx + sx X / Z), as the near plane already cut it, and its pieces drawn as
+a fan. A triangle within the bound takes the old path, so the pictures
+are the same everywhere else. The volumes' triangles (`vol_tri_view`)
+get the same cut: cutting keeps every pixel's count inside the band, so a
+shadow volume's in-or-out stays right on the screen.
+
+A strip's room for triangles was two per triangle (the near plane's cut);
+the band can make six. Room for six each grew the game's peak memory by
+105 to 110 MB, almost all of it never written, so each triangle keeps its
+two and the strip shares a spare of four per triangle, at most 64
+(`tri_spare`): 9 to 12 MB more than before.
+
+Checked (`--shot`, the same run on both renderers, the old `view.c`
+built beside the new one): the two victory pose pictures show the orange
+sky up to the top; six other moments (a fight, five other stages' poses)
+are pixel for pixel the old ones on both renderers; the spare draws the
+same 16 pictures as room for six. Not checked: real hardware or another
+emulator's picture of that pose (the sky above the band is the dome's
+own, drawn from the game's data).

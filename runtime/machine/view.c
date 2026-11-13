@@ -1210,7 +1210,83 @@ typedef struct tlctx {
     u32 n, st;
     int flat;
     float near_z;
+    u32 spare;                          /* recomp: tri_room's spare left for the guard band's pieces */
 } tlctx;
+
+/* recomp: the guard band. A triangle cut at the near plane, or one close to
+ * the eye, can reach millions of pixels past the screen: past GUARD_FAR the
+ * rasterizers' floats no longer place its edges to the pixel, and tri_fill
+ * and vol_tri leave such a triangle out. Left out, the sky above a victory
+ * pose's low camera was the background plane's black. So such a triangle
+ * is cut in view space, as the near plane cuts it, at four planes GUARD
+ * pixels outside the target: what lies on the screen is the same, and its
+ * pieces stay small. A triangle within GUARD_FAR is drawn as before. */
+#define GUARD 4096.0f
+#define GUARD_FAR 1e6f
+/* a strip's triangles: n vertices make at most n - 2, each cut by the near
+ * plane into at most two; the guard band cuts one into at most six, its
+ * four more from a spare the strip shares (four a triangle, at most 64:
+ * most strips never use it, and room for six each grew the game by 100 MB) */
+static inline u32 tri_spare(u32 n)
+{
+    return n > 2 ? 4 * (n - 2 < 16 ? n - 2 : 16) : 0;
+}
+
+static inline u32 tri_room(u32 n)
+{
+    return n > 2 ? 2 * (n - 2) + tri_spare(n) : 0;
+}
+
+_Static_assert(sizeof(vv) == RV_FLOATS * sizeof(float), "vv is RV_FLOATS floats");
+
+/* where a view-space point (X, Y, Z; Z above the near plane) is from guard
+ * plane k: 0 or more is inside (x >= -GUARD, x <= FBW + GUARD, y ...) */
+static inline float guard_dist(const xform *xf, int k, const float *p)
+{
+    switch (k) {
+    case 0: return xf->sx * p[0] + (xf->cx + GUARD) * p[2];
+    case 1: return (FBW + GUARD - xf->cx) * p[2] - xf->sx * p[0];
+    case 2: return xf->sy * p[1] + (xf->cy + GUARD) * p[2];
+    default: return (FBH + GUARD - xf->cy) * p[2] - xf->sy * p[1];
+    }
+}
+
+/* a convex polygon of n points of `floats` floats (X, Y, Z first) through
+ * the four guard planes, into out (room for n + 4); returns its points */
+static int guard_cut(const xform *xf, const float *in, int n, float *out, int floats)
+{
+    float buf[2][8 * RV_FLOATS];
+    const float *src = in;
+    for (int k = 0; k < 4 && n >= 3; k++) {
+        float *dst = k == 3 ? out : buf[k & 1];
+        int m = 0;
+        for (int i = 0; i < n; i++) {
+            const float *p = src + i * floats, *q = src + (i + 1) % n * floats;
+            float dp = guard_dist(xf, k, p), dq = guard_dist(xf, k, q);
+            if (dp >= 0)
+                memcpy(dst + m++ * floats, p, (size_t)floats * sizeof(float));
+            if ((dp >= 0) != (dq >= 0)) {
+                float t = dp / (dp - dq), *r = dst + m++ * floats;
+                for (int f = 0; f < floats; f++)
+                    r[f] = p[f] + (q[f] - p[f]) * t;
+            }
+        }
+        n = m;
+        src = dst;
+    }
+    if (src != out)
+        memcpy(out, src, (size_t)(n > 0 ? n : 0) * floats * sizeof(float));
+    return n >= 3 ? n : 0;
+}
+
+static inline int beyond_guard(const float *x, const float *y, int n, int stride)
+{
+    for (int i = 0; i < n; i++)
+        if (!(x[i * stride] > -GUARD_FAR && x[i * stride] < GUARD_FAR && y[i * stride] > -GUARD_FAR &&
+              y[i * stride] < GUARD_FAR))
+            return 1;
+    return 0;
+}
 
 static inline void project(const xform *xf, const vv *p, rv *o)
 {
@@ -1231,7 +1307,8 @@ static inline int tri_fill(dtri *d, const rv *a, const rv *b, const rv *c, u32 s
     if (c->y < loy) loy = c->y;
     if (c->y > hiy) hiy = c->y;
     /* off every target, or not a number */
-    if (!(hix >= 0 && lox < FBW && hiy >= 0 && loy < FBH && lox > -1e6f && hix < 1e6f && loy > -1e6f && hiy < 1e6f))
+    if (!(hix >= 0 && lox < FBW && hiy >= 0 && loy < FBH && lox > -GUARD_FAR && hix < GUARD_FAR && loy > -GUARD_FAR &&
+          hiy < GUARD_FAR))
         return 0;
     d->v[0] = *a;
     d->v[1] = *b;
@@ -1241,6 +1318,25 @@ static inline int tri_fill(dtri *d, const rv *a, const rv *b, const rv *c, u32 s
     d->ylo = (s16)(loy < 0 ? 0 : (int)loy);
     d->yhi = (s16)(hiy > FBH - 1 ? FBH - 1 : (int)hiy);
     return 1;
+}
+
+/* recomp: a polygon (already turned the kept way) that reaches past
+ * GUARD_FAR, cut at the guard band; its pieces as a fan */
+static void tri_guard(tlctx *c, const vv *poly, int n)
+{
+    vv cut[8];
+    rv o[8];
+    n = guard_cut(c->xf, &poly->X, n, &cut[0].X, RV_FLOATS);
+    for (int i = 0; i < n; i++)
+        project(c->xf, &cut[i], &o[i]);
+    u32 made = 0;                       /* the triangle's own two, then the spare */
+    for (int i = 2; i < n && made < 2 + c->spare; i++) {
+        u32 one = (u32)tri_fill(&c->out[c->n], &o[0], &o[i - 1], &o[i], c->st);
+        c->n += one;
+        made += one;
+    }
+    if (made > 2)
+        c->spare -= made - 2;
 }
 
 /* keep: 0 both faces; +1 or -1 only the triangles that turn that way on
@@ -1269,6 +1365,11 @@ static void tri_view(tlctx *c, const vv *a, const vv *b, const vv *cc, int keep)
         project(c->xf, cc, &o[2]);
         if (keep && ((o[1].x - o[0].x) * (o[2].y - o[0].y) - (o[2].x - o[0].x) * (o[1].y - o[0].y)) * (float)keep <= 0)
             return;
+        if (beyond_guard(&o[0].x, &o[0].y, 3, RV_FLOATS)) {     /* recomp: the guard band */
+            vv poly[3] = { *a, *b, *cc };
+            tri_guard(c, poly, 3);
+            return;
+        }
         c->n += (u32)tri_fill(&c->out[c->n], &o[0], &o[1], &o[2], c->st);
         return;
     }
@@ -1294,6 +1395,10 @@ static void tri_view(tlctx *c, const vv *a, const vv *b, const vv *cc, int keep)
     if (keep && n >= 3 &&
         ((o[1].x - o[0].x) * (o[2].y - o[0].y) - (o[2].x - o[0].x) * (o[1].y - o[0].y)) * (float)keep <= 0)
         return;
+    if (beyond_guard(&o[0].x, &o[0].y, n, RV_FLOATS)) {         /* recomp: the guard band */
+        tri_guard(c, cl, n);
+        return;
+    }
     for (int i = 2; i < n; i++)
         c->n += (u32)tri_fill(&c->out[c->n], &o[0], &o[i - 1], &o[i], c->st);
 }
@@ -1322,7 +1427,8 @@ static void strip_job(scene *sc, sjob *j)
     float sr = (float)(j->offset >> 16 & 255), sg = (float)(j->offset >> 8 & 255), sb = (float)(j->offset & 255);
     int spec = j->use_ofs && j->spec && (j->offset & 0xffffff) && !j->unlit;
     const float *m = xf->m, *nm = xf->n;
-    tlctx c = { xf, sc->tris[j->k] + j->first, 0, j->st, j->flat, xf->near_z > 0 ? xf->near_z : 0.05f };
+    tlctx c = { xf, sc->tris[j->k] + j->first, 0, j->st, j->flat, xf->near_z > 0 ? xf->near_z : 0.05f,
+                tri_spare(j->count) };
     int keep = j->keep, odd = 0;
     vv first, before, prev;             /* the strip's first vertex, and the last two */
     memset(&first, 0, sizeof first);
@@ -1556,7 +1662,7 @@ static void vol_tri(int which, const float *x, const float *y, const float *z)
 {
     scene *sc = cur;
     for (int i = 0; i < 3; i++)
-        if (!(x[i] > -1e6f && x[i] < 1e6f && y[i] > -1e6f && y[i] < 1e6f))
+        if (!(x[i] > -GUARD_FAR && x[i] < GUARD_FAR && y[i] > -GUARD_FAR && y[i] < GUARD_FAR))
             return;
     GROW(sc->vt[which], sc->vt_cap[which], sc->vt_n[which] + 1);
     vtri *t = &sc->vt[which][sc->vt_n[which]++];
@@ -1612,11 +1718,20 @@ static void vol_tri_view(int which, const float (*p)[3])
             cl[n++][2] = nz;
         }
     }
-    float x[4], y[4], z[4];
+    float x[8], y[8], z[8];
     for (int i = 0; i < n; i++) {
         z[i] = 1.0f / cl[i][2];
         x[i] = xf->cx + xf->sx * cl[i][0] * z[i];
         y[i] = xf->cy + xf->sy * cl[i][1] * z[i];
+    }
+    if (beyond_guard(x, y, n, 1)) {     /* recomp: the guard band (a volume's count holds on the screen) */
+        float cut[8][3];
+        n = guard_cut(xf, cl[0], n, cut[0], 3);
+        for (int i = 0; i < n; i++) {
+            z[i] = 1.0f / cut[i][2];
+            x[i] = xf->cx + xf->sx * cut[i][0] * z[i];
+            y[i] = xf->cy + xf->sy * cut[i][1] * z[i];
+        }
     }
     for (int i = 2; i < n; i++) {
         float tx[3] = { x[0], x[i - 1], x[i] }, ty[3] = { y[0], y[i - 1], y[i] }, tz[3] = { z[0], z[i - 1], z[i] };
@@ -1760,8 +1875,8 @@ static u32 model_strip(u32 addr, u32 end)
         j->flat = !(st.pcw >> 1 & 1);
         j->use_ofs = st.pcw >> 2 & 1;
         j->keep = (s8)keep;
-        /* room for its triangles: n vertices make at most n - 2, each cut by the near plane into at most two */
-        u32 room = n > 2 ? 2 * (n - 2) : 0;
+        /* room for its triangles (tri_room) */
+        u32 room = tri_room(n);         /* recomp: was 2 (n - 2), before the guard band's spare */
         GROW(sc->tris[k], sc->tris_cap[k], sc->tris_n[k] + room);
         GROW(sc->runs[k], sc->runs_cap[k], sc->runs_n[k] + 1);
         j->first = sc->tris_n[k];

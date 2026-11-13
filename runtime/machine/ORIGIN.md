@@ -106,6 +106,15 @@ What the recomp changed:
   keeps its network-check log there, and without it the boot's check
   screen showed -1s and a stray glyph (docs/design.md section 32). With
   the network side off the registers still answer nothing.
+- `view.c` (2026-11-13): the guard band (`guard_dist`, `guard_cut`,
+  `tri_guard`, `beyond_guard`). A triangle whose screen corners reach past
+  a million pixels (cut at the near plane close to the eye) was left out by
+  `tri_fill` and `vol_tri`; it is now cut in view space at four planes
+  4,096 pixels outside the target, as the near plane cuts it, so that what
+  lies on the screen is drawn. A strip's room for triangles keeps two per
+  triangle and adds a spare the cut pieces share (`tri_spare`, `tri_room`).
+  Triangles within the bound are drawn as before (docs/design.md section
+  38).
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

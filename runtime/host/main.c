@@ -210,7 +210,7 @@ static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 
 }
 
 /* --press: scripted presses for tests */
-#define PRESS_MAX 64
+#define PRESS_MAX 8192
 static struct { unsigned frame, side, bits, coin, sys; } press[PRESS_MAX];
 static int presses;
 
@@ -221,8 +221,9 @@ static int press_parse(const char *list)
         { "p", GAME_BTN_P }, { "k", GAME_BTN_K }, { "g", GAME_BTN_G }, { "start", GAME_BTN_START }, { "coin", 0 },
         { "test", 0 }, { "service", 0 },
     };
-    char buf[2048];
-    SDL_strlcpy(buf, list, sizeof buf);
+    static char buf[65536];    /* a whole fight's presses */
+    if (SDL_strlcpy(buf, list, sizeof buf) >= sizeof buf)
+        return -1;
     char *save = NULL;
     for (char *item = SDL_strtok_r(buf, ",", &save); item; item = SDL_strtok_r(NULL, ",", &save)) {
         char *who = SDL_strchr(item, ':'), *what = who ? SDL_strchr(who + 1, ':') : NULL;
