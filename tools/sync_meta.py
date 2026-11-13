@@ -16,6 +16,8 @@ Writes:
   meta/main/fpu_context.tsv  address, field, detail    (ghidra/fpu_context.tsv)
   meta/main/code_tables.tsv  address, count, stride, name (ghidra/code_tables.tsv)
   meta/test/routines.tsv     (ghidra/source_map_test.tsv)
+  meta/test/globals.tsv      (src_test/include/vf4ft_globals.h: the same for the test program, which the
+                              runtime runs in test mode)
   meta/SOURCE                the decompilation commit these came from
 """
 import csv
@@ -84,6 +86,8 @@ def main():
     write_tsv(os.path.join(meta, "test", "routines.tsv"), ["address", "name", "file", "size"], test_r)
     globs = globals_(os.path.join(decomp, "src", "include", "vf4ft_globals.h"))
     write_tsv(os.path.join(meta, "main", "globals.tsv"), ["address", "name"], globs)
+    test_globs = globals_(os.path.join(decomp, "src_test", "include", "vf4ft_globals.h"))
+    write_tsv(os.path.join(meta, "test", "globals.tsv"), ["address", "name"], test_globs)
 
     fpu = [(r["address"], r["field"], r["detail"]) for r in read_tsv(os.path.join(g, "fpu_context.tsv"))]
     bad = [r for r in read_tsv(os.path.join(g, "fpu_context.tsv")) if r["kind"] != "redecoded"]
@@ -100,6 +104,7 @@ def main():
     with open(os.path.join(meta, "SOURCE"), "w") as f:
         f.write("vf4ft-decomp " + commit + "\n")
     print(f"main {len(main_r)} routines, {len(globs)} globals, test {len(test_r)} routines, "
+          f"{len(test_globs)} globals, "
           f"{len(fpu)} FPU mode rows, {len(tables)} code tables; decomp {commit}")
 
 

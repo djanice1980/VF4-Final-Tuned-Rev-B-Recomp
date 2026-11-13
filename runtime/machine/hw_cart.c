@@ -150,6 +150,13 @@ u32 hw_cart_image_size(void)
     return image_size;
 }
 
+/* recomp (test mode): the image as the port has it, for the BIOS stand-in's
+ * loading of the test program (rt_native.c); NULL without one */
+const u8 *hw_cart_image(void)
+{
+    return image;
+}
+
 void hw_cart_stats(FILE *f)
 {
     fprintf(f, "  files: %llu words read from the cartridge port, %llu block reads (%llu bytes), %llu words written\n",

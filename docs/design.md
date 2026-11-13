@@ -56,7 +56,8 @@ memory when it starts (0.17 s on 16 threads), as the DIMM board does when
 it boots, and takes the program out of it. `test.bin` (the
 operator test mode program) is translated the same way and linked into the
 same executable with its own dispatch table: it loads at the same address as
-`main.bin`, so the runtime picks one program at boot, as the BIOS does.
+`main.bin`, so the runtime switches between them at the BIOS's test-menu
+service, as the BIOS does (section 20).
 
 ## 3. Platform (decided: Windows exe that runs under Proton)
 
@@ -367,7 +368,7 @@ ME.txt`) and the README tell players never to share it.
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton (done 2026-11-12, section 15) |
 | M4 | Sound | music, voices and effects (done 2026-11-12, section 17); the DSP's reverb (section 18) |
 | M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs (section 19) |
-| M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered (all but test mode done 2026-11-12, section 20) |
+| M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered (done 2026-11-12, section 20) |
 
 ## 11. Decided 2026-11-12
 
@@ -794,8 +795,8 @@ native Linux target uses the system's compiler and SDL3.
 
 Done: saves, free play or arcade coins, the card units, the settings file
 with the launcher's Settings page (rebinding included), the GPU renderer
-with resolution scaling, and the Steam Deck route. Not done: test mode
-(below). Widescreen stays a separate piece of work (section 6).
+with resolution scaling, the Steam Deck route, and test mode (below).
+Widescreen stays a separate piece of work (section 6).
 
 **Saves.** `user/backup.bin` holds what the cabinet keeps with the power
 off: the battery-backed RAM (64 KiB at 0xa0200000) and the settings EEPROM
@@ -903,24 +904,68 @@ hides until the game ends. The game goes fullscreen by itself (`fullscreen
 second quits. The native Linux launcher still links the system's SDL3, so
 the Windows release is the one for the Deck.
 
-**Test mode: not done.** On the board, Test makes the game call BIOS
-service 0x44, and the BIOS's system menu takes over; its game test mode is
-`test.bin`, the separate test program (2,120 routines, translated and
-compiled since M1 but never run). Our BIOS stand-in has no system menu, so
-service 0x44 stops the machine with a message (`the game asked the BIOS
-for its test menu`). In the window, F2 therefore ends the game, after the
-backup and cards are saved. Running `test.bin` needs:
+**Test mode.** On the board, Test makes the game call BIOS service 0x44;
+the BIOS's system menu takes over, and its game test mode is `test.bin`,
+the separate test program (2,120 routines), whose EXIT calls 0x44 again.
+Our BIOS stand-in has no system menu, so 0x44 goes straight to the other
+program: `test.bin` from the game, the game from `test.bin`'s EXIT.
 
-- the runtime to start and switch between the two programs (`rt_native`
-  has only `main.bin`'s routine table);
-- `test.bin`'s routine and global tables (`meta/test` has its routine list
-  only);
-- the stand-in's hooks, which are keyed to `main.bin`'s addresses, for
-  `test.bin`;
-- BIOS services 0x04, 0x48, 0x4c, 0x50, 0x54 and 0x5c, which `test.bin`
-  calls and the stand-in does not model;
-- a way back to the game when the test program ends.
+- The switch (`program_switch` in `rt_native.c`): service 0x44 calls
+  `hle_program`, which jumps back to `rt_native_run`'s frame, so nothing of
+  the old program is on the stack. The machine goes back to its power-on
+  state, kept when the game starts (`rt_native_power_on`), less what the
+  cabinet keeps with the power off: the backup RAM, the I/O board's EEPROM
+  and the cards. The frame and instruction counts go on; the virtual clock
+  starts again. For the test program its bytes come from the Naomi
+  header's load table (0x3c0: image 0x360000 to 0x0c020000, 0x80000
+  bytes), as the BIOS loads it. Then the running program's tables take
+  over: dispatch (`disp_program`, `disp_init`), the stand-in's vectors and
+  hooks (`hle_init`), the translated blocks (`T_` for the test program,
+  `M_` for the game), the observer's mode words and the view's tables.
+  The game window saves the backup and the cards at each switch.
+- `test.bin`'s tables: `tools/sync_meta.py` writes `meta/test/globals.tsv`
+  from the decomp's `src_test` globals (769), and `tools/make_tables.py`
+  writes `tables_test.c` beside `tables.c`; both programs are linked into
+  the one executable.
+- The test program's exception entry is not named in the decomp's map
+  (its bytes are main.bin's); the stand-in takes it as
+  `irq_entry_via_firmware` - 0x44, where it is in both programs.
+- **Workaround:** the decomp's test map leaves out the eight Kamui hook
+  stubs at 0x0c06b040 + 0x20 n (byte for byte main.bin's at 0x0c141000 to
+  0x0c1410e0), so the stand-in had no hook on the test program's busy
+  wait, which spun through the interpreter: 7.5 ms of the machine's time a
+  frame. `make_tables.py` adds them (`TEST_EXTRA`) while the map has no
+  routine there; with them a test mode frame takes 0.82 ms, and the
+  pictures are the same. The real fix is naming them (and the exception
+  entry) in the decomp's `ghidra/source_map_test.tsv`; the workaround
+  steps aside by itself once they are named.
+- The test program has no sound (the sound test is the BIOS's system
+  menu): the sound CPU stays in reset while it runs, as on a cold start of
+  that program. This found a bug in M4's code: the sound chip's state was
+  registered for the snapshots with size 0 (`n` was read before
+  `aica_state(&n)` set it, in the same call's arguments), so the power-on
+  state put sound RAM back but left the game's ARM and effect DSP running
+  over it: undefined ARM instructions, and full-scale noise from the DSP
+  after EXIT. Fixed in `hw_sound.c`; the controller's sandbox and the
+  script's snapshots had the same gap.
+- The BIOS services the plan expected the test program to need (0x04,
+  0x48, 0x4c, 0x50, 0x54, 0x5c) were not called on any screen; one that
+  is called is answered 0, with a `[bios] service ... has no model`
+  message.
 
-The coin and free play settings the test mode would change are already in
-the settings file.
+Checked headless (the software picture) and in the window (the GPU
+renderer): every item of the menu runs (input test, game assignments,
+arrival stage, character and total data, VS diagram, card menu, network
+test, close setting, book keeping, backup data clear) with no hardware
+access outside the models; the backup RAM, where the game assignments
+are kept, is carried over both switches; EXIT starts the game, which
+boots in the same 6,312 vertical blanks as from power on and reaches
+attract in the same state as a cold boot (the sound chip's included).
+
+Controls: Test is F2 and Service F3 by default; both are rebindable in the
+launcher's Controls page ("Test (operator)" and "Service (operator)") and
+have no gamepad default. In the menu Service moves and Test chooses;
+screens such as the input test end with Service and Test together. The
+coin and free play settings are not in the game's test mode (they are the
+BIOS's); they stay in the settings file.
 

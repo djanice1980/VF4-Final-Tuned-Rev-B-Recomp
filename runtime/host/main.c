@@ -24,7 +24,8 @@
  *   --gpu NAME        SDL_GPU driver: direct3d12 (or d3d12) or vulkan (default: SDL's choice)
  *   --log FILE        log somewhere else
  *   --press LIST      for tests: buttons pressed for 6 vertical blanks at given ones, as
- *                     "6500:p1:start,6800:p1:p+g" (p1 or p2; up down left right p k g start coin)
+ *                     "6500:p1:start,6800:p1:p+g" (p1 or p2; up down left right p k g start coin, and
+ *                     the cabinet's test and service with either)
  *   --shot N FILE     for tests: the machine waits at vertical blank N while the newest picture, as
  *                     shown (before scaling to the window), goes to a BMP file; up to 8 of them
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
@@ -34,11 +35,14 @@
  * Settings page: free play or coins, fullscreen, picture, sound, the card
  * units and every control. The defaults:
  *   keyboard (player 1): arrows or WASD, J guard, K punch, L kick, U throw
- *     (P+G), I P+K, O P+K+G, Enter start, 5 coin
+ *     (P+G), I P+K, O P+K+G, Enter start, 5 coin, F2 test, F3 service
  *   gamepads (first is player 1, second player 2): left stick or D-pad,
  *     X/West guard, Y/North punch, B/East kick, A/South throw (P+G), LB P+K,
  *     RB P+K+G, Menu start, View coin
- *   always: F2 test, F3 service, 6 coin for slot 2
+ *   always: 6 coin for slot 2
+ * Test mode: Test starts the game's test program (runtime/native/rt_native.c),
+ * where Service moves the cursor and Test chooses; its EXIT starts the game
+ * again. Nothing in it is changed from the board's.
  * Quit: Esc, closing the window, or holding View + Menu on a controller.
  *
  * The backup is written every 10 seconds when it has changed, and when the
@@ -150,7 +154,7 @@ static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 
 
 /* --press: scripted presses for tests */
 #define PRESS_MAX 64
-static struct { unsigned frame, side, bits, coin; } press[PRESS_MAX];
+static struct { unsigned frame, side, bits, coin, sys; } press[PRESS_MAX];
 static int presses;
 
 static int press_parse(const char *list)
@@ -158,6 +162,7 @@ static int press_parse(const char *list)
     static const struct { const char *name; unsigned bit; } names[] = {
         { "up", GAME_BTN_UP }, { "down", GAME_BTN_DOWN }, { "left", GAME_BTN_LEFT }, { "right", GAME_BTN_RIGHT },
         { "p", GAME_BTN_P }, { "k", GAME_BTN_K }, { "g", GAME_BTN_G }, { "start", GAME_BTN_START }, { "coin", 0 },
+        { "test", 0 }, { "service", 0 },
     };
     char buf[2048];
     SDL_strlcpy(buf, list, sizeof buf);
@@ -178,7 +183,12 @@ static int press_parse(const char *list)
             if (i == SDL_arraysize(names))
                 return -1;
             press[presses].bits |= names[i].bit;
-            press[presses].coin |= names[i].bit == 0;
+            if (!SDL_strcasecmp(b, "coin"))
+                press[presses].coin = 1;
+            else if (!SDL_strcasecmp(b, "test"))
+                press[presses].sys |= GAME_SYS_TEST;
+            else if (!SDL_strcasecmp(b, "service"))
+                press[presses].sys |= GAME_SYS_SERVICE;
         }
         presses++;
     }
@@ -347,6 +357,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
     for (int i = 0; i < presses; i++)
         if (frame >= press[i].frame && frame < press[i].frame + 6) {
             in->player[press[i].side] |= press[i].bits;
+            in->sys |= press[i].sys;
             if (press[i].coin)
                 in->coin[press[i].side] = 1;
         }
@@ -360,6 +371,15 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
             due = 0;
         }
     if (frame % BACKUP_EVERY == 0) {
+        backup_save();
+        cards_save();
+    }
+    /* test mode: the test program writes the game's settings and can clear
+     * the backup; whatever it did is kept as soon as the game starts again */
+    static int program;
+    if (game_machine_program() != program) {
+        program = game_machine_program();
+        logf_("vertical blank %u: %s", frame, program ? "test mode (the game's test program)" : "the game starts again");
         backup_save();
         cards_save();
     }
@@ -425,7 +445,19 @@ static pad_set pads[ACT_COUNT];
 static const unsigned act_bits[ACT_COUNT] = {
     GAME_BTN_UP, GAME_BTN_DOWN, GAME_BTN_LEFT, GAME_BTN_RIGHT, GAME_BTN_G, GAME_BTN_P, GAME_BTN_K,
     GAME_BTN_P | GAME_BTN_G, GAME_BTN_P | GAME_BTN_K, GAME_BTN_P | GAME_BTN_K | GAME_BTN_G, GAME_BTN_START, 0,
+    0, 0,                   /* test and service: the cabinet's switches (act_sys) */
 };
+
+/* what an action sets besides a player's bits: a coin, or a cabinet switch */
+static void act_extra(game_input *in, int player, int a)
+{
+    if (a == ACT_COIN)
+        in->coin[player] = 1;
+    else if (a == ACT_TEST)
+        in->sys |= GAME_SYS_TEST;
+    else if (a == ACT_SERVICE)
+        in->sys |= GAME_SYS_SERVICE;
+}
 
 static void bindings_compile(void)
 {
@@ -472,13 +504,10 @@ static unsigned read_controls(game_input *in)
             for (int i = 0; i < keys[p][a].n; i++)
                 if (k[keys[p][a].sc[i]]) {
                     in->player[p] |= act_bits[a];
-                    if (a == ACT_COIN)
-                        in->coin[p] = 1;
+                    act_extra(in, p, a);
                 }
-    /* fixed: the cabinet's own switches, and slot 2's coin as M3 had it */
+    /* fixed: slot 2's coin as M3 had it */
     if (k[SDL_SCANCODE_6]) in->coin[1] = 1;
-    if (k[SDL_SCANCODE_F2]) in->sys |= GAME_SYS_TEST;
-    if (k[SDL_SCANCODE_F3]) in->sys |= GAME_SYS_SERVICE;
 
     unsigned first = 0;
     int n = 0;
@@ -500,8 +529,7 @@ static unsigned read_controls(game_input *in)
                                 : SDL_GetGamepadAxis(g, (SDL_GamepadAxis)(-1 - x)) > 16000;
                 if (on) {
                     b |= act_bits[a];
-                    if (a == ACT_COIN)
-                        in->coin[i] = 1;
+                    act_extra(in, i, a);
                 }
             }
         in->player[i] |= b;

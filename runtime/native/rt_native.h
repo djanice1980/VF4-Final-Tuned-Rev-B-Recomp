@@ -15,6 +15,15 @@ int rt_native_init(const char *image);
  * ends the run. */
 int rt_native_run(sh4 *c);
 
+/* test mode: keeps the machine's state as it is now, before the game's
+ * first instruction (the BIOS stand-in starts the other program from it:
+ * rt_native.c); 0 on success, else the Test switch stops the game as before */
+int rt_native_power_on(void);
+
+/* the program running now: PROGRAM_MAIN or PROGRAM_TEST (tables.h) */
+int rt_native_program(void);
+extern unsigned rt_native_switches;     /* how many times the BIOS stand-in started the other program */
+
 /* the names of the decompilation the machine looks up (tables.c): 0 when all
  * are there, else says which are gone */
 int rt_native_names_check(void);

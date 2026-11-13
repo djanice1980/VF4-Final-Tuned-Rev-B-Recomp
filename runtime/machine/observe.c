@@ -246,6 +246,13 @@ static void state_addrs(void)
         heap_lo = global_addr("main_heap_area");
 }
 
+/* recomp (test mode): the other program runs now; its globals are elsewhere
+ * (the test program has no mode words: the game's modes read 0 there) */
+void obs_program_changed(void)
+{
+    a_main_mode = a_sub_mode = a_frame_count = a_vblank_count = a_mode_data = 0;
+}
+
 int game_mode_main(void) { state_addrs(); return a_main_mode ? (int)g_r32(a_main_mode) : 0; }
 int game_mode_sub(void) { state_addrs(); return a_sub_mode ? (int)g_r32(a_sub_mode) : 0; }
 u32 game_frames(void) { state_addrs(); return a_frame_count ? g_r32(a_frame_count) : 0; }

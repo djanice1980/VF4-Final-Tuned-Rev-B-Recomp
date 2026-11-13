@@ -256,7 +256,12 @@ void hw_sound_init(void)
     if (hw_sound_chip) {                /* recomp: the chip, from the first sample */
         unsigned n;
         aica_init(mem_ptr(0xa0000000u + SOUND_RAM_PHYS), hw_sound_arm_budget);
-        snapshot_register("sound chip", aica_state(&n), n);
+        /* aica_state sets n, so it is called first: in one call's
+         * arguments C leaves the order open, and n was read as 0 (the
+         * chip was left out of every snapshot, and the test program's
+         * restart left the game's ARM running in emptied sound RAM) */
+        void *chip = aica_state(&n);
+        snapshot_register("sound chip", chip, n);
         snapshot_register("sound chip samples", &chip_samples, sizeof chip_samples);
         event_register(chip_step, "sound chip");
         chip_samples = 0;

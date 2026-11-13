@@ -12,7 +12,9 @@
 #define SETTINGS_FILE "user/settings.txt"
 
 /* what a control does in the game; the game's own three buttons, the usual
- * pairs on one button, start and coin */
+ * pairs on one button, start and coin, and the cabinet's Test and Service
+ * switches (the operator's: Test starts the game's test mode, where Service
+ * moves and Test chooses) */
 enum {
     ACT_UP, ACT_DOWN, ACT_LEFT, ACT_RIGHT,
     ACT_GUARD, ACT_PUNCH, ACT_KICK,
@@ -20,6 +22,7 @@ enum {
     ACT_PK,             /* P+K */
     ACT_PKG,            /* P+K+G */
     ACT_START, ACT_COIN,
+    ACT_TEST, ACT_SERVICE,
     ACT_COUNT
 };
 

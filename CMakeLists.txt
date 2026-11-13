@@ -50,7 +50,9 @@ endforeach()
 # -DVF4FT_TABLES=decomp, from the decompilation with VF4debug's own
 # tools/gen_tables.py, which adds the declarations the observer's call log
 # shows. The default is decomp when both checkouts are beside this one.
-if(TARGET vf4ft_gen_main)
+# The test program's tables (tables_test.c, test mode) always come from
+# meta/: gen_tables.py makes only the main program's.
+if(TARGET vf4ft_gen_main AND TARGET vf4ft_gen_test)
     set(VF4_DECOMP "${CMAKE_CURRENT_SOURCE_DIR}/../vf4ft-decomp" CACHE PATH "the vf4ft-decomp checkout")
     set(VF4DEBUG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../VF4debug" CACHE PATH "the VF4debug checkout (its tools/)")
     if(EXISTS "${VF4DEBUG_DIR}/tools/gen_tables.py" AND EXISTS "${VF4_DECOMP}/ghidra/source_map.tsv")
@@ -66,23 +68,30 @@ if(TARGET vf4ft_gen_main)
             DEPENDS "${VF4DEBUG_DIR}/tools/gen_tables.py"
             COMMENT "Routine and global tables from the decompilation"
             VERBATIM)
+        add_custom_command(OUTPUT "${machine_gen}/tables_test.c"
+            COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_tables.py" "${machine_gen}" --test-only
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_tables.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/meta/test/routines.tsv" "${CMAKE_CURRENT_SOURCE_DIR}/meta/test/globals.tsv"
+            COMMENT "The test program's routine and global tables from meta/"
+            VERBATIM)
     else()
-        add_custom_command(OUTPUT "${machine_gen}/tables.c"
+        add_custom_command(OUTPUT "${machine_gen}/tables.c" "${machine_gen}/tables_test.c"
             COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_tables.py" "${machine_gen}"
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_tables.py"
                     "${CMAKE_CURRENT_SOURCE_DIR}/meta/main/routines.tsv" "${CMAKE_CURRENT_SOURCE_DIR}/meta/main/globals.tsv"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/meta/test/routines.tsv" "${CMAKE_CURRENT_SOURCE_DIR}/meta/test/globals.tsv"
             COMMENT "Routine and global tables from meta/"
             VERBATIM)
     endif()
     file(GLOB machine_src CONFIGURE_DEPENDS runtime/machine/*.c)
     # objects, not an archive: the translated code calls back into rt_native.c
     add_library(vf4ft_machine OBJECT runtime/native/rt_native.c ${machine_src} "${machine_gen}/tables.c"
-                runtime/sound/arm7.c runtime/sound/aica.c)
+                "${machine_gen}/tables_test.c" runtime/sound/arm7.c runtime/sound/aica.c)
     # runtime/machine first: its sh4.h is the one the seam sees (runtime/cpu/sh4.h)
     target_include_directories(vf4ft_machine BEFORE PUBLIC runtime/machine runtime/native runtime/sound)
     target_compile_options(vf4ft_machine PRIVATE -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${VF4FT_FP_FLAGS})
-    set_source_files_properties("${machine_gen}/tables.c" PROPERTIES COMPILE_OPTIONS "-O0;-g0")
-    target_link_libraries(vf4ft_machine PUBLIC vf4ft_gen_main m)
+    set_source_files_properties("${machine_gen}/tables.c" "${machine_gen}/tables_test.c" PROPERTIES COMPILE_OPTIONS "-O0;-g0")
+    target_link_libraries(vf4ft_machine PUBLIC vf4ft_gen_main vf4ft_gen_test m)
     if(WIN32)
         target_link_libraries(vf4ft_machine PUBLIC pthread)    # winpthreads, from llvm-mingw (view.c's workers)
     endif()
@@ -120,6 +129,7 @@ if(TARGET vf4ft_gen_main)
         target_link_libraries(vf4ft_headless PRIVATE vf4ft_machine)
     endif()
 else()
-    message(WARNING "no translated code in ${VF4FT_GEN_DIR}: run translator/translate.py first (README.md); "
+    message(WARNING "no translated code for both programs in ${VF4FT_GEN_DIR}: run translator/translate.py "
+                    "for main and test first (README.md); "
                     "only the CPU runtime is built")
 endif()

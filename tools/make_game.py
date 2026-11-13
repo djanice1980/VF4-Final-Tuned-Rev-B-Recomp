@@ -82,14 +82,14 @@ def run(args):
             key = bytes.fromhex(f.read().strip())
         if naomi.sha1_file(os.path.join(data, "VF41_S.BIN")) != naomi.IMAGE_SHA1:
             raise naomi.SetError("data/VF41_S.BIN is damaged (wrong SHA-1): build again with --set")
+        import hashlib
         progs = {}
         with open(os.path.join(data, "VF41_S.BIN"), "rb") as f:
-            off, size, sha1 = naomi.PROGRAMS["main"]
-            f.seek(off)
-            progs["main"] = naomi.decrypt(f.read(size), key)
-        import hashlib
-        if hashlib.sha1(progs["main"]).hexdigest() != sha1:
-            raise naomi.SetError("data/dimm.key does not decrypt the image: build again with --set")
+            for p, (off, size, sha1) in naomi.PROGRAMS.items():     # the game and its test program
+                f.seek(off)
+                progs[p] = naomi.decrypt(f.read(size), key)
+                if hashlib.sha1(progs[p]).hexdigest() != sha1:
+                    raise naomi.SetError("data/dimm.key does not decrypt the image: build again with --set")
     else:
         progs = naomi.extract(args.set, data, log)
 
@@ -97,26 +97,29 @@ def run(args):
     tc = toolchain.Toolchain(target, log)
     log("compiler: %s" % tc.version)
 
-    # 3. translate the main program
+    # 3. translate the game and its test program (the operator's test mode)
     os.makedirs(work, exist_ok=True)
-    img = os.path.join(work, "main.bin")
-    with open(img, "wb") as f:
-        f.write(progs["main"])
-    gen = os.path.join(work, "gen", "main")
-    shutil.rmtree(gen, ignore_errors=True)
-    log("translating main.bin (about a minute)")
-    r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "translator", "translate.py"),
-                        "--program", "main", "--image", img, "--out", gen], capture_output=True, text=True)
-    with open(os.path.join(work, "translate.log"), "w") as f:
-        f.write(r.stdout + r.stderr)
-    if r.returncode != 0:
-        raise build.BuildError("the translator failed:\n%s" % (r.stderr or r.stdout)[-4000:])
+    gens = []
+    with open(os.path.join(work, "translate.log"), "w") as tlog:
+        for p, how_long in (("main", " (about a minute)"), ("test", "")):
+            img = os.path.join(work, "%s.bin" % p)
+            with open(img, "wb") as f:
+                f.write(progs[p])
+            gen = os.path.join(work, "gen", p)
+            shutil.rmtree(gen, ignore_errors=True)
+            log("translating %s.bin%s" % (p, how_long))
+            r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "translator", "translate.py"),
+                                "--program", p, "--image", img, "--out", gen], capture_output=True, text=True)
+            tlog.write("== %s.bin\n%s%s" % (p, r.stdout, r.stderr))
+            if r.returncode != 0:
+                raise build.BuildError("the translator failed on %s.bin:\n%s" % (p, (r.stderr or r.stdout)[-4000:]))
+            gens.append(gen)
     tables = os.path.join(work, "tables")
     make_tables.write(tables)
 
     # 4. compile and link into a staging folder, then install over the old one
     jobs = args.jobs or os.cpu_count() or 4
-    units = build.units(gen, os.path.join(tables, "tables.c"), tc, VERSION)
+    units = build.units(gens, [os.path.join(tables, "tables.c"), os.path.join(tables, "tables_test.c")], tc, VERSION)
     log("compiling %d files, %d at a time" % (len(units), jobs))
     objs, warnings = build.compile_all(units, os.path.join(work, "obj"), tc, jobs, log)
     if warnings:

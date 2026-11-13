@@ -15,6 +15,7 @@
 #include "aica.h"
 #include "game_machine.h"
 #include "dimm_image.h"
+#include "tables.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -47,8 +48,17 @@ static void host_frame(sh4 *c)
     memset(&in, 0, sizeof in);
     /* booting until the game first shows its warning screen (WARNING.DISP) or
      * anything after it; before it sets its mode (vertical blank 429) the mode
-     * words hold other values */
+     * words hold other values. Test mode: the game boots again when it comes
+     * back from the test program, which has no such start-up (and no mode
+     * words) */
     static int booted;
+    static unsigned switches;
+    if (switches != rt_native_switches) {
+        switches = rt_native_switches;
+        booted = 0;
+    }
+    if (!booted && rt_native_program() == PROGRAM_TEST)
+        booted = 1;
     if (!booted) {
         int m = game_mode_main(), s = game_mode_sub();
         booted = (m == 0 && s >= 1 && s < 16) || (m >= 1 && m < 8);
@@ -124,8 +134,14 @@ int game_machine_init(const char *image, const char *dimm, const char *dimm_key,
     mem_guards();
     if (rt_native_init(image))
         return 1;
+    rt_native_power_on();       /* test mode: the BIOS stand-in starts the other program from it */
     machine_host_frame = host_frame;
     return 0;
+}
+
+int game_machine_program(void)
+{
+    return rt_native_program() == PROGRAM_TEST;
 }
 
 int game_machine_run(void)

@@ -217,6 +217,7 @@ static inline void obs_w8(sh4 *c, u32 a, u32 v)
 
 /* turns the observer on (counts, coverage); obs_open also starts the call log */
 int obs_enable(void);
+void obs_program_changed(void);   /* recomp (test mode): forget the program's addresses */
 int obs_open(const char *path, const char *run_name);
 void obs_close(void);
 /* a routine is entered; 0 when it is only a jump back to the routine's own

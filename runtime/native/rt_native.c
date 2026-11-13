@@ -25,6 +25,17 @@
  * So the machine sees exactly what it sees under VF4debug's interpreter:
  * the same instruction counts at every device access and every event, the
  * same interrupt points. The run is VF4debug's run, state for state.
+ *
+ * Test mode (M6): the game's Test switch makes it call the BIOS's test menu
+ * (service 0x44). The board's BIOS then starts the game's test program,
+ * test.bin, at the same address as the game, and its EXIT calls the BIOS
+ * again, which restarts the game. Here (rt_program) the machine goes back to
+ * the state it had before the game's first instruction (taken by
+ * rt_native_power_on), keeps what the cabinet keeps with the power off
+ * (the battery-backed RAM, the settings EEPROM, the cards in the units),
+ * loads the other program as the Naomi header's table says, and switches
+ * every table to that program: the routines and globals the machine looks
+ * up (dispatch.c), the translated code (M_ or T_), the hooks.
  */
 #include "sh4.h"            /* VF4debug's (runtime/machine): first, see runtime/cpu/sh4.h */
 #include "mem.h"
@@ -35,6 +46,10 @@
 #include "tables.h"
 #include "rt_dispatch.h"
 #include "rt_native.h"
+#include "hle.h"
+#include "observe.h"
+#include "view.h"
+#include "tables.h"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -49,6 +64,12 @@ int rt_skip_entry;
 
 static u16 *blk;            /* per halfword of the image: the block's length at a block start, else 0 */
 static u32 blk_slots;
+
+/* the program running now (test mode): its translation's tables */
+static const rt_block *blocks;
+static unsigned block_count;
+static const rt_lit *lits;
+static unsigned lit_count;
 
 /* ---- code the game changes (docs/design.md, "Code the game changes") ---- */
 
@@ -92,19 +113,19 @@ static void code_byte_changed(u32 off)
         block_changed(s, addr);
     if (code_flags[s] & CODE_LIT) {
         /* the blocks that read a pool word holding the byte */
-        unsigned lo = 0, hi = M_lit_count;
+        unsigned lo = 0, hi = lit_count;
         u32 from = (addr - 3u) & ~1u;
         while (lo < hi) {
             unsigned mid = (lo + hi) / 2;
-            if ((M_lits[mid].word & ~1u) < from)
+            if ((lits[mid].word & ~1u) < from)
                 lo = mid + 1;
             else
                 hi = mid;
         }
-        for (unsigned k = lo; k < M_lit_count && (M_lits[k].word & ~1u) <= addr; k++) {
-            u32 base = M_lits[k].word & ~1u, size = M_lits[k].word & 1u ? 4 : 2;
+        for (unsigned k = lo; k < lit_count && (lits[k].word & ~1u) <= addr; k++) {
+            u32 base = lits[k].word & ~1u, size = lits[k].word & 1u ? 4 : 2;
             if (addr < base + size)
-                block_changed((M_lits[k].block - 0x0c020000u) >> 1, addr);
+                block_changed((lits[k].block - 0x0c020000u) >> 1, addr);
         }
     }
 }
@@ -172,17 +193,20 @@ static int code_compare(const char *image)
 static int code_watch_init(const char *image)
 {
     u32 hi = 0;
-    for (unsigned i = 0; i < M_block_count; i++)
-        if ((M_blocks[i].addr + 2 * M_blocks[i].n) > hi)
-            hi = M_blocks[i].addr + 2 * M_blocks[i].n;
-    for (unsigned i = 0; i < M_lit_count; i++)
-        if ((M_lits[i].word & ~1u) + 4 > hi)
-            hi = (M_lits[i].word & ~1u) + 4;
+    for (unsigned i = 0; i < block_count; i++)
+        if ((blocks[i].addr + 2 * blocks[i].n) > hi)
+            hi = blocks[i].addr + 2 * blocks[i].n;
+    for (unsigned i = 0; i < lit_count; i++)
+        if ((lits[i].word & ~1u) + 4 > hi)
+            hi = (lits[i].word & ~1u) + 4;
     code_slots = (hi - 0x0c020000u + 1) / 2;
     if (code_slots > RT_CODE_SLOTS || code_slots > blk_slots) {
         fprintf(stderr, "vf4ft: the translated code reaches %08x, past the image\n", hi);
         return 1;
     }
+    free(code_back);
+    free(code_flags);
+    memset(rt_code_changed, 0, sizeof rt_code_changed);
     code_back = calloc(code_slots, sizeof *code_back);
     code_flags = calloc(code_slots, 1);
     code_host = mem_ptr(0x0c020000u);
@@ -194,23 +218,23 @@ static int code_watch_init(const char *image)
      * a delay slot that is also a branch target: it ends one block and starts
      * the next (CODE_START). Anything else in two blocks is not this
      * translator's. */
-    for (unsigned i = 0; i < M_block_count; i++) {
-        u32 s = (M_blocks[i].addr - 0x0c020000u) >> 1;
+    for (unsigned i = 0; i < block_count; i++) {
+        u32 s = (blocks[i].addr - 0x0c020000u) >> 1;
         code_flags[s] |= CODE_START;
-        for (u32 k = 0; k < M_blocks[i].n; k++) {
+        for (u32 k = 0; k < blocks[i].n; k++) {
             if (!code_back[s + k])
                 code_back[s + k] = (u16)(k + 1);
             else if (k != 0) {
                 fprintf(stderr, "vf4ft: %08x is inside two blocks: the translation is not of this runtime\n",
-                        M_blocks[i].addr + 2 * k);
+                        blocks[i].addr + 2 * k);
                 return 1;
             }
         }
     }
-    for (unsigned i = 0; i < M_lit_count; i++) {
-        u32 s = ((M_lits[i].word & ~1u) - 0x0c020000u) >> 1;
+    for (unsigned i = 0; i < lit_count; i++) {
+        u32 s = ((lits[i].word & ~1u) - 0x0c020000u) >> 1;
         code_flags[s] |= CODE_LIT;
-        if (M_lits[i].word & 1u)
+        if (lits[i].word & 1u)
             code_flags[s + 1] |= CODE_LIT;
     }
     /* every page (at every address it has) that holds translated code */
@@ -226,26 +250,38 @@ static int code_watch_init(const char *image)
 static jmp_buf rt_end;
 static int rt_end_code;
 
-int rt_native_init(const char *image)
+/* the tables of a program's translation, and the watch on its code; image:
+ * the file it was translated from, or NULL when memory holds its bytes */
+static int program_tables(int program, const char *image)
 {
-    rt_table = M_routines;
-    rt_table_count = M_routine_count;
+    rt_table = program == PROGRAM_TEST ? T_routines : M_routines;
+    rt_table_count = program == PROGRAM_TEST ? T_routine_count : M_routine_count;
+    blocks = program == PROGRAM_TEST ? T_blocks : M_blocks;
+    block_count = program == PROGRAM_TEST ? T_block_count : M_block_count;
+    lits = program == PROGRAM_TEST ? T_lits : M_lits;
+    lit_count = program == PROGRAM_TEST ? T_lit_count : M_lit_count;
     blk_slots = disp_slots;
+    free(blk);
     blk = calloc(blk_slots, sizeof *blk);
     if (!blk) {
         fprintf(stderr, "vf4ft: out of memory for the block table\n");
         return 1;
     }
-    for (unsigned i = 0; i < M_block_count; i++) {
-        u32 s = disp_slot(M_blocks[i].addr);
-        if (s >= blk_slots || M_blocks[i].n == 0 || M_blocks[i].n > 0xffff) {
+    for (unsigned i = 0; i < block_count; i++) {
+        u32 s = disp_slot(blocks[i].addr);
+        if (s >= blk_slots || blocks[i].n == 0 || blocks[i].n > 0xffff) {
             fprintf(stderr, "vf4ft: block %08x (%u instructions) does not fit the image: the translation is "
-                    "not of this program\n", M_blocks[i].addr, M_blocks[i].n);
+                    "not of this program\n", blocks[i].addr, blocks[i].n);
             return 1;
         }
-        blk[s] = (u16)M_blocks[i].n;
+        blk[s] = (u16)blocks[i].n;
     }
     return code_watch_init(image);
+}
+
+int rt_native_init(const char *image)
+{
+    return program_tables(PROGRAM_MAIN, image);
 }
 
 /* the block starting at pc, run as C: only at the program's own (P0)
@@ -559,6 +595,125 @@ void rt_sq_write(sh4 *c, u64 atk, u32 dst, const u32 *words)
     c->insns += k;
 }
 
+/* ---- test mode: the other program --------------------------------------------------- */
+
+static u8 *power_on;            /* the machine before the game's first instruction (snapshot_save_mem) */
+static size_t power_on_size;
+static jmp_buf rt_restart;
+static int rt_switch_to;
+static int rt_program_now;
+unsigned rt_native_switches;
+static void rt_program(sh4 *c, int program);
+
+int rt_native_power_on(void)
+{
+    free(power_on);
+    power_on = NULL;
+    if (snapshot_save_mem(&power_on, &power_on_size)) {
+        power_on = NULL;
+        fprintf(stderr, "vf4ft: cannot keep the machine's power-on state: test mode will stop the game\n");
+        return 1;
+    }
+    hle_program = rt_program;
+    return 0;
+}
+
+int rt_native_program(void)
+{
+    return rt_program_now;
+}
+
+/* service 0x44 (hle_boot.c), deep in whatever called it: back to
+ * rt_native_run's frame, which switches with nothing of the old program on
+ * the stack */
+static void rt_program(sh4 *c, int program)
+{
+    (void)c;
+    rt_switch_to = program;
+    longjmp(rt_restart, 1);
+}
+
+/* the program's load table in the Naomi header of the DIMM image (main at
+ * 0x360, the test program at 0x3c0): up to 8 rows of (offset in the image,
+ * address, bytes), ended by 0xffffffff; 0 when it was loaded */
+static int program_load(int program)
+{
+    const u8 *img = hw_cart_image();
+    u32 size = hw_cart_image_size();
+    if (!img || size < 0x400)
+        return -1;
+    u32 at = program == PROGRAM_TEST ? 0x3c0 : 0x360, loaded = 0;
+    for (int row = 0; row < 8; row++, at += 12) {
+        u32 off, dst, n;
+        memcpy(&off, img + at, 4);
+        if (off == 0xffffffffu)
+            break;
+        memcpy(&dst, img + at + 4, 4);
+        memcpy(&n, img + at + 8, 4);
+        u8 *h = mem_ptr(dst);
+        if (!h || off > size || n > size - off || !mem_ptr(dst + n - 1) || mem_ptr(dst + n - 1) != h + n - 1)
+            return -1;
+        memcpy(h, img + off, n);
+        loaded += n;
+    }
+    return loaded ? 0 : -1;
+}
+
+static void program_switch(sh4 *c, int program)
+{
+    static const char *const names[] = { "the game (main.bin)", "the test program (test.bin)" };
+    if (!power_on || c != &cpu) {
+        machine_stop(c, STOP_FATAL, "the game asked the BIOS for its test menu (service 0x44), and the machine's "
+                     "power-on state was not kept");
+        rt_finish(STOP_FATAL);
+    }
+    if (obs_on || obs_log) {
+        machine_stop(c, STOP_FATAL, "service 0x44: the other program cannot start with the observer on (its "
+                     "records are main.bin's)");
+        rt_finish(STOP_FATAL);
+    }
+    /* what the cabinet keeps with the power off */
+    static u8 backup[0x10000], eeprom[0x80], card[2][128];
+    int has_card[2];
+    g_read(0xa0200000u, backup, sizeof backup);
+    memcpy(eeprom, hw_maple_eeprom(), sizeof eeprom);
+    for (int n = 0; n < 2; n++)
+        has_card[n] = !hw_card_get(n, card[n]);
+    u32 frame = machine_frame;
+    u64 insns = c->insns;
+    if (snapshot_load_mem(power_on, power_on_size)) {
+        machine_stop(c, STOP_FATAL, "service 0x44: %s", snapshot_error);
+        rt_finish(STOP_FATAL);
+    }
+    g_write(0xa0200000u, backup, sizeof backup);
+    memcpy(hw_maple_eeprom(), eeprom, sizeof eeprom);
+    for (int n = 0; n < 2; n++)
+        if (has_card[n])
+            hw_card_put(n, card[n]);
+    /* the count of vertical blanks and instructions goes on (the host's and
+     * the controller's frame numbers); the clock starts again with the rest */
+    machine_frame = frame;
+    c->insns = insns;
+    /* the power-on state has the game in memory; the test program goes over it */
+    if (program == PROGRAM_TEST && program_load(PROGRAM_TEST)) {
+        machine_stop(c, STOP_FATAL, "service 0x44: the DIMM image has no test program to load");
+        rt_finish(STOP_FATAL);
+    }
+    disp_program = program;
+    if (disp_init() || hle_init(c) || program_tables(program, NULL)) {
+        machine_stop(c, STOP_FATAL, "service 0x44: the tables of %s cannot be made", names[program]);
+        rt_finish(STOP_FATAL);
+    }
+    obs_program_changed();
+    view_program_changed();
+    rt_skip_entry = 0;
+    rt_program_now = program;
+    rt_native_switches++;
+    c->stop = 0;
+    if (!cfg.quiet)
+        fprintf(stderr, "vf4ft: vertical blank %u: the BIOS starts %s\n", machine_frame, names[program]);
+}
+
 /* ---- the run ---------------------------------------------------------------------- */
 
 int rt_native_run(sh4 *c)
@@ -569,6 +724,8 @@ int rt_native_run(sh4 *c)
     if (!control_next(c))
         return STOP_NONE;
     c->stop = 0;
+    if (setjmp(rt_restart))
+        program_switch(c, rt_switch_to);    /* test mode: the other program, from its start */
     rt_fpscr_loaded(c);
     rt_event(c, c->pc);
     rt_drive(c);

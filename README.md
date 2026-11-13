@@ -19,8 +19,8 @@ emulator runs at play time.
 Playable with sound, built on your PC from your own set by the builder
 (M5): from the command line or with the launcher. M6 added saves, free
 play, the card units, a settings page with rebinding, the GPU renderer at
-up to 4 times the resolution, and the Steam Deck route. Test mode is not
-done yet. No release has been published yet. The plan, with its
+up to 4 times the resolution, the Steam Deck route, and the operator's
+test mode. No release has been published yet. The plan, with its
 milestones: [docs/design.md](docs/design.md).
 
 | Milestone | State |
@@ -31,7 +31,7 @@ milestones: [docs/design.md](docs/design.md).
 | M3: picture, input, real time | Done 2026-11-12. The game runs in a window at 60 fps natively on Linux and under Proton (Direct3D 12), with keyboard and gamepads, and gives the same run as VF4debug's; played through coin, start and a match with a DualSense. The picture is VF4debug's software renderer, 8 to 9 ms a frame with the machine while playing ([details](docs/design.md#15-m3-results-2026-11-12)) |
 | M4: sound | Done 2026-11-12. The game's own sound driver runs on an ARM7 interpreter with a model of the AICA chip and its effect DSP: music, voices, effects and the game's reverb play in the window on Linux and under Proton, and every run is deterministic ([details](docs/design.md#17-m4-results-2026-11-12), [the DSP](docs/design.md#18-the-effect-dsp-2026-11-12)) |
 | M5: builder and launcher | Done 2026-11-12. Your MAME set to an installed game in about a minute, with no MAME tools and nothing to install: the builder reads the CHD itself, keeps the disc's encrypted image (the game decrypts it at start), downloads a pinned compiler and SDL3, translates and compiles. The Windows launcher (with its own Python) built and played the game under Proton in a fresh prefix ([details](docs/design.md#19-m5-results-2026-11-12)) |
-| M6: polish | Done 2026-11-12 except test mode. Saves (the cabinet's backup RAM and settings EEPROM), free play by default the operator's way (or arcade coins), the two card units, `user/settings.txt` with the launcher's Settings page and rebinding. The GPU renderer (Vulkan, natively and under Proton) draws at 1 to 4 times 640 x 480 and matches the software picture; the machine's frame went from 7.0 to 3.1 ms, which puts the Steam Deck at an estimated 10 to 12 ms a frame. The Deck runs the Windows release under Proton (not yet tried on a real Deck). Test (F2) still ends the game ([details](docs/design.md#20-m6-results-2026-11-12)) |
+| M6: polish | Done 2026-11-12. Saves (the cabinet's backup RAM and settings EEPROM), free play by default the operator's way (or arcade coins), the two card units, `user/settings.txt` with the launcher's Settings page and rebinding. The GPU renderer (Vulkan, natively and under Proton) draws at 1 to 4 times 640 x 480 and matches the software picture; the machine's frame went from 7.0 to 3.1 ms, which puts the Steam Deck at an estimated 10 to 12 ms a frame. The Deck runs the Windows release under Proton (not yet tried on a real Deck). Test mode runs the game's own test program, `test.bin`, and EXIT starts the game again ([details](docs/design.md#20-m6-results-2026-11-12)) |
 
 ## How it works
 
@@ -274,12 +274,18 @@ The default controls (all of them can be changed, below):
 | Punch + Kick / Punch + Kick + Guard | I / O | LB / RB |
 | Start | Enter | Menu |
 | Coin | 5 (slot 1), 6 (slot 2) | View |
-| Test / Service | F2 / F3 | |
+| Test / Service (the operator's) | F2 / F3 | |
 | Fullscreen | F11 or Alt+Enter | |
 | Quit | Esc | hold View + Menu for a second |
 
-Test (F2) ends the game for now: the game asks the BIOS for its test menu,
-which is not done yet (`vf4ft.log` says so).
+**Test mode,** the operator's: Test (F2) opens the game's test menu (its
+own test program, `test.bin`, as the cabinet's BIOS starts it). Service
+(F3) moves down the menu and Test chooses; screens such as the input test
+end with Service and Test together. EXIT starts the game again, from power
+on, keeping what the cabinet keeps: the game assignments and book keeping
+(`backup.bin`) and the cards. Free play and coins are not in the game's
+test menu (they are the BIOS's): they are the `coins` setting below. Test
+and Service can be moved to other keys or pad buttons like any control.
 
 **The player's folder,** `user/` beside the program (or `--user DIR`):
 
@@ -289,7 +295,8 @@ which is not done yet (`vf4ft.log` says so).
   Big Picture), `picture` (4:3 | stretch), `filter` (smooth | sharp),
   `renderer` (gpu | software), `scale` (1 to 4 times 640 x 480; default 2),
   `sound` (on | off), `cards` (on | off), then the controls: `key1.punch =
-  K`, `key2.*` for keyboard player 2, `pad.*` for gamepads, with SDL's key
+  K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
+  keyboard player 2, `pad.*` for gamepads, with SDL's key
   and button names, several separated by commas, `-` for none. The file
   the launcher writes lists every name with its choices. A line the game
   does not know is skipped, with a message in `vf4ft.log`.
@@ -376,9 +383,11 @@ build/linux/vf4ft_headless --frames 9000 --sound chip --wav build/attract.wav
 
 `--help` lists the rest: they are VF4debug's options.
 
-`meta/` holds the routine list and FPU modes taken from the decompilation
-(addresses and names only). After the decompilation changes, refresh it with
-`python3 -I tools/sync_meta.py ../vf4ft-decomp` and translate again.
+`meta/` holds the routine lists, global lists and FPU modes taken from the
+decompilation (addresses and names only), for both programs. After the
+decompilation changes, refresh it with
+`python3 -I tools/sync_meta.py ../vf4ft-decomp` and translate again; the
+build makes the runtime's tables (`tables.c`, `tables_test.c`) from it.
 
 ## License
 

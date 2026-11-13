@@ -420,7 +420,7 @@ static int call_start(sh4 *c, routine *r, char **tok, int n, u32 budget, int wit
     char cls[16];
     u32 csize[16];
     int ncls = 0;
-    const char *spec = gen_routines[r - routines].spec;
+    const char *spec = prog_routines[r - routines].spec;    /* recomp (test mode): the program's table */
     for (const char *p = spec; p && *p;) {
         while (*p == ' ')
             p++;

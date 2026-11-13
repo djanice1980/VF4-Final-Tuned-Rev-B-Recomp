@@ -379,7 +379,6 @@ static settings st;
 static char settings_path[1100];
 static int st_row;                      /* the row with the focus on a settings page */
 static int capturing;                   /* a controls row waits for its key or button */
-static Uint64 capture_since;
 
 enum { R_COINS, R_RENDERER, R_SCALE, R_FULLSCREEN, R_PICTURE, R_FILTER, R_SOUND, R_CARDS, R_PAD, R_KEY1, R_KEY2, R_BACK,
        R_COUNT };
@@ -452,7 +451,6 @@ static void settings_press(int row)
         return;
     }
     capturing = 1;
-    capture_since = SDL_GetTicks();
 }
 
 static void settings_back(void)
@@ -655,8 +653,8 @@ static void draw_settings(void)
             SDL_RenderFillRect(ren, &(SDL_FRect){4, y - 3, LW - 8, 14});
         }
         text(12, y, label, 255, 255, 255);
-        if (v[0])
-            text(page == PAGE_SETTINGS ? 140 : 120, y, v, 255, 220, 140);
+        if (v[0])       /* the controls' column clears "Service (operator)", 18 characters */
+            text(page == PAGE_SETTINGS ? 140 : 168, y, v, 255, 220, 140);
     }
     if (page == PAGE_SETTINGS)
         snprintf(b, sizeof b, "Up/Down: choose  Left/Right/A: change  B: save, back");

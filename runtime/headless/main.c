@@ -256,6 +256,8 @@ int main(int argc, char **argv)
     }
     if (!interp && rt_native_init(cfg.image))
         return 1;
+    if (!interp)
+        rt_native_power_on();           /* recomp (test mode): the BIOS stand-in starts the other program from it */
     if (wav_path) {                     /* recomp */
         if (!hw_sound_chip) {
             fprintf(stderr, "vf4ft-headless: --wav needs --sound chip\n");
@@ -316,6 +318,9 @@ int main(int argc, char **argv)
                     "  changed code: %llu stores into code pages, %llu blocks changed\n", rt_stats.slow_blocks,
                     rt_stats.interp_insns, rt_stats.exceptions, rt_stats.outside_calls, rt_stats.code_page_stores,
                     rt_stats.changed_blocks);
+        if (!interp && rt_native_switches)  /* recomp (test mode) */
+            fprintf(stderr, "  test mode: the BIOS stand-in started the other program %u times; running: %s\n",
+                    rt_native_switches, rt_native_program() == PROGRAM_TEST ? "the test program" : "the game");
         machine_where(&cpu, stderr);
         if (code != STOP_BREAK && code != STOP_LIMIT)
             machine_backtrace(&cpu, stderr);

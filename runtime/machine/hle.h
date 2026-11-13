@@ -21,6 +21,12 @@ void hle_vectors_write(void);       /* hle_boot.c: the code at the exception vec
 u32 hle_board_id_word(int with_network);    /* hle_boot.c: the word the DIMM board leaves in low RAM */
 void hle_waits_install(sh4 *c);     /* hle_waits.c: the game's waits as jumps of virtual time */
 
+/* recomp (test mode): when set, service 0x44 (the BIOS's test menu) calls it
+ * with the program to start (PROGRAM_TEST from the game, PROGRAM_MAIN from
+ * the test program), and it does not return; unset, the service stops the
+ * machine as before */
+extern void (*hle_program)(sh4 *c, int program);
+
 /* shared helpers for replacements */
 void hle_return_zero(sh4 *c, routine *r);
 void hle_return_one(sh4 *c, routine *r);

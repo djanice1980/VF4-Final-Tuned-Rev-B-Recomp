@@ -92,6 +92,7 @@ typedef struct view_gpu_frame {
     int arena_reset;
 } view_gpu_frame;
 #define VIEW_GPU_ARENA (16u << 20)      /* texels */
+void view_program_changed(void);   /* recomp (test mode): look the program's tables up again */
 void view_host_gpu(void (*submit)(const view_gpu_frame *f));
 
 /* called from hw_gfx.c, only while view_on is set */

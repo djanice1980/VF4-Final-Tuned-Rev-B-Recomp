@@ -51,7 +51,10 @@ What the recomp changed:
   machine event, raises the system chip's external interrupt bit 1, and is
   kept in the snapshots. `hw_sound_arm_budget` sets its ARM7's instructions
   a sample. With `hw_sound_chip` 0 (the default) nothing behaves
-  differently.
+  differently. (Until M6 the chip's state was registered with size 0, so no
+  snapshot held it: `n` was read before `aica_state(&n)` set it, in the
+  same call's arguments. Found when the test program's restart left the
+  game's ARM running in emptied sound RAM.)
 - `hw.h`, `hw_cart.c` (M5): `hw_cart_init_memory`, the DIMM image already
   in memory. The installed game keeps the disc's encrypted file and decrypts
   it at start (`runtime/host/dimm_image.c`); `hw_cart_init` and its file
@@ -68,5 +71,31 @@ What the recomp changed:
   rasterized; passes into textures are still drawn here. `target_clear`'s
   plane is computed by `bg_plane`, which both use. Without
   `view_host_gpu` nothing behaves differently.
+- Test mode (M6): the machine runs either program, the game (main.bin) or
+  its test program (test.bin), and switches at the BIOS's service 0x44
+  (docs/design.md section 20).
+  - `tables.h`, `dispatch.c`: `gen_test_routines`, `gen_test_globals` and
+    their counts (the test program's tables, `tables_test.c`);
+    `disp_program` and `prog_routines`, `prog_globals` and their counts, the
+    running program's. `disp_init` takes its tables from `disp_program`, can
+    run again (it frees the old tables) and clears `disp_exc_depth`;
+    `global_text` names the running program's globals.
+  - `control.c`: a routine's spec comes from `prog_routines`.
+  - `hle.h`, `hle_boot.c`: `hle_program`, which service 0x44 calls with the
+    other program when it is set (unset, the service stops the machine as
+    before). `hle_vectors_write` takes the exception entry as
+    `irq_entry_via_firmware` - 0x44 when the program's table has no
+    exception entry (the test program's is unnamed; the bytes are main's).
+    `hle_boot_install` can run again: the snapshot blob and the BIOS and
+    backup RAM areas are added the first time only, and the low-RAM words
+    are left (the restored power-on state has them).
+  - `hw.h`, `hw_cart.c`: `hw_cart_image`, the image's bytes, for loading the
+    test program from its Naomi header table (`runtime/native/rt_native.c`).
+  - `observe.h`, `observe.c`: `obs_program_changed`, which clears the
+    game's mode words (the test program has none).
+  - `view.h`, `view.c`: `view_program_changed`, which makes the view look
+    up its tables again (the function-local `done` became the file's
+    `tables_done`).
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
-  and `--wav FILE`.
+  and `--wav FILE`. (M6) It keeps the power-on state for test mode
+  (`rt_native_power_on`) and reports the program switches.

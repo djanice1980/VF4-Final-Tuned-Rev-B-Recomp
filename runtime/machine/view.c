@@ -2839,12 +2839,19 @@ static void target_store(void)
     }
 }
 
+static int tables_done;     /* recomp (test mode): file scope, so that view_program_changed can clear it */
+
+/* recomp (test mode): the other program runs now: its tables are elsewhere */
+void view_program_changed(void)
+{
+    tables_done = 0;
+}
+
 static void tables_once(void)
 {
-    static int done;
-    if (done)
+    if (tables_done)
         return;
-    done = 1;
+    tables_done = 1;
     bytes_lo = global_addr("vertex_bytes_lo");
     bytes_hi = global_addr("vertex_bytes_hi");
     /* the specular byte of a material command is material_param_byte_table[type]

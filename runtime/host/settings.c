@@ -7,10 +7,11 @@
 #include <string.h>
 
 const char *const settings_action_name[ACT_COUNT] = {
-    "up", "down", "left", "right", "guard", "punch", "kick", "throw", "pk", "pkg", "start", "coin",
+    "up", "down", "left", "right", "guard", "punch", "kick", "throw", "pk", "pkg", "start", "coin", "test", "service",
 };
 const char *const settings_action_text[ACT_COUNT] = {
     "Up", "Down", "Left", "Right", "Guard", "Punch", "Kick", "Throw (P+G)", "P+K", "P+K+G", "Start", "Coin",
+    "Test (operator)", "Service (operator)",
 };
 
 static void set(binding *b, const char *a, const char *c)
@@ -47,6 +48,8 @@ void settings_defaults(settings *s)
     set(&k[ACT_PKG], "O", NULL);
     set(&k[ACT_START], "Return", NULL);
     set(&k[ACT_COIN], "5", NULL);
+    set(&k[ACT_TEST], "F2", NULL);          /* M3's keys; no gamepad button by default, so a match */
+    set(&k[ACT_SERVICE], "F3", NULL);       /* is never left for test mode by accident */
     /* gamepads, by SDL's names for the positions: south/east/west/north are
      * A/B/X/Y on an Xbox pad and the Steam Deck. The left stick always
      * steers as well */

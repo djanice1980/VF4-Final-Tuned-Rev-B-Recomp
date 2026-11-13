@@ -86,6 +86,7 @@ int hw_cart_read(sh4 *c, u32 p, u32 *out);
 int hw_cart_write(sh4 *c, u32 p, u32 v);
 void hw_cart_stats(FILE *f);
 u32 hw_cart_image_size(void);         /* bytes of the DIMM image (0: none) */
+const u8 *hw_cart_image(void);        /* recomp (test mode): its bytes, NULL without one */
 
 /* the sound board (hw_sound.c) */
 void hw_sound_init(void);

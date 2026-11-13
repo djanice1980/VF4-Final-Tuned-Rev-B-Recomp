@@ -105,4 +105,8 @@ void game_machine_stop(void);
 /* why the run stopped, and where the game was (its mode), for the log */
 const char *game_machine_why(void);
 
+/* 1 while the game's test program runs (test mode: the Test switch starts
+ * it, its EXIT starts the game again), else 0; from the frame function */
+int game_machine_program(void);
+
 #endif

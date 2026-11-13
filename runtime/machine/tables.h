@@ -25,6 +25,21 @@ extern const int gen_routine_count;
 extern const gen_global gen_globals[];
 extern const int gen_global_count;
 
+/* recomp (test mode): the test program's tables (tables_test.c, from meta/
+ * by tools/make_tables.py), and the program the machine runs now, whose
+ * tables dispatch.c, observe.c and control.c read: main.bin's (gen_*) until
+ * the BIOS stand-in starts the test program (disp_program_set) */
+extern const gen_routine gen_test_routines[];
+extern const int gen_test_routine_count;
+extern const gen_global gen_test_globals[];
+extern const int gen_test_global_count;
+enum { PROGRAM_MAIN = 0, PROGRAM_TEST = 1 };
+extern int disp_program;
+extern const gen_routine *prog_routines;
+extern int prog_routine_count;
+extern const gen_global *prog_globals;
+extern int prog_global_count;
+
 /* address of a named global, or 0 */
 uint32_t global_addr(const char *name);
 /* "name+0x10" for a data address (static buffer ring), or NULL when none is near */

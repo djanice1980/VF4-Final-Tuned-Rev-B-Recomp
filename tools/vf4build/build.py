@@ -17,21 +17,24 @@ class BuildError(Exception):
     pass
 
 
-def units(gen_dir, tables_c, tc, version):
-    """[(source, flags)] of every C file of the game."""
+def units(gen_dirs, tables_cs, tc, version):
+    """[(source, flags)] of every C file of the game: gen_dirs are the
+    translated programs (main.bin, test.bin), tables_cs their tables."""
     out = []
     for s in ("rt_core.c", "sh4rt_fpu.c"):
         out.append((R("cpu", s), COMMON + ["-I" + R("cpu")]))
-    gen = sorted(glob.glob(os.path.join(gen_dir, "*.c")))
-    if not gen:
-        raise BuildError("no translated code in %s" % gen_dir)
-    for s in gen:
-        out.append((s, COMMON + ["-I" + gen_dir, "-I" + R("cpu")]))
+    for gen_dir in gen_dirs:
+        gen = sorted(glob.glob(os.path.join(gen_dir, "*.c")))
+        if not gen:
+            raise BuildError("no translated code in %s" % gen_dir)
+        for s in gen:
+            out.append((s, COMMON + ["-I" + gen_dir, "-I" + R("cpu")]))
     mflags = COMMON + MACHINE_INC + ["-Wno-unused-parameter"]
     for s in [R("native", "rt_native.c")] + sorted(glob.glob(R("machine", "*.c"))) + \
             [R("sound", "arm7.c"), R("sound", "aica.c")]:
         out.append((s, mflags))
-    out.append((tables_c, mflags + ["-O0", "-g0"]))
+    for tables_c in tables_cs:
+        out.append((tables_c, mflags + ["-O0", "-g0"]))
     hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ['-DVF4FT_VERSION="%s"' % version]
     for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c"):
         out.append((R("host", s), hflags))

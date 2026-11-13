@@ -19,6 +19,13 @@ u32 *disp_index;
 u32 disp_slots;
 int disp_exc_depth;
 
+/* recomp (test mode): the program whose tables are in use (tables.h) */
+int disp_program;
+const gen_routine *prog_routines;
+int prog_routine_count;
+const gen_global *prog_globals;
+int prog_global_count;
+
 /* ---- names ---- */
 
 typedef struct name_slot {
@@ -63,6 +70,22 @@ static int names_get(name_slot *t, u32 n, const char *name, u32 *value)
 
 int disp_init(void)
 {
+    /* recomp (test mode): the tables of disp_program; called again when the
+     * BIOS stand-in starts the other program, so whatever the last call
+     * made goes first (hooks and replacements are installed again after) */
+    prog_routines = disp_program == PROGRAM_TEST ? gen_test_routines : gen_routines;
+    prog_routine_count = disp_program == PROGRAM_TEST ? gen_test_routine_count : gen_routine_count;
+    prog_globals = disp_program == PROGRAM_TEST ? gen_test_globals : gen_globals;
+    prog_global_count = disp_program == PROGRAM_TEST ? gen_test_global_count : gen_global_count;
+    free(routines);
+    free(disp_flags);
+    free(disp_index);
+    free(fn_names);
+    free(gl_names);
+    disp_exc_depth = 0;
+    const gen_routine *gen_routines = prog_routines;    /* recomp: the names below are the program's */
+    const gen_global *gen_globals = prog_globals;
+    int gen_routine_count = prog_routine_count, gen_global_count = prog_global_count;
     routine_count = gen_routine_count;
     routines = calloc((size_t)routine_count, sizeof *routines);
     u32 end = 0;
@@ -153,6 +176,8 @@ static int text_ring_at;
 
 const char *global_text(uint32_t addr)
 {
+    const gen_global *gen_globals = prog_globals;       /* recomp (test mode): the program's */
+    int gen_global_count = prog_global_count;
     addr &= 0x1fffffffu;
     int lo = 0, hi = gen_global_count - 1;
     if (hi < 0 || addr < gen_globals[0].addr)

@@ -41,6 +41,8 @@
 #define VECTOR_BASE    0x8c000000u      /* VBR as the BIOS leaves it: the game never sets it */
 #define FIRMWARE_NOTE  0x0c004000u      /* a firmware routine the game's interrupt entry calls */
 
+void (*hle_program)(sh4 *c, int program);     /* recomp (test mode): see service 0x44 */
+
 static struct {
     u32 last_service_switch;
     u32 service_calls[32];
@@ -197,6 +199,12 @@ static void service_do(sh4 *c, u32 offset)
         return;
     case 0x44:      /* leave the game for the BIOS test menu */
         bios.exit_requested = 1;
+        /* recomp (test mode): the runtime starts the other program, as the
+         * BIOS would after its menu: the game's test program (test.bin) from
+         * the game, the game again when the test program's EXIT calls it.
+         * hle_program does not return */
+        if (hle_program)
+            hle_program(c, disp_program == PROGRAM_TEST ? PROGRAM_MAIN : PROGRAM_TEST);
         machine_stop(c, STOP_FATAL, "the game asked the BIOS for its test menu (service 0x44, from %s)",
                      addr_text(c->pr));
         return;
@@ -269,6 +277,11 @@ int hle_outside(sh4 *c, u32 target, int kind)
 void hle_vectors_write(void)
 {
     routine *exc = routine_by_name("exception_entry"), *irq = routine_by_name("irq_entry_via_firmware");
+    /* recomp (test mode): the test program's decompilation has no routine at
+     * its exception entry, the same code as main.bin's exception_entry
+     * (sdk/sy/exception_vectors.c), 0x44 bytes before irq_entry_via_firmware
+     * in both programs */
+    u32 exc_addr = exc ? exc->addr : irq ? irq->addr - 0x44 : 0;
     static const u16 keep_all[] = { 0x2f06 /* mov.l r0,@-r15 */, 0xd001 /* mov.l @(4,pc),r0 */, 0x402b /* jmp @r0 */,
                                     0x60f6 /* mov.l @r15+,r0 (the delay slot) */ };
     static const u16 old_stub[] = { 0xd001 /* mov.l @(4,pc),r0 */, 0x402b /* jmp @r0 */, 0x0009 /* nop */, 0x0009 };
@@ -278,7 +291,7 @@ void hle_vectors_write(void)
     for (u32 v = 0x100; v <= 0x600; v += v == 0x100 ? 0x300 : 0x200) {
         for (u32 i = 0; i < 4; i++)
             low_ram_w16(VECTOR_BASE + v + 2 * i, stub[i]);
-        low_ram_w32(VECTOR_BASE + v + 8, v == 0x600 ? (irq ? irq->addr : 0) : (exc ? exc->addr : 0));
+        low_ram_w32(VECTOR_BASE + v + 8, v == 0x600 ? (irq ? irq->addr : 0) : exc_addr);     /* recomp: exc_addr */
     }
     low_ram_w16(FIRMWARE_NOTE, 0x000b);                 /* rts */
     low_ram_w16(FIRMWARE_NOTE + 2, 0x0009);             /* nop */
@@ -302,13 +315,15 @@ u32 hle_board_id_word(int with_network)
 void hle_boot_install(sh4 *c)
 {
     static int registered;
-    if (!registered)
+    int again = registered;     /* recomp (test mode): this runs again for the other program */
+    /* the ROM the game looks into, and the battery-backed RAM; recomp (test
+     * mode): once, the first time */
+    if (!registered) {
         snapshot_register("bios", &bios, sizeof bios);
+        mem_add_ram("bios-rom", 0x00000000u, 0x00200000u);
+        mem_add_ram("backup-ram", 0x00200000u, 0x00010000u);
+    }
     registered = 1;
-
-    /* the ROM the game looks into, and the battery-backed RAM */
-    mem_add_ram("bios-rom", 0x00000000u, 0x00200000u);
-    mem_add_ram("backup-ram", 0x00200000u, 0x00010000u);
 
     /* the signature: byte i of the game's own copy, less i mod 8 */
     u32 sig = global_addr("bios_signature");
@@ -333,6 +348,13 @@ void hle_boot_install(sh4 *c)
      * 0. With the vector code above either bank would do: the interrupted
      * r0-r7 come back in both (tests/test_interp.c). */
     sh4_set_sr(c, SR_MD | SR_IMASK);
+
+    /* recomp (test mode): for the other program the words below are already
+     * there (the machine is back in its power-on state, rt_native.c), and
+     * they are the BIOS's and the board's, at the same addresses for both
+     * programs: the test program's decompilation names fewer of them */
+    if (again)
+        return;
 
     /* what the BIOS leaves in low RAM */
     u32 a;
