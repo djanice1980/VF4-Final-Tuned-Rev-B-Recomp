@@ -270,13 +270,16 @@ void ui_text_in(int face, float size, float x, float y, float w, int align, int 
     }
 }
 
-int ui_wrap(int face, float size, float x, float y, float w, float line_h, SDL_Color c, const char *s)
+static int wrap(int face, float size, float x, float y, float w, float line_h, SDL_Color c, const char *s,
+                int draw)
 {
     sheet *sh = get_sheet(face, size);
     if (!sh || !s)
         return 0;
-    SDL_SetTextureColorMod(sh->tex, c.r, c.g, c.b);
-    SDL_SetTextureAlphaMod(sh->tex, c.a);
+    if (draw) {
+        SDL_SetTextureColorMod(sh->tex, c.r, c.g, c.b);
+        SDL_SetTextureAlphaMod(sh->tex, c.a);
+    }
     float wp = w * sc;
     int lines = 0;
     while (*s) {
@@ -294,7 +297,8 @@ int ui_wrap(int face, float size, float x, float y, float w, float line_h, SDL_C
         }
         if (end == s)           /* an empty line */
             end = p;
-        run_text(sh, px(x), baseline(face, sh, y + (float)lines * line_h), s, (size_t)(end - s), 1);
+        if (draw)
+            run_text(sh, px(x), baseline(face, sh, y + (float)lines * line_h), s, (size_t)(end - s), 1);
         lines++;
         s = end;
         while (*s == ' ')
@@ -303,6 +307,16 @@ int ui_wrap(int face, float size, float x, float y, float w, float line_h, SDL_C
             s++;
     }
     return lines;
+}
+
+int ui_wrap(int face, float size, float x, float y, float w, float line_h, SDL_Color c, const char *s)
+{
+    return wrap(face, size, x, y, w, line_h, c, s, 1);
+}
+
+int ui_wrap_lines(int face, float size, float w, const char *s)
+{
+    return wrap(face, size, 0, 0, w, 0, (SDL_Color){ 0, 0, 0, 0 }, s, 0);
 }
 
 /* ---- shapes ---- */

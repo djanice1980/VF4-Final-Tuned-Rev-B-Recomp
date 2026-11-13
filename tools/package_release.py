@@ -4,12 +4,20 @@ it runs, and this repository's builder files. Nothing of the game: the
 builder files are taken from git (tracked files only), so work/, build/
 and anything made from a set cannot get in.
 
-usage: python3 -I tools/package_release.py windows LAUNCHER.exe OUTDIR
-       python3 -I tools/package_release.py linux LAUNCHER OUTDIR
+usage: python3 -I tools/package_release.py windows LAUNCHER.exe OUTDIR [--version V]
+       python3 -I tools/package_release.py linux LAUNCHER OUTDIR [--version V]
 
   windows: vf4ft-launcher.exe, SDL3.dll (SDL's official build), python/
            (the embeddable Python from python.org), builder/
   linux:   vf4ft-launcher, builder/ (Python and SDL3 are the system's)
+
+Both also get release.json: the version (the builder's VERSION), the
+platform and the GitHub repository, which the launcher's updater reads
+(tools/update.py, docs/design.md section 24). A folder without it is a
+development build and never updates itself. --version V packages it as V
+(release.json and the packaged builder's VERSION), for testing updates.
+A release's zip is named vf4ft-VERSION-PLATFORM.zip: the updater looks for
+that name among a release's files.
 
 OUTDIR is made fresh, then zipped beside itself as OUTDIR.zip. When LAUNCHER
 is in a CMake build folder it is rebuilt there first, so a launcher older
@@ -17,7 +25,9 @@ than its sources cannot get in (M5's first release had one built before
 --do and --exit existed).
 """
 import hashlib
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +42,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTHON_EMBED = ("https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip",
                 "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159")
 BUILDER_PATHS = ["LICENSE", "README.md", "docs", "meta", "runtime", "tools", "translator"]
+REPO = "djanice1980/VF4-Final-Tuned-Rev-B-Recomp"      # where the updater looks for releases
 
 
 def tracked(paths):
@@ -73,9 +84,15 @@ def python_embed(dest):
 
 
 def main():
-    if len(sys.argv) != 4 or sys.argv[1] not in ("windows", "linux"):
+    a = sys.argv[1:]
+    version = None
+    if len(a) == 5 and a[3] == "--version":
+        version = a.pop(4)
+        a.pop(3)
+    if len(a) != 3 or a[0] not in ("windows", "linux") or (version is not None and not re.fullmatch(
+            r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", version)):
         sys.exit(__doc__)
-    kind, launcher, out = sys.argv[1], sys.argv[2], os.path.abspath(sys.argv[3])
+    kind, launcher, out = a[0], a[1], os.path.abspath(a[2])
     fresh_launcher(launcher)
     for p in uncommitted(BUILDER_PATHS):
         print("warning: not committed, packaged as it is now:", p)
@@ -86,6 +103,18 @@ def main():
         d = os.path.join(out, "builder", p)
         os.makedirs(os.path.dirname(d), exist_ok=True)
         shutil.copy2(os.path.join(ROOT, p), d)
+    init = os.path.join(out, "builder", "tools", "vf4build", "__init__.py")
+    src = open(init, encoding="utf-8").read()
+    m = re.search(r'^VERSION = "([^"]+)"$', src, re.M)
+    if not m:
+        sys.exit("%s has no VERSION line" % init)
+    if version and version != m[1]:
+        print("packaged as %s (the builder says %s)" % (version, m[1]))
+        with open(init, "w", encoding="utf-8") as f:
+            f.write(src[:m.start(1)] + version + src[m.end(1):])
+    with open(os.path.join(out, "release.json"), "w", encoding="utf-8") as f:
+        json.dump({"version": version or m[1], "platform": kind, "repo": REPO}, f, indent=2)
+        f.write("\n")
     shutil.copy2(launcher, os.path.join(out, os.path.basename(launcher)))
     if kind == "windows":
         sdl = toolchain.fetch("sdl3-mingw")

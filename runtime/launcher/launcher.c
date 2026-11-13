@@ -497,6 +497,385 @@ static void watch_game(void)
     }
 }
 
+/* ---- updates: a newer release, from GitHub (docs/design.md section 24) ----
+ * Only a release folder updates itself: release.json (version, platform,
+ * repository) is beside the launcher. tools/update.py checks GitHub's list
+ * of releases and downloads and unpacks a newer one into update/new; the
+ * launcher then puts it in place (apply_update), at once ("Update now": it
+ * starts the new launcher and quits) or when it closes. The next start
+ * builds the game again with the new builder. */
+
+#ifdef _WIN32
+#define LAUNCHER_EXE "vf4ft-launcher.exe"
+#else
+#define LAUNCHER_EXE "vf4ft-launcher"
+#endif
+
+enum { U_OFF, U_IDLE, U_CHECKING, U_NONE, U_CHECK_FAILED, U_AVAILABLE, U_FETCHING, U_READY, U_FAILED };
+enum { UW_NOW, UW_CLOSE };
+static int upd = U_OFF;             /* U_OFF: not a release folder (a development build) */
+static int upd_when = UW_NOW;       /* when a fetched update goes in */
+static int upd_manual;              /* the check was asked for: its failure shows on the Play page */
+static char rel_version[64], rel_platform[16];
+static char upd_version[64], upd_error[300];
+static long long upd_size;
+static int upd_stage, upd_pct = -1;
+static Uint64 upd_t0;
+static SDL_Process *uproc;          /* tools/update.py, apart from the builder's process */
+static SDL_IOStream *uproc_out, *uproc_in;
+static int ukind;                   /* 1 check, 2 fetch */
+static char upartial[512];
+static size_t nupartial;
+static int just_updated;            /* update/applied.json was there: this launcher is the new one */
+static char applied_from[64];
+
+/* a string field of a small JSON file: "key": "value" */
+static int json_str(const char *s, const char *key, char *out, size_t n)
+{
+    char k[64];
+    snprintf(k, sizeof k, "\"%s\"", key);
+    const char *p = s ? strstr(s, k) : NULL;
+    if (!p)
+        return 0;
+    p += strlen(k);
+    while (*p == ' ' || *p == '\t' || *p == ':' || *p == '\r' || *p == '\n')
+        p++;
+    if (*p != '"')
+        return 0;
+    p++;
+    size_t m = strcspn(p, "\"");
+    snprintf(out, n, "%.*s", (int)SDL_min(m, n - 1), p);
+    return 1;
+}
+
+/* versions as tools/update.py orders them: "0.6.0" > "0.6.0-dev" > "0.5.9" */
+static int ver_cmp(const char *a, const char *b)
+{
+    for (int i = 0; i < 3; i++) {
+        int x = SDL_atoi(a), y = SDL_atoi(b);
+        if (x != y)
+            return x < y ? -1 : 1;
+        a += strspn(a, "0123456789");
+        b += strspn(b, "0123456789");
+        if (i < 2) {
+            a += *a == '.';
+            b += *b == '.';
+        }
+    }
+    int ra = *a != '-', rb = *b != '-';     /* no suffix: the release itself */
+    if (ra != rb)
+        return ra ? 1 : -1;
+    int c = strcmp(a, b);
+    return c < 0 ? -1 : c > 0;
+}
+
+static void upd_path(char *out, size_t n, const char *tail)
+{
+    snprintf(out, n, "%supdate%s%s", base, tail[0] ? "/" : "", tail);
+}
+
+/* release.json, update/applied.json (the launcher was just updated) and
+ * update/ready.json (an update downloaded but not yet in place) */
+static void upd_startup(void)
+{
+    char p[1100];
+    upd_path(p, sizeof p, "applied.json");
+    char *s = SDL_LoadFile(p, NULL);
+    if (s) {
+        just_updated = 1;
+        json_str(s, "from", applied_from, sizeof applied_from);
+        SDL_free(s);
+        SDL_RemovePath(p);
+    }
+    snprintf(p, sizeof p, "%srelease.json", base);
+    s = SDL_LoadFile(p, NULL);
+    rel_version[0] = rel_platform[0] = 0;
+    if (s && json_str(s, "version", rel_version, sizeof rel_version) &&
+        json_str(s, "platform", rel_platform, sizeof rel_platform) && root[0])
+        upd = U_IDLE;
+    SDL_free(s);
+    if (upd == U_OFF) {
+        say("no release.json: a development build, which does not update itself");
+        return;
+    }
+    say("release %s for %s", rel_version, rel_platform);
+    upd_path(p, sizeof p, "ready.json");
+    s = SDL_LoadFile(p, NULL);
+    char v[64] = "", nd[1100];
+    upd_path(nd, sizeof nd, "new");
+    if (s && json_str(s, "version", v, sizeof v) && ver_cmp(v, rel_version) > 0 && exists(nd)) {
+        SDL_strlcpy(upd_version, v, sizeof upd_version);
+        upd = U_READY;
+        upd_when = UW_CLOSE;
+        say("update: %s is downloaded; it goes in when the launcher closes", v);
+    }
+    SDL_free(s);
+}
+
+/* starts tools/update.py: kind 1 checks, 2 downloads upd_version */
+static int upd_start(int kind)
+{
+    if (uproc || upd == U_OFF)
+        return -1;
+    char script[1100], dir[900];
+    snprintf(script, sizeof script, "%stools/update.py", root);
+    SDL_strlcpy(dir, base, sizeof dir);
+    size_t dl = strlen(dir);
+    if (dl > 1 && (dir[dl - 1] == '/' || dir[dl - 1] == '\\'))
+        dir[dl - 1] = 0;          /* no separator before a closing quote on Windows' command line */
+    const char *check_args[] = {python, "-I", script, "check", dir, NULL};
+    const char *fetch_args[] = {python, "-I", script, "fetch", dir, upd_version, "--launcher", NULL};
+    SDL_PropertiesID pr = SDL_CreateProperties();
+    SDL_SetPointerProperty(pr, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)(kind == 1 ? check_args : fetch_args));
+    SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
+    SDL_SetBooleanProperty(pr, SDL_PROP_PROCESS_CREATE_STDERR_TO_STDOUT_BOOLEAN, true);
+    SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_APP);   /* closing it cancels */
+    uproc = SDL_CreateProcessWithProperties(pr);
+    SDL_DestroyProperties(pr);
+    upd_error[0] = 0;
+    if (!uproc) {
+        snprintf(upd_error, sizeof upd_error, "cannot start %.120s: %.150s", python, SDL_GetError());
+        say("update: %s", upd_error);
+        upd = kind == 1 ? U_CHECK_FAILED : U_FAILED;
+        return -1;
+    }
+    uproc_out = SDL_GetProcessOutput(uproc);
+    uproc_in = SDL_GetProcessInput(uproc);
+    ukind = kind;
+    nupartial = 0;
+    upd_stage = 0;
+    upd_pct = -1;
+    upd_t0 = SDL_GetTicks();
+    upd = kind == 1 ? U_CHECKING : U_FETCHING;
+    return 0;
+}
+
+static void upd_cancel(void)
+{
+    if (uproc && uproc_in) {
+        say("update: cancelling");
+        SDL_CloseIO(uproc_in);      /* update.py sees its input end */
+        uproc_in = NULL;
+    }
+}
+
+static void upd_line(const char *s)
+{
+    char v[64];
+    long long size = 0;
+    int n, of, at = 0;
+    if (!strcmp(s, "@update none")) {
+        upd = U_NONE;
+        say("update: %s is the newest release", rel_version);
+    } else if (sscanf(s, "@update %63s %lld", v, &size) >= 1) {
+        SDL_strlcpy(upd_version, v, sizeof upd_version);
+        upd_size = size;
+        upd = U_AVAILABLE;
+        say("update: %s is out (this is %s)", v, rel_version);
+    } else if (sscanf(s, "@stage %d %d %n", &n, &of, &at) == 2 && at) {
+        upd_stage = n;
+        upd_pct = -1;
+    } else if (sscanf(s, "@pct %d", &n) == 1) {
+        upd_pct = n;
+    } else if (sscanf(s, "@ready %63s", v) == 1) {
+        SDL_strlcpy(upd_version, v, sizeof upd_version);
+        upd = U_READY;
+        say("update: %s is downloaded", v);
+    } else if (!strncmp(s, "error: ", 7)) {
+        SDL_strlcpy(upd_error, s + 7, sizeof upd_error);
+        say("update: %s", s + 7);
+    } else if (s[0] != '@') {
+        say("update: %s", s);
+    }
+}
+
+static void upd_pump(void)
+{
+    if (!uproc)
+        return;
+    char b[512];
+    for (;;) {
+        size_t n = uproc_out ? SDL_ReadIO(uproc_out, b, sizeof b) : 0;
+        if (n == 0)
+            break;
+        for (size_t i = 0; i < n; i++) {
+            if (b[i] == '\n' || nupartial == sizeof upartial - 1) {
+                upartial[nupartial] = 0;
+                if (nupartial && upartial[nupartial - 1] == '\r')
+                    upartial[nupartial - 1] = 0;
+                if (upartial[0])
+                    upd_line(upartial);
+                nupartial = 0;
+            } else {
+                upartial[nupartial++] = b[i];
+            }
+        }
+    }
+    int code = 0;
+    if (!SDL_WaitProcess(uproc, false, &code))
+        return;
+    if (nupartial) {
+        upartial[nupartial] = 0;
+        upd_line(upartial);
+        nupartial = 0;
+    }
+    SDL_DestroyProcess(uproc);        /* it closes the streams still open */
+    uproc = NULL;
+    uproc_out = uproc_in = NULL;
+    if (ukind == 1 && upd == U_CHECKING) {
+        upd = U_CHECK_FAILED;
+        if (!upd_error[0])
+            snprintf(upd_error, sizeof upd_error, "the check ended with code %d", code);
+    } else if (ukind == 2 && upd == U_FETCHING) {
+        if (code == 3) {
+            upd = U_AVAILABLE;
+            say("update: the download was cancelled");
+        } else {
+            upd = U_FAILED;
+            if (!upd_error[0])
+                snprintf(upd_error, sizeof upd_error, "the download ended with code %d", code);
+        }
+    }
+    if (ukind == 1 && upd_manual && upd == U_CHECK_FAILED) {
+        status_kind = ST_BAD;
+        snprintf(status_text, sizeof status_text, "Could not check for updates: %.260s", upd_error);
+    }
+    upd_manual = 0;
+    ukind = 0;
+}
+
+/* moves a path, trying for a second while something holds it (a virus
+ * scanner reading the new exe, say) */
+static int move_path(const char *from, const char *to)
+{
+    for (int i = 0; i < 10; i++) {
+        if (SDL_RenamePath(from, to))
+            return 1;
+        SDL_Delay(100);
+    }
+    return 0;
+}
+
+typedef struct entries { char name[16][128]; int n; } entries;
+
+static SDL_EnumerationResult SDLCALL entry_one(void *ud, const char *dir, const char *name)
+{
+    (void)dir;
+    entries *es = ud;
+    if (es->n == 16)
+        return SDL_ENUM_FAILURE;
+    SDL_strlcpy(es->name[es->n++], name, sizeof es->name[0]);
+    return SDL_ENUM_CONTINUE;
+}
+
+/* puts update/new in place. Each of its entries (the launcher, SDL3.dll,
+ * python/, builder/, release.json...) takes the place of the release
+ * folder's own, which moves to update/old-TIME/: Windows lets a running exe
+ * and its DLL be moved, not written over. game/ and the launcher's own
+ * files are not touched. A step that fails undoes the ones before it.
+ * update.py's next check deletes the old folders. 0 when it is done. */
+static int apply_update(void)
+{
+    char newd[1100], oldd[1100], tail[48], from[1400], to[1400], keep[1400];
+    upd_path(newd, sizeof newd, "new");
+    SDL_Time now = 0;
+    SDL_GetCurrentTime(&now);
+    snprintf(tail, sizeof tail, "old-%lld", (long long)(now / 1000000));
+    upd_path(oldd, sizeof oldd, tail);
+    entries es;
+    SDL_zero(es);
+    if (!SDL_EnumerateDirectory(newd, entry_one, &es) || es.n == 0) {
+        snprintf(upd_error, sizeof upd_error, "%.180s cannot be read: %.100s", newd, SDL_GetError());
+        say("update: %s", upd_error);
+        return -1;
+    }
+    if (!SDL_CreateDirectory(oldd)) {
+        snprintf(upd_error, sizeof upd_error, "cannot make %.180s: %.100s", oldd, SDL_GetError());
+        say("update: %s", upd_error);
+        return -1;
+    }
+    int moved_old[16] = {0}, moved_new[16] = {0}, i, ok = 1;
+    for (i = 0; i < es.n; i++) {
+        snprintf(from, sizeof from, "%s/%s", newd, es.name[i]);
+        snprintf(to, sizeof to, "%s%s", base, es.name[i]);
+        snprintf(keep, sizeof keep, "%s/%s", oldd, es.name[i]);
+        if (exists(to) && !(moved_old[i] = move_path(to, keep))) {
+            ok = 0;
+            break;
+        }
+        if (!(moved_new[i] = move_path(from, to))) {
+            ok = 0;
+            break;
+        }
+    }
+    if (!ok) {
+        char what[160], why[200];
+        SDL_strlcpy(what, es.name[i], sizeof what);
+        SDL_strlcpy(why, SDL_GetError(), sizeof why);
+        say("update: could not put %s in place (%s); moving back what moved", what, why);
+        int stuck = 0;
+        for (; i >= 0; i--) {
+            snprintf(from, sizeof from, "%s/%s", newd, es.name[i]);
+            snprintf(to, sizeof to, "%s%s", base, es.name[i]);
+            snprintf(keep, sizeof keep, "%s/%s", oldd, es.name[i]);
+            if (moved_new[i] && !move_path(to, from)) {
+                say("update: could not move %s back", to);
+                stuck = 1;
+            }
+            if (moved_old[i] && !move_path(keep, to)) {
+                say("update: could not move %s back to %s", keep, to);
+                stuck = 1;
+            }
+        }
+        if (stuck)
+            snprintf(upd_error, sizeof upd_error, "could not put %.100s in place, and not all of the old files "
+                     "went back: they are in update/%s (launcher.log)", what, tail);
+        else
+            snprintf(upd_error, sizeof upd_error, "could not put %.100s in place (%.120s); nothing was changed",
+                     what, why);
+        say("update: %s", upd_error);
+        return -1;
+    }
+    char p[1100], j[256];
+    upd_path(p, sizeof p, "applied.json");
+    snprintf(j, sizeof j, "{\n  \"from\": \"%s\",\n  \"to\": \"%s\"\n}\n", rel_version, upd_version);
+    SDL_SaveFile(p, j, strlen(j));
+    upd_path(p, sizeof p, "ready.json");
+    SDL_RemovePath(p);
+    SDL_RemovePath(newd);           /* empty now */
+    say("update: %s is in place (the old files are in %s until the next check)", upd_version, oldd);
+    return 0;
+}
+
+/* the new launcher, in the old one's place; this one then quits */
+static int restart_launcher(const char *opt_game, int opt_exit)
+{
+    char exe[1100];
+    snprintf(exe, sizeof exe, "%s%s", base, LAUNCHER_EXE);
+    const char *args[6];
+    int n = 0;
+    args[n++] = exe;
+    if (opt_game) {
+        args[n++] = "--game";
+        args[n++] = opt_game;
+    }
+    if (opt_exit)
+        args[n++] = "--exit";
+    args[n] = NULL;
+    SDL_PropertiesID pr = SDL_CreateProperties();
+    SDL_SetPointerProperty(pr, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
+    SDL_SetBooleanProperty(pr, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+    SDL_Process *p = SDL_CreateProcessWithProperties(pr);
+    SDL_DestroyProperties(pr);
+    if (!p) {
+        say("update: the new launcher did not start (%s): start it again yourself", SDL_GetError());
+        return -1;
+    }
+    SDL_DestroyProcess(p);          /* it runs on */
+    say("update: started the new launcher");
+    return 0;
+}
+
 static void SDLCALL on_folder(void *ud, const char *const *files, int filter)
 {
     (void)ud;
@@ -511,13 +890,25 @@ static void SDLCALL on_folder(void *ud, const char *const *files, int filter)
 
 enum {
     B_CHOOSE, B_CONTINUE, B_BACK, B_TARGET, B_BUILD, B_CANCEL, B_RETRY, B_PLAY, B_SETTINGS, B_STEAM,
-    B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_COUNT
+    B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_COUNT
 };
 static int focus = -1;
 #define HITS 24
 typedef struct hit { int id; float x, y, w, h; } hit;
 static hit hits[HITS];
 static int nhits;
+
+/* the Play page shows a new release's card (instead of the builder's), or
+ * the check's line and button at its foot */
+static int upd_card(void)
+{
+    return upd == U_AVAILABLE || upd == U_FETCHING || upd == U_READY || upd == U_FAILED;
+}
+
+static int check_shown(void)
+{
+    return upd != U_OFF && !upd_card();
+}
 
 static int enabled(int b)
 {
@@ -529,6 +920,11 @@ static int enabled(int b)
     case B_STEAM: return built && root[0] && !proc && !built_linux;
     case B_CANCEL: return (proc || shot_working) && !cancel_at;
     case B_REBUILD: return root[0] && !proc;
+    case B_UPD_NOW:
+        return upd == U_AVAILABLE || upd == U_FAILED || ((upd == U_READY || upd == U_FETCHING) && upd_when == UW_CLOSE);
+    case B_UPD_CLOSE: return upd == U_AVAILABLE;
+    case B_UPD_CANCEL: return upd == U_FETCHING && uproc_in != NULL;
+    case B_CHECK: return upd == U_IDLE || upd == U_NONE || upd == U_CHECK_FAILED;
 #ifdef _WIN32
     case B_TARGET: return 0;
 #endif
@@ -552,14 +948,24 @@ static int page_buttons(int *ids)
     case P_WORK: ids[n++] = B_CANCEL; break;
     case P_FAIL: ids[n++] = B_BACK; ids[n++] = B_RETRY; break;
     case P_PLAY:
-        if (update_ready())
+        if (upd_card()) {           /* a new release: it takes the builder card's place */
+            if (enabled(B_UPD_NOW))
+                ids[n++] = B_UPD_NOW;
+            if (upd == U_AVAILABLE)
+                ids[n++] = B_UPD_CLOSE;
+            if (upd == U_FETCHING)
+                ids[n++] = B_UPD_CANCEL;
+        } else if (update_ready()) {
             ids[n++] = B_UPDATE;
+        }
         ids[n++] = B_PLAY;
         ids[n++] = B_SETTINGS;
         if (!built_linux)
             ids[n++] = B_STEAM;
         ids[n++] = B_REBUILD;
         ids[n++] = B_FILES;
+        if (check_shown())
+            ids[n++] = B_CHECK;
         break;
     case P_SETTINGS: ids[n++] = B_DONE; break;
     }
@@ -768,6 +1174,22 @@ static void press(int b)
         go(P_SETTINGS);
         break;
     case B_DONE: settings_close(); break;
+    case B_UPD_NOW:                 /* it goes in as soon as it is here and nothing runs (main) */
+        upd_when = UW_NOW;
+        if (upd == U_AVAILABLE || upd == U_FAILED)
+            upd_start(2);
+        break;
+    case B_UPD_CLOSE:
+        upd_when = UW_CLOSE;
+        upd_start(2);
+        break;
+    case B_UPD_CANCEL: upd_cancel(); break;
+    case B_CHECK:
+        upd_manual = 1;
+        if (status_kind == ST_BAD && !strncmp(status_text, "Could not check", 15))
+            status_kind = ST_NONE;
+        upd_start(1);
+        break;
     case B_PLAY: {
 #ifndef _WIN32
         if (!built_linux) {
@@ -1069,6 +1491,87 @@ static void draw_fail(void)
     hints_bottom();
 }
 
+/* a new release's card on the Play page; returns the height it takes */
+static float draw_update_card(float y)
+{
+    char t[200], s[400];
+    const char *b1 = NULL, *b2 = NULL;
+    int id1 = -1, id2 = -1, style1 = 1, bar = 0;
+    switch (upd) {
+    case U_AVAILABLE:
+        snprintf(t, sizeof t, "Version %s is out", upd_version);
+        snprintf(s, sizeof s,
+                 "You have %s. The download is %lld MB. Update now restarts the launcher; either way the game is "
+                 "built again before you play, and your saves and settings stay.",
+                 rel_version, upd_size > 0 ? SDL_max(upd_size / 1000000, 1) : 0);
+        id1 = B_UPD_NOW, b1 = "Update now";
+        id2 = B_UPD_CLOSE, b2 = "When I close";
+        break;
+    case U_FETCHING:
+        snprintf(t, sizeof t, "%s %s\xE2\x80\xA6", upd_stage == 2 ? "Unpacking" : "Downloading", upd_version);
+        SDL_strlcpy(s, upd_when == UW_NOW ? "Then the launcher restarts and builds the game again."
+                                          : "It goes in when you close the launcher.", sizeof s);
+        bar = 1;
+        if (upd_when == UW_CLOSE)
+            id1 = B_UPD_NOW, b1 = "Update now", style1 = 0;
+        id2 = B_UPD_CANCEL, b2 = "Cancel";
+        break;
+    case U_READY:
+        if (upd_when == UW_CLOSE) {
+            snprintf(t, sizeof t, "Version %s goes in when you close the launcher", upd_version);
+            SDL_strlcpy(s, "Or now: the launcher restarts, then builds the game again.", sizeof s);
+            id1 = B_UPD_NOW, b1 = "Update now";
+        } else {
+            snprintf(t, sizeof t, "Version %s is ready", upd_version);
+            SDL_strlcpy(s, proc ? "It goes in when the build ends." : "Putting it in\xE2\x80\xA6", sizeof s);
+        }
+        break;
+    case U_FAILED:
+        snprintf(t, sizeof t, "Version %s did not go in", upd_version);
+        snprintf(s, sizeof s, "%s", upd_error[0] ? upd_error : "See launcher.log.");
+        id1 = B_UPD_NOW, b1 = "Try again";
+        break;
+    default:
+        return 0;
+    }
+    /* the buttons from the right; the text in what is left, the card as tall as its lines */
+    float w2 = b2 ? button_w(b2) : 0, w1 = b1 ? button_w(b1) : 0;
+    float x2 = CX + CW - 24 - w2, x1 = (b2 ? x2 - 12 : CX + CW - 24) - w1;
+    float tw = (b1 ? x1 : b2 ? x2 : CX + CW - 24) - 24 - (CX + 24);
+    int lines = bar ? 1 : ui_wrap_lines(UI_REGULAR, 14, tw, s);
+    float h = SDL_max(100.0f, 56 + 19.0f * (float)lines + 25);
+    ui_round_line(CX, y, CW, h, 14, 1, upd == U_FAILED ? UI_BAD : UI_ACCENT, UI_CARD);
+    float by = y + SDL_roundf((h - 44) / 2);
+    if (b2)
+        button(id2, x2, by, w2, 44, b2, 0, -1);
+    if (b1)
+        button(id1, x1, by, w1, 44, b1, style1, -1);
+    ui_text_in(UI_MEDIUM, 17, CX + 24, y + 28, tw, 0, 0, UI_TEXT, t);
+    if (bar) {
+        ui_bar(CX + 24, y + 52, tw, 6, upd_pct >= 0 ? (float)upd_pct / 100 : -1,
+               (double)(SDL_GetTicks() - upd_t0) / 1000.0);
+        ui_text_in(UI_REGULAR, 14, CX + 24, y + 76, tw, 0, 0, UI_MUTED, s);
+    } else {
+        ui_wrap(UI_REGULAR, 14, CX + 24, y + 56, tw, 19, UI_MUTED, s);
+    }
+    return h + 20;
+}
+
+/* the check's line and button at the Play page's foot */
+static void draw_check_row(void)
+{
+    if (!check_shown())
+        return;
+    const char *t = upd == U_CHECKING ? "Checking for updates\xE2\x80\xA6"
+                    : upd == U_NONE    ? "Up to date"
+                    : upd == U_CHECK_FAILED ? "Could not check for updates"
+                                            : "";
+    const char *label = "Check for updates";
+    float w = button_w(label), x = CX + CW - w;
+    button(B_CHECK, x, BTN_Y + 6, w, 40, label, 0, -1);
+    ui_text_in(UI_REGULAR, 14, CX + 280, BTN_Y + 26, x - 16 - (CX + 280), 2, 0, UI_FAINT, t);
+}
+
 static void draw_play(void)
 {
     char sub[300];
@@ -1084,7 +1587,9 @@ static void draw_play(void)
         SDL_strlcpy(sub, "The game is not built yet.", sizeof sub);
     title(built ? "Ready to play" : "Not built yet", sub);
     float y = 236;
-    if (update_ready()) {
+    if (upd_card()) {
+        y += draw_update_card(y);
+    } else if (update_ready()) {
         ui_round_line(CX, y, CW, 84, 14, 1, UI_ACCENT, UI_CARD);
         char t[160];
         snprintf(t, sizeof t, "A new builder is here: %s", builder_ver);
@@ -1094,7 +1599,7 @@ static void draw_play(void)
         button(B_UPDATE, CX + CW - 24 - 140, y + 20, 140, 44, "Update", 1, -1);
         y += 108;
     }
-    button(B_PLAY, CX, y + 6, 220, 64, "Play", update_ready() ? 0 : 1, UI_I_PLAY);
+    button(B_PLAY, CX, y + 6, 220, 64, "Play", update_ready() || upd_card() ? 0 : 1, UI_I_PLAY);
     float x = CX + 244;
     x += button(B_SETTINGS, x, y + 14, 0, BTN_H, "Settings", 0, -1) + 14;
     if (!built_linux)
@@ -1109,6 +1614,7 @@ static void draw_play(void)
         ui_text_in(UI_REGULAR, 15, CX + 30, sy, CW - 30, 0, 0, UI_TEXT, status_text);
     }
     hints_bottom();
+    draw_check_row();
 }
 
 static void draw_settings(void)
@@ -1334,9 +1840,10 @@ int main(int argc, char **argv)
     }
     find_paths();
     {
-        char lp[1100];
+        char lp[1100], ap[1100];
         snprintf(lp, sizeof lp, "%slauncher.log", base);
-        log_file = fopen(lp, "w");
+        upd_path(ap, sizeof ap, "applied.json");
+        log_file = fopen(lp, exists(ap) ? "a" : "w");     /* after an update: the old launcher's lines stay */
     }
     if (opt_game)
         SDL_strlcpy(game, opt_game, sizeof game);
@@ -1347,11 +1854,27 @@ int main(int argc, char **argv)
         say("not an option: %s (ignored)", unknown[i]);
     say("builder files: %s", root[0] ? root : "(not found)");
     say("install folder: %s", game);
+    upd_startup();
     if (!set_path[0] && !built)
         find_set();
     go(built ? P_PLAY : set_ok() ? P_BUILD : P_FILES);
+    if (just_updated && !shot_page) {
+        say("the launcher was updated%s%s to %s", applied_from[0] ? " from " : "", applied_from, rel_version);
+        if (built && update_ready()) {
+            say("building the game again with builder %s", builder_ver);
+            do_build(1);
+        }
+    }
     int do_failed = 0;      /* --do started nothing: --exit's result is then 1 */
-    if (opt_do) {
+    int auto_upd = 0;       /* --do check (3), upgrade (1, Update now) or upgrade-at-close (2) */
+    if (opt_do && (!strcmp(opt_do, "check") || !strcmp(opt_do, "upgrade") || !strcmp(opt_do, "upgrade-at-close"))) {
+        auto_upd = !strcmp(opt_do, "check") ? 3 : !strcmp(opt_do, "upgrade") ? 1 : 2;
+        say("--do %s%s", opt_do, upd == U_OFF ? ": not a release folder, so no updates" : "");
+        if (upd == U_OFF) {
+            auto_upd = 0;
+            do_failed = 1;
+        }
+    } else if (opt_do) {
         /* by name: the buttons' order (B_*) is not this list's */
         static const struct { const char *name; int button; } acts[] = {
             {"set", B_CHOOSE}, {"build", B_BUILD}, {"update", B_UPDATE}, {"play", B_PLAY}, {"steam", B_STEAM},
@@ -1368,7 +1891,8 @@ int main(int argc, char **argv)
                     do_failed = 1;
             }
         if (!found) {
-            say("--do %s: not an action (set, build, update, play, steam)", opt_do);
+            say("--do %s: not an action (set, build, update, play, steam, check, upgrade, upgrade-at-close)",
+                opt_do);
             do_failed = 1;
         }
         if (do_failed && opt_exit)
@@ -1389,6 +1913,27 @@ int main(int argc, char **argv)
             }
         if (page == P_WORK || page == P_FAIL)
             shot_fake();
+        /* the Play page with a new release's card: update, update-fetch,
+         * update-ready, update-failed; with the check's line: update-none */
+        static const struct { const char *name; int state, when; } ups[] = {
+            {"update", U_AVAILABLE, UW_NOW}, {"update-fetch", U_FETCHING, UW_CLOSE},
+            {"update-ready", U_READY, UW_CLOSE}, {"update-failed", U_FAILED, UW_NOW}, {"update-none", U_NONE, UW_NOW},
+        };
+        for (size_t i = 0; i < SDL_arraysize(ups); i++)
+            if (!strcmp(shot_page, ups[i].name)) {
+                go(P_PLAY);
+                if (!rel_version[0])
+                    SDL_strlcpy(rel_version, builder_ver[0] ? builder_ver : "0.5.1", sizeof rel_version);
+                SDL_strlcpy(upd_version, "0.6.0", sizeof upd_version);
+                upd = ups[i].state;
+                upd_when = ups[i].when;
+                upd_size = 16787587;
+                upd_stage = 1;
+                upd_pct = 45;
+                SDL_strlcpy(upd_error, "cannot reach GitHub: [Errno -3] Temporary failure in name resolution",
+                            sizeof upd_error);
+                focus = default_focus();
+            }
         if (shot_device && ui_device_named(shot_device) >= 0)
             ui_set_device(ui_device_named(shot_device));    /* the caps' style (ui.h) */
         draw();
@@ -1400,7 +1945,9 @@ int main(int argc, char **argv)
         SDL_Quit();
         return ok ? 0 : 1;
     }
-    int running = 1, result = do_failed;
+    if (upd == U_IDLE)
+        upd_start(1);       /* the check at every start: a line on GitHub's API, no download */
+    int running = 1, result = do_failed, restarting = 0;
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -1435,6 +1982,7 @@ int main(int argc, char **argv)
         int was = proc != NULL;
         int code = pump_process();
         watch_game();
+        upd_pump();
         if (game_proc) {
             SDL_Delay(100);           /* hidden while the game runs: nothing to draw */
             continue;
@@ -1443,8 +1991,34 @@ int main(int argc, char **argv)
             result = code == 0 ? 0 : 1;
             if (opt_exit)
                 running = 0;
-        } else if (opt_exit && opt_do && !proc && !was) {
+        } else if (opt_exit && opt_do && !auto_upd && !proc && !was) {
             running = 0;          /* the action started nothing to wait for */
+        }
+        /* Update now: in place as soon as it is here and nothing runs, then the new launcher */
+        if (upd == U_READY && upd_when == UW_NOW && !proc && !uproc) {
+            draw();
+            if (apply_update() == 0) {
+                restart_launcher(opt_game, opt_exit);
+                restarting = 1;
+                result = 0;
+                running = 0;
+                continue;
+            }
+            upd = U_FAILED;
+        }
+        if (auto_upd == 1 || auto_upd == 2) {
+            if (upd == U_AVAILABLE)
+                press(auto_upd == 1 ? B_UPD_NOW : B_UPD_CLOSE);
+            if (auto_upd == 2 && upd == U_READY) {
+                say("--do upgrade-at-close: closing");
+                result = 0;
+                running = 0;
+            }
+        }
+        if (opt_exit && auto_upd && (upd == U_NONE || upd == U_CHECK_FAILED || upd == U_FAILED ||
+                                     (auto_upd == 3 && upd == U_AVAILABLE))) {
+            result = auto_upd == 3 && upd != U_CHECK_FAILED ? 0 : 1;
+            running = 0;
         }
         draw();
     }
@@ -1459,6 +2033,32 @@ int main(int argc, char **argv)
         if (proc)
             SDL_KillProcess(proc, true);
     }
+    if (uproc) {
+        /* a check or a download still going: it stops (a download is taken
+         * up again by the next start's check). Once it has said @ready it is
+         * only ending: wait for it (its Python must be gone before python/
+         * can be moved aside) */
+        if (upd != U_READY)
+            upd_cancel();
+        Uint64 t = SDL_GetTicks();
+        while (uproc && SDL_GetTicks() - t < 5000) {
+            upd_pump();
+            SDL_Delay(20);
+        }
+        if (uproc) {
+            SDL_KillProcess(uproc, true);
+            SDL_WaitProcess(uproc, true, NULL);
+            SDL_DestroyProcess(uproc);
+            uproc = NULL;
+        }
+    }
+    if (!restarting && upd == U_READY && upd_when == UW_CLOSE) {
+        say("the launcher closes: putting %s in place", upd_version);
+        if (apply_update() == 0)
+            say("%s goes in use at the next start, which builds the game again", upd_version);
+    }
+    if (log_file)
+        fclose(log_file);
     ui_quit();
     SDL_Quit();
     return result;

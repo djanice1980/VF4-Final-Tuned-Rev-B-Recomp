@@ -1315,3 +1315,121 @@ checked offscreen; its input was not driven.
 **Not done:** real pads other than a DualSense, and Steam Input on a Deck
 or under Proton with a real pad (whether Steam tells SDL which pad is
 behind its own).
+
+## 24. Updates (2026-11-13)
+
+Asked for by David: check for a new release and update the program before
+playing, or have the update go in when the launcher closes.
+
+**The pieces.**
+
+- `release.json` in a release folder: its version, its platform (`windows`
+  or `linux`) and the GitHub repository. `tools/package_release.py` writes
+  it. A folder without it (a development build) never updates itself, and
+  its Play page shows no update row.
+- `tools/update.py`, run by the launcher with the release's own Python:
+  - `check FOLDER` lists the repository's releases (GitHub's API,
+    `/repos/OWNER/NAME/releases`, without signing in; pre-releases count,
+    drafts do not). It answers `@update none` or `@update VERSION SIZE`
+    for the newest release with a package for this platform,
+    `vf4ft-VERSION-PLATFORM.zip`.
+  - `fetch FOLDER VERSION --launcher` downloads that package into
+    `update/download.part` and checks it against the SHA-256 GitHub lists
+    for it (the asset's `digest`) and its size. It unpacks it into
+    `update/new.part`, refusing any path outside it, and checks that it
+    is a release folder of this platform at that version, with a launcher,
+    `make_game.py` and `update.py`. Then it renames it to `update/new`,
+    writes `update/ready.json` and prints `@ready VERSION`. It prints
+    progress as the builder does (`@stage`, `@pct`), and its input closing
+    cancels it, as with the builder (`proc.watch_stdin`).
+  - It changes nothing outside `update/`.
+- The launcher puts `update/new` in place (`apply_update`). Each entry of
+  `update/new` (the launcher, SDL3.dll, `python/`, `builder/`,
+  `release.json`, `READ ME.txt`) takes the place of the folder's own, which
+  is renamed into `update/old-TIME/`. Renaming rather than writing over is
+  because Windows lets a running exe and its loaded DLLs be renamed, not
+  overwritten. A step that fails moves back what moved, and the card says
+  so. `game/`, `launcher.log` and the set's path are not touched, so the
+  saves and settings in `game/user/` stay. It then writes
+  `update/applied.json` (from, to).
+
+**When.**
+
+- At every start the launcher runs a check: one request to GitHub, no
+  download. A newer release puts a card on the Play page, in the place of
+  the "new builder" card: *Version X is out*, with **Update now** and
+  **When I close**.
+  - *Update now* downloads it, puts it in place as soon as no build is
+    running, and starts the new launcher, which closes the old one.
+  - *When I close* downloads it now; the card then says it goes in when
+    the launcher closes, with *Update now* still there.
+  - Either way, the next launcher finds `applied.json`, adds to the old
+    log instead of starting a new one, and builds the game again with the
+    new builder (the "new builder" Update, with the set no longer needed).
+  - A failed download or swap shows the reason and *Try again*.
+  - Closing the launcher during a download cancels it; the next start's
+    check finds the release again.
+- Without a card, the foot of the Play page has **Check for updates** and
+  the last check's result (*Up to date*, *Could not check for updates*). A
+  check asked for by the button puts the reason for a failure in the
+  status line.
+- The apply waits for `update.py` to end even when the launcher is
+  closing, because its Python must not be running from `python/` when
+  `python/` is renamed.
+
+**Clean-up.** Each check removes `update/old-*` (the old launcher has ended
+by then), unfinished `*.part` downloads, and a downloaded update that is
+no longer newer. One exception: while `update/new` is still there (no
+update went in since), an `old-*` folder with files in it is what a failed
+swap could not move back. It is then the only copy of those files, and it
+is kept. Links are removed, never followed.
+
+**For tests.**
+
+- `VF4FT_UPDATE_API` replaces `https://api.github.com`.
+- `--do check`, `--do upgrade` (Update now) and `--do upgrade-at-close`
+  (When I close; the launcher then closes as soon as the download is in)
+  drive it. With `--exit`, the result is 0 when it updated (or, for
+  `check`, when GitHub answered) and 1 otherwise.
+- `--shot update`, `update-fetch`, `update-ready`, `update-failed` and
+  `update-none` draw the card's states with a made-up 0.6.0.
+- `package_release.py ... --version V` packages the tree as version V.
+
+**Checked** against a stand-in for GitHub: a local server with release
+lists (a draft, a release for the other platform only, an older one, a
+wrong digest, and a throttled download).
+
+- `update.py`:
+  - it skipped the draft and the other platform's release;
+  - it caught the wrong digest;
+  - a check removed the leftovers and kept a newer download;
+  - closing its input mid-download cancelled it (exit code 3);
+  - a private repository's 404 gives a message that says so.
+- The launcher, offscreen, natively with Linux packages and under Proton
+  with Windows ones:
+  - *Update now*: 0.5.1-dev to 0.5.2; the old launcher swapped the files
+    and started the new one, which built the game again (66 s natively,
+    70 s under Proton) and cleaned `update/`.
+  - *When I close*: 0.5.2 to 0.5.3; the swap at close, then the next
+    start's rebuild.
+  - A forced failure (`update/new` read-only) moved `builder/` back,
+    leaving the folder as it was.
+  - umu-run kept running until the restarted launcher ended.
+- The card's states were looked at 1:1. Its text first ran past its edge,
+  so the card now grows with its lines (`ui_wrap_lines`).
+
+**Not done.**
+
+- The repository is private, and GitHub shows a private repository's
+  releases only to someone signed in, so every check fails until the
+  releases are public (this repository, or one that holds only releases).
+- Real Windows: Wine allows the renames, and Windows documents that a
+  running exe can be renamed, but this was not tried on Windows itself.
+- Steam's own tracking across the restart (umu-run's was).
+- The game added to Steam with Add to Steam starts without the launcher,
+  so it never checks; the launcher has to be started now and then.
+- Release 0.5.0 has no updater: going from it to the first release with
+  one is by hand.
+- The SHA-256 comes from the same GitHub answer as the download, so it
+  catches a damaged download, not a changed release. There is no
+  signature.

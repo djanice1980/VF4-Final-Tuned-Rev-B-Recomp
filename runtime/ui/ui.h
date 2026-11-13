@@ -68,6 +68,8 @@ void ui_text_in(int face, float size, float x, float y, float w, int align, int 
 float ui_line_h(int face, float size);
 /* wrapped to w, the first line's middle at y; returns the lines' count */
 int ui_wrap(int face, float size, float x, float y, float w, float line_h, SDL_Color c, const char *s);
+/* how many lines ui_wrap makes of s, drawing nothing */
+int ui_wrap_lines(int face, float size, float w, const char *s);
 
 /* ---- shapes ---- */
 void ui_fill(float x, float y, float w, float h, SDL_Color c);

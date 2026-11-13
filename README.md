@@ -139,6 +139,26 @@ repository: `cmake --build build/linux --target vf4ft-launcher` (it needs no
 translated code), then `build/linux/vf4ft-launcher`. A release folder is put
 together by `tools/package_release.py` (its usage is at its top).
 
+**Updates.** A release checks this repository's Releases page each time
+the launcher starts (one request to GitHub, no download). When a newer
+release is out, the Play page says so:
+
+- **Update now** downloads it, puts it in place, restarts the launcher and
+  builds the game again.
+- **When I close** downloads it now and puts it in when you close the
+  launcher; the next start builds the game again.
+
+Saves and settings stay. **Check for updates**, at the foot of the Play
+page, asks again. A development build never updates itself; only a
+release folder does (it has `release.json`). The game added with Add to
+Steam starts without the launcher, so start the launcher now and then to
+get updates ([details](docs/design.md#24-updates-2026-11-13)).
+
+Release 0.5.0 has no updater. To leave it, extract the new zip, copy
+everything inside its folder into your 0.5.0 folder, replacing the files,
+then start the launcher and press Update on its "new builder" card. Your
+Steam entry, saves and settings stay.
+
 Whatever the builder makes is made from your copy of the game: never share
 the install folder.
 
