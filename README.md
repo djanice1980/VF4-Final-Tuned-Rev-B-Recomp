@@ -34,6 +34,9 @@ holds the launcher and builder only, no game. You also need your MAME
 5. **Play.** Optional: to have the game in your Steam library too, exit
    Steam (Steam menu, Exit), then press Add to Steam on the Play page
    (Steam rewrites its shortcuts when it exits, so it must be closed).
+   Or turn on **Start the game directly** on the Play page: from then on
+   the launcher opens the game straight away, and the game's menu has
+   **Open the launcher**.
 
 **On Linux or a Steam Deck**, through Steam's Proton:
 
@@ -41,14 +44,17 @@ holds the launcher and builder only, no game. You also need your MAME
 2. In Steam: Games menu, "Add a Non-Steam Game to My Library", Browse, set
    the file type to "All Files", pick `vf4ft-launcher.exe` in that folder,
    "Add Selected Programs".
-3. Right-click the new entry, Properties, Compatibility: tick "Force the
-   use of a specific Steam Play compatibility tool" and choose Proton
-   Experimental.
+3. Right-click the new entry, Properties. Its name (the file's name at
+   first) can be changed at the top, to Virtua Fighter 4 Final Tuned for
+   example. Compatibility: tick "Force the use of a specific Steam Play
+   compatibility tool" and choose Proton Experimental.
 4. Start it from your Steam library, then do steps 3 and 4 above, and
    press **Play**: the game starts under the same Proton, with Steam
    Input. This entry is how you play from now on (it opens on Play once
    the game is built). The launcher does not offer Add to Steam here: it
-   is in Steam already.
+   is in Steam already. To have the entry open the game straight away,
+   turn on **Start the game directly** on the Play page; the game's menu
+   then has **Open the launcher**.
 
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode
 ([more for the Deck](#steam-deck-m6)). Plain Wine is not supported.
@@ -172,8 +178,12 @@ the time so far and the builder's last lines; Cancel stops it cleanly),
 and Play. The Play page
 also has Settings (the game's settings and controls, in tabs), Add to Steam
 (adds the game as a non-Steam game; close Steam first; not offered when
-Steam started the launcher, or under Wine or Proton), Build again, and an
-Update card when the builder is newer than the game it built. The mouse,
+Steam started the launcher, or under Wine or Proton), Build again, an
+Update card when the builder is newer than the game it built, and **Start
+the game directly**: with it on, the launcher starts hidden, opens the
+game and closes with it, so its Steam entry plays the game; it still shows
+itself when it is needed (nothing built, an update, an error), and the
+game's menu has **Open the launcher** ([details](docs/design.md#29-start-the-game-directly-2026-11-13)). The mouse,
 the keyboard (arrows, Enter, Esc; Q and E switch tabs) and a gamepad
 (D-pad, A, B; LB and RB switch tabs) all work it. The game goes into
 `game/` beside the launcher unless you choose another folder with Change…
@@ -243,7 +253,8 @@ Proton on a desktop PC.
 4. **Add it to Steam:** open Steam on the desktop, Games menu, "Add a
    Non-Steam Game to My Library", Browse, set the file type to "All Files",
    pick `vf4ft-launcher.exe` in the release folder, then "Add Selected
-   Programs". Right-click the new entry, Properties, Compatibility, tick
+   Programs". Right-click the new entry, Properties: rename it at the top
+   if you like (Virtua Fighter 4 Final Tuned, say); Compatibility, tick
    "Force the use of a specific Steam Play compatibility tool" and choose
    Proton Experimental.
 5. **In Game Mode**, start it from the library (the Non-Steam tab). The

@@ -11,15 +11,15 @@ enum { TAB_GAME, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
 static const char *const tab_names[TABS] = { "Game", "Picture", "Sound", "Controls" };
 
 /* a row: an option (options.h), one of these actions, or a control */
-enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_QUIT, A_CONTROL };
+enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_CONTROL };
 
 #define ROWS 10
 static const int tab_rows[TABS][ROWS] = {
-    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_QUIT, -1 },
+    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
-static int shown_rows[TABS][ROWS], nshown[TABS];   /* tab_rows without Updates outside a release folder */
+static int shown_rows[TABS][ROWS], nshown[TABS];   /* tab_rows without Updates and the launcher outside a release folder */
 
 static settings *s;
 static menu_run run;
@@ -41,7 +41,7 @@ void menu_open(settings *cfg, const menu_run *r)
     for (int t = 0; t < TABS; t++) {
         nshown[t] = 0;
         for (int i = 0; i < ROWS && tab_rows[t][i] >= 0; i++)
-            if (tab_rows[t][i] != A_UPDATES || gu_state() != GU_OFF)
+            if ((tab_rows[t][i] != A_UPDATES || gu_state() != GU_OFF) && (tab_rows[t][i] != A_LAUNCHER || gu_launcher()))
                 shown_rows[t][nshown[t]++] = tab_rows[t][i];
     }
 }
@@ -132,12 +132,13 @@ int menu_command(int cmd)
         case A_RESUME: return MENU_RESUME;
         case A_TEST: return run.test_program ? MENU_OPERATOR : MENU_TEST;
         case A_RESTART:
+        case A_LAUNCHER:
         case A_QUIT:
             if (was_armed != row_id(row)) {
                 armed = row_id(row);    /* asks once more */
                 return MENU_STAY;
             }
-            return row_id(row) == A_RESTART ? MENU_RESTART : MENU_QUIT;
+            return row_id(row) == A_RESTART ? MENU_RESTART : row_id(row) == A_LAUNCHER ? MENU_LAUNCHER : MENU_QUIT;
         case A_UPDATES: gu_press(); return MENU_STAY;
         case A_KOFI: return MENU_KOFI;
         case A_CONTROL: return MENU_STAY;
@@ -249,6 +250,11 @@ static void about_of(int id, const char **title, const char **text, const char *
         *text = "Off and on again, as the cabinet's power switch. Records and settings are kept.";
         break;
     case A_QUIT: *title = "Quit"; *text = "Saves the records and closes the game."; break;
+    case A_LAUNCHER:
+        *title = "Open the launcher";
+        *text = "Saves the records, closes the game and opens the launcher: its settings, the install folder, "
+                "your game files, updates, and Start the game directly.";
+        break;
     case A_KOFI:
         *title = "Support on Ko-fi";
         *text = "This recomp is free. If you enjoy it, you can support its development on Ko-fi: "
@@ -349,6 +355,7 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         case A_RESTART: w->label = armed == A_RESTART ? "Restart the game? Choose it again" : "Restart the game"; break;
         case A_QUIT: w->label = armed == A_QUIT ? "Quit? Choose it again" : "Quit"; break;
         case A_KOFI: w->label = "Support on Ko-fi"; break;
+        case A_LAUNCHER: w->label = armed == A_LAUNCHER ? "Open the launcher? Choose it again" : "Open the launcher"; break;
         case A_UPDATES: {
             static char label[96];
             int st = gu_state();

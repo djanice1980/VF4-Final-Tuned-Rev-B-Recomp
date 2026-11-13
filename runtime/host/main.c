@@ -683,6 +683,7 @@ static int menu_on, bar_on, ov_dirty;   /* bar_on: the operator bar's buttons (A
 static Uint64 bar_until;                /* the bar is drawn until then (ms); its buttons work until it closes */
 static unsigned pad_hold;               /* buttons held as the menu closed: not the game's until let go */
 static int live_fullscreen;
+static int to_launcher;                 /* the menu's Open the launcher: the game quits for it */
 
 static int fullscreen_wanted(void)
 {
@@ -843,6 +844,11 @@ static int menu_do(int a)
     case MENU_QUIT:
         menu_hide();
         logf_("quit: the menu");
+        return 0;
+    case MENU_LAUNCHER:
+        menu_hide();
+        to_launcher = 1;
+        logf_("quit: the menu's Open the launcher");
         return 0;
     case MENU_KOFI:
         kofi_open();
@@ -1756,6 +1762,11 @@ int main(int argc, char **argv)
     SDL_DestroyWindow(win);
     SDL_DestroyMutex(shared.lock);
     gu_quit();      /* the records are saved: an update asked for in the menu goes to the launcher */
+    if (to_launcher) {
+        gu_open_launcher();
+        if (!failed && gu_by_launcher())
+            failed = GU_EXIT_LAUNCHER;      /* the launcher that started the game shows itself */
+    }
     logf_("clean exit");
     SDL_Quit();
     if (log_file && log_file != stderr)

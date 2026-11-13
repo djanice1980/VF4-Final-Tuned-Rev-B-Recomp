@@ -101,19 +101,25 @@ ON WINDOWS
    compiler and takes a few minutes.
 5. Play. Optional: to have the game in your Steam library too, exit
    Steam (Steam menu, Exit), then press Add to Steam on the Play page.
+   Or turn on Start the game directly on the Play page: from then on the
+   launcher opens the game straight away, and the game's menu has Open
+   the launcher.
 
 ON LINUX OR A STEAM DECK (through Steam's Proton)
 1. Extract this zip into a folder of its own, for example ~/Games/vf4ft.
 2. In Steam: Games menu, Add a Non-Steam Game to My Library, Browse, set
    the file type to All Files, pick vf4ft-launcher.exe in that folder,
    Add Selected Programs.
-3. Right-click the new entry, Properties, Compatibility: tick "Force the
-   use of a specific Steam Play compatibility tool" and choose Proton
-   Experimental.
+3. Right-click the new entry, Properties. Its name (the file's name at
+   first) can be changed at the top, to Virtua Fighter 4 Final Tuned for
+   example. Compatibility: tick "Force the use of a specific Steam Play
+   compatibility tool" and choose Proton Experimental.
 4. Start it from your Steam library, do steps 3 and 4 above, and press
    Play: the game starts under the same Proton. This entry is how you
    play from now on (the launcher does not offer Add to Steam here: it is
-   in Steam already).
+   in Steam already). To have it open the game straight away, turn on
+   Start the game directly on the Play page; the game's menu then has
+   Open the launcher.
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
 Plain Wine is not supported: run the launcher through Proton.
 

@@ -7,7 +7,7 @@
  * restart are here too, so a player with only a gamepad (the Steam Deck)
  * can reach the operator's test menu: in it the operator bar turns A and X
  * into Test and Service. A release's game also has Check for updates
- * (updates.h). Support on Ko-fi opens the author's Ko-fi page, and the
+ * (updates.h) and Open the launcher. Support on Ko-fi opens the author's Ko-fi page, and the
  * first start shows a notice about it, once (docs/design.md section 26).
  *
  * This file draws and keeps the menu's state (with runtime/ui); main.c
@@ -40,6 +40,7 @@ enum {
     MENU_QUIT,
     MENU_KOFI,              /* open MENU_KOFI_URL in the browser, then menu_kofi() */
     MENU_KOFI_CLOSE,        /* the same, and close it (the notice's Support on Ko-fi) */
+    MENU_LAUNCHER,          /* quit, and the launcher opens (updates.h: gu_open_launcher) */
 };
 
 /* how this run started: settings that change only at the next start are

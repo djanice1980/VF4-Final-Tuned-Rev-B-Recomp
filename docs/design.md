@@ -1699,3 +1699,52 @@ a Windows PC at 150%): 1440 x 900, the page times 1.5. Not tried: a real
 Windows PC, a Steam Deck, and moving the window between screens of
 different scales (not changed here).
 
+## 29. Start the game directly (2026-11-13)
+
+David asked for a Steam entry that plays the game without the launcher.
+The launcher cannot make one from inside Steam: Steam rewrites its
+shortcuts when it exits, so they can only be written with Steam closed, and
+closing Steam ends a launcher that runs under its Proton. So the launcher's
+own Steam entry plays the game instead, and Steam's Properties renames the
+entry (the README's install steps say so).
+
+- **The switch:** *Start the game directly*, on the Play page (where Play
+  starts the game itself: the Windows launcher, or a native Linux build),
+  kept in `launcher-direct.txt` beside the launcher. Not shown beside an
+  update's or a new builder's card.
+- **With it on,** the launcher creates its window hidden, presses Play
+  itself, and closes when the game ends with code 0. It shows itself
+  instead when nothing is built, a new builder or an update is waiting,
+  the game asked for an update when it quits, the game ends with an error
+  (the Play page says the code), or the game's menu asked for it.
+  `launcher.log` says which. No update check runs at a direct start (the
+  game's menu has its own).
+- **Open the launcher**, a row in the game's menu (Game tab, before Quit,
+  chosen twice like Quit) in a release's game: a game the launcher started
+  (`VF4FT_LAUNCHER=1`) ends with code 64 (`GU_EXIT_LAUNCHER`), and the
+  launcher shows itself; a game started on its own starts the launcher
+  with `--show`, which never starts the game directly.
+- **The game's exit code:** the launcher started the game in SDL's
+  background mode, whose exit code is always 0 (SDL_process.h; on Linux it
+  forks twice, on Windows SDL happens to give it anyway). The game is now
+  an ordinary child with no input or output (both are GUI programs on
+  Windows, so no console opens).
+
+**Checked:**
+- Natively, offscreen, with a stand-in game that ends with a chosen code:
+  switch off (the launcher stays), on with 0 (it closes 1.2 s later, with
+  the game), on with 64 (it stays, "Open the launcher"), on with 3 (it
+  stays, the error on the Play page), on with `--show` (no direct start),
+  and on with an older builder in `build.json` (not this time: a new
+  builder).
+- Under Proton in a headless KWin, a 0.5.1 release folder with this
+  launcher and game: with the switch on, KWin had the game's window only,
+  and closing it ended the launcher too; a stand-in game ending with 64
+  brought the launcher's window; the real game's Open the launcher (by
+  `--keys`) ended with 64 when `VF4FT_LAUNCHER=1`, and started the launcher
+  with `--show` otherwise, whose window came up although the switch was on.
+- The Play page's pictures with the switch off and on, and beside the
+  cards (hidden there).
+
+Not tried: a real Steam session and the Deck's Game Mode.
+

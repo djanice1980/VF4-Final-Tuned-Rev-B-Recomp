@@ -17,6 +17,7 @@
  *              the player chose another folder (Change on the Build page)
  *   launcher-set.txt   the set folder last chosen
  *   launcher-game.txt  the install folder chosen (none: game/ beside the launcher)
+ *   launcher-direct.txt  "1": Start the game directly (the Play page's switch)
  *   launcher.log       what it showed (Windows has no console for it)
  * On Linux, Python is the system's python3.
  *
@@ -98,6 +99,24 @@ static char saves_from[1024];       /* the install before Change: its user/ goes
 static char game_note[400];         /* the Build page's line about the install folder */
 static int game_note_bad;
 static int no_add_to_steam;         /* Steam started the launcher, or Wine/Proton runs it: no Add to Steam */
+
+/* Start the game directly (docs/design.md section 29): with the Play page's
+ * switch on, the launcher starts hidden and presses Play itself, and closes
+ * when the game ends, so a Steam entry for the launcher plays the game. It
+ * shows itself instead when it is needed: no game built, a new builder or
+ * an update to put in, the game's "Open the launcher" (exit code 64,
+ * runtime/host/updates.h) or a game that ended with an error. --show (the
+ * game's Open the launcher, for a game started on its own) never plays. */
+#define GAME_EXIT_LAUNCHER 64
+static int play_direct;             /* the switch */
+static int direct_run;              /* this run started the game directly: the launcher closes with it */
+static int direct_close;            /* the game it started directly ended: close */
+
+static void direct_path(char *p, size_t n)
+{
+    const char *b = SDL_GetBasePath();     /* base, before find_paths has set it */
+    snprintf(p, n, "%slauncher-direct.txt", b ? b : "./");
+}
 
 static void say(const char *fmt, ...)
 {
@@ -561,8 +580,15 @@ static int start(int kind, const char **args, int capture)
     }
     SDL_Environment *env = NULL;
     if (!capture) {
-        SDL_SetBooleanProperty(pr, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
-        /* the game: it knows the launcher waits for it, so an update asked for
+        /* the game: no input or output of the launcher's. Not SDL's background
+         * mode, whose exit code is always 0 (SDL_process.h; on Linux it forks
+         * twice), and the launcher reads it: the menu's Open the launcher
+         * (GAME_EXIT_LAUNCHER) or an error. Both programs are GUI ones on
+         * Windows, so no console opens. */
+        SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+        SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_NULL);
+        SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_NULL);
+        /* it knows the launcher waits for it, so an update asked for
          * in its menu is the launcher's to do when it ends (runtime/host/updates.h).
          * An environment variable, not an option: an older game ignores it */
         env = SDL_CreateEnvironment(true);
@@ -706,6 +732,7 @@ static int pump_process(void)
 }
 
 static void take_game_request(void);
+static int upd_auto;        /* (updates, below) */
 
 static void watch_game(void)
 {
@@ -715,10 +742,21 @@ static void watch_game(void)
     if (SDL_WaitProcess(game_proc, false, &code)) {
         SDL_DestroyProcess(game_proc);
         game_proc = NULL;
+        say("the game ended%s", code == GAME_EXIT_LAUNCHER ? ": its menu's Open the launcher" : "");
+        take_game_request();        /* "Update when I quit" in the game's menu */
+        if (direct_run && code == 0 && !upd_auto) {
+            direct_close = 1;       /* started directly: no window */
+            return;
+        }
+        direct_run = 0;
+        if (code != 0 && code != GAME_EXIT_LAUNCHER) {
+            status_kind = ST_BAD;
+            snprintf(status_text, sizeof status_text, "The game ended with an error (code %d): its log is vf4ft.log "
+                     "in the install folder.", code);
+            say("%s", status_text);
+        }
         SDL_ShowWindow(win);
         SDL_RaiseWindow(win);
-        say("the game ended");
-        take_game_request();        /* "Update when I quit" in the game's menu */
     }
 }
 
@@ -1159,7 +1197,7 @@ static int found_offered(void)
 enum {
     B_CHOOSE, B_CONTINUE, B_BACK, B_TARGET, B_BUILD, B_CANCEL, B_RETRY, B_PLAY, B_SETTINGS, B_STEAM,
     B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_USE_FOUND, B_GAME_DIR,
-    B_COUNT
+    B_DIRECT, B_COUNT
 };
 static int focus = -1;
 #define HITS 24
@@ -1177,6 +1215,26 @@ static int upd_card(void)
 static int check_shown(void)
 {
     return upd != U_OFF && !upd_card();
+}
+
+/* Start the game directly applies when Play starts the game itself (not
+ * the Windows build on Linux, which plays through Steam) */
+static int direct_ok(void)
+{
+#ifdef _WIN32
+    return 1;
+#else
+    return built_linux;
+#endif
+}
+
+static int update_ready(void);
+
+/* the Play page shows the switch; not beside an update's or a new
+ * builder's card, which the launcher is needed for anyway */
+static int direct_shown(void)
+{
+    return direct_ok() && !upd_card() && !update_ready();
 }
 
 static int enabled(int b)
@@ -1198,6 +1256,7 @@ static int enabled(int b)
     case B_UPD_CANCEL: return upd == U_FETCHING && uproc_in != NULL;
     case B_CHECK: return upd == U_IDLE || upd == U_NONE || upd == U_CHECK_FAILED;
     case B_USE_FOUND: return found_offered() && !proc;
+    case B_DIRECT: return built && !proc;
 #ifdef _WIN32
     case B_TARGET: return 0;
 #endif
@@ -1238,6 +1297,8 @@ static int page_buttons(int *ids)
             ids[n++] = B_STEAM;
         ids[n++] = B_REBUILD;
         ids[n++] = B_FILES;
+        if (direct_shown())
+            ids[n++] = B_DIRECT;
         if (check_shown())
             ids[n++] = B_CHECK;
         break;
@@ -1509,6 +1570,18 @@ static void press(int b)
             status_kind = ST_BAD;
             SDL_strlcpy(status_text, error_line, sizeof status_text);
         }
+        break;
+    }
+    case B_DIRECT: {
+        char p[1100];
+        direct_path(p, sizeof p);
+        play_direct = !play_direct;
+        if (play_direct)
+            SDL_SaveFile(p, "1\n", 2);
+        else
+            SDL_RemovePath(p);
+        say("start the game directly: %s", play_direct ? "on (from the next start; the game's menu has Open the launcher)"
+                                                       : "off");
         break;
     }
     case B_STEAM: {
@@ -1902,6 +1975,26 @@ static void draw_check_row(void)
     ui_text_in(UI_REGULAR, 14, CX + 280, BTN_Y + 26, x - 16 - (CX + 280), 2, 0, UI_FAINT, t);
 }
 
+/* the Play page's switch, in the look of the menus' Off/On rows */
+static void direct_row(float y)
+{
+    int on = enabled(B_DIRECT), f = focus == B_DIRECT && on;
+    float tw = 96, th = 30, h = 50;
+    if (f)
+        ui_round_line(CX - 8, y - 8, CW + 16, h + 16, 14, 2, UI_TEXT, UI_BG);
+    float ty = y + 14 - th / 2;
+    ui_round_line(CX, ty, tw, th, th / 2, 1, UI_LINE, UI_BG);
+    ui_round(CX + (play_direct ? tw / 2 : 0) + 2, ty + 2, tw / 2 - 4, th - 4, (th - 4) / 2,
+             !on ? UI_LINE : play_direct ? UI_ACCENT : UI_HOVER);
+    SDL_Color sel = !on ? UI_MUTED : play_direct ? UI_ON_ACCENT : UI_TEXT;
+    ui_text_in(UI_MEDIUM, 14, CX, y + 14, tw / 2, 1, 0, play_direct ? UI_FAINT : sel, "Off");
+    ui_text_in(UI_MEDIUM, 14, CX + tw / 2, y + 14, tw / 2, 1, 0, play_direct ? sel : UI_FAINT, "On");
+    ui_text(UI_MEDIUM, 16, CX + tw + 18, y + 14, on ? UI_TEXT : UI_FAINT, "Start the game directly");
+    ui_text_in(UI_REGULAR, 14, CX + tw + 18, y + 40, CW - tw - 18, 0, 0, UI_MUTED,
+               "Next time the game opens without this window. Its menu has Open the launcher.");
+    hit_add(B_DIRECT, CX - 8, y - 8, CW + 16, h + 16);
+}
+
 static void draw_play(void)
 {
     char sub[300];
@@ -1936,8 +2029,12 @@ static void draw_play(void)
         x += button(B_STEAM, x, y + 14, 0, BTN_H, "Add to Steam", 0, -1) + 14;
     x += button(B_REBUILD, x, y + 14, 0, BTN_H, "Build again", 0, -1) + 14;
     button(B_FILES, x, y + 14, 0, BTN_H, "Game files", 0, -1);
+    float sy = y + 110;
+    if (direct_shown()) {
+        direct_row(y + 96);
+        sy = y + 166;
+    }
     if (status_kind != ST_NONE) {
-        float sy = y + 110;
         int icon = status_kind == ST_GOOD ? UI_I_CHECK : status_kind == ST_BAD ? UI_I_FAIL : UI_I_DOT;
         SDL_Color c = status_kind == ST_GOOD ? UI_GOOD : status_kind == ST_BAD ? UI_BAD : UI_ACCENT;
         ui_icon(icon, CX + 10, sy, 20, c);
@@ -2183,7 +2280,7 @@ int main(int argc, char **argv)
                *shot_device = NULL;
     int shot_scale = 1;
     const char *unknown[8];
-    int opt_exit = 0, nunknown = 0;
+    int opt_exit = 0, opt_show = 0, nunknown = 0;
     double opt_cancel = -1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) opt_game = argv[++i];
@@ -2192,6 +2289,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--do") && i + 1 < argc) opt_do = argv[++i];
         else if (!strcmp(argv[i], "--exit")) opt_exit = 1;
         else if (!strcmp(argv[i], "--after-game")) after_game = 1;
+        else if (!strcmp(argv[i], "--show")) opt_show = 1;
         else if (!strcmp(argv[i], "--cancel-after") && i + 1 < argc) opt_cancel = SDL_atof(argv[++i]);
         else if (!strcmp(argv[i], "--shot") && i + 2 < argc) shot_page = argv[++i], shot_file = argv[++i];
         else if (!strcmp(argv[i], "--shot-device") && i + 1 < argc) shot_device = argv[++i];
@@ -2207,8 +2305,17 @@ int main(int argc, char **argv)
     int win_w = (int)LW * shot_scale, win_h = (int)LH * shot_scale, min_w = 640, min_h = 400;
     if (!shot_page)
         first_size(&win_w, &win_h, &min_w, &min_h);     /* pictures keep the page's own size */
+    {
+        char p[1100];
+        direct_path(p, sizeof p);
+        play_direct = exists(p);
+    }
+    /* the switch on: the window stays hidden unless the launcher is needed */
+    int want_direct = play_direct && !shot_page && !opt_show && !after_game && !opt_do && !opt_pick_game;
     if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", win_w, win_h,
-                                     SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, &win, &ren)) {
+                                     SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+                                         (want_direct ? SDL_WINDOW_HIDDEN : 0),
+                                     &win, &ren)) {
         SDL_Log("window: %s", SDL_GetError());
         return 1;
     }
@@ -2340,7 +2447,25 @@ int main(int argc, char **argv)
         SDL_Quit();
         return ok ? 0 : 1;
     }
-    if (upd == U_IDLE && !after_game)
+    if (want_direct) {
+        const char *why = !built                ? "the game is not built yet"
+                          : !direct_ok()        ? "this build plays through Steam"
+                          : update_ready()      ? "a new builder is here"
+                          : upd_auto            ? "the game asked for an update"
+                          : just_updated        ? "the launcher was just updated"
+                          : proc                ? "a build runs"
+                                                : NULL;
+        if (why) {
+            say("start the game directly: not this time (%s)", why);
+        } else {
+            say("start the game directly (the Play page's switch): the launcher stays hidden");
+            press(B_PLAY);
+            direct_run = game_proc != NULL;
+        }
+        if (!direct_run)
+            SDL_ShowWindow(win);
+    }
+    if (upd == U_IDLE && !after_game && !direct_run)
         upd_start(1);       /* the check at every start: a line on GitHub's API, no download */
     int running = 1, result = do_failed, restarting = 0;
     while (running) {
@@ -2392,6 +2517,10 @@ int main(int argc, char **argv)
         int was = proc != NULL;
         int code = pump_process();
         watch_game();
+        if (direct_close) {
+            running = 0;          /* the game started directly ended: the launcher goes with it */
+            continue;
+        }
         upd_pump();
         if (game_proc) {
             SDL_Delay(100);           /* hidden while the game runs: nothing to draw */

@@ -12,7 +12,7 @@
 #define LAUNCHER_EXE "vf4ft-launcher"
 #endif
 
-static int state = GU_OFF, by_launcher;
+static int state = GU_OFF, by_launcher, launcher_found;
 static char rel[1024];                      /* the release folder, a separator at its end */
 static char python[1100], script[1100], launcher[1100], marker[1100];
 static char version[64], newer[64], error[300];
@@ -107,6 +107,7 @@ void gu_init(const char *exe_dir, void (*log)(const char *line))
 #endif
     SDL_snprintf(script, sizeof script, "%sbuilder/tools/update.py", rel);
     SDL_snprintf(launcher, sizeof launcher, "%s%s", rel, LAUNCHER_EXE);
+    launcher_found = exists(launcher);
     SDL_snprintf(marker, sizeof marker, "%supdate/at-game-quit", rel);
 #ifdef _WIN32
     if (!exists(python)) {
@@ -286,4 +287,35 @@ void gu_quit(void)
     }
     SDL_DestroyProcess(p);      /* it runs on */
     sayf("updates: started %s --after-game for %s", launcher, newer);
+}
+
+const char *gu_launcher(void)
+{
+    return launcher_found ? launcher : NULL;
+}
+
+void gu_open_launcher(void)
+{
+    if (!launcher_found)
+        return;
+    if (by_launcher) {
+        sayf("launcher: the game ends with code %d, so the launcher that started it shows itself", GU_EXIT_LAUNCHER);
+        return;
+    }
+    if (state == GU_ASKED) {
+        sayf("launcher: started for the update already (--after-game)");
+        return;
+    }
+    const char *args[] = {launcher, "--show", NULL};
+    SDL_PropertiesID pr = SDL_CreateProperties();
+    SDL_SetPointerProperty(pr, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
+    SDL_SetBooleanProperty(pr, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+    SDL_Process *p = SDL_CreateProcessWithProperties(pr);
+    SDL_DestroyProperties(pr);
+    if (!p) {
+        sayf("launcher: cannot start %s (%s)", launcher, SDL_GetError());
+        return;
+    }
+    SDL_DestroyProcess(p);      /* it runs on */
+    sayf("launcher: started %s --show", launcher);
 }

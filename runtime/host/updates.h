@@ -36,4 +36,13 @@ int gu_poll(void);
  * handed to the launcher, unless the launcher started the game */
 void gu_quit(void);
 
+/* the menu's "Open the launcher" (docs/design.md section 29): the release's
+ * launcher, or NULL when there is none */
+const char *gu_launcher(void);
+/* the game quits for it, after gu_quit: when the launcher started the game,
+ * the game ends with GU_EXIT_LAUNCHER and the launcher shows itself; a game
+ * started on its own starts the launcher with --show */
+#define GU_EXIT_LAUNCHER 64
+void gu_open_launcher(void);
+
 #endif
