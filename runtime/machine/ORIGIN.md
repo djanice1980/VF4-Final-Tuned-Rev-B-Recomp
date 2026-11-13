@@ -60,5 +60,13 @@ What the recomp changed:
   from bytes and the card in a unit out as bytes, for the game window's
   card files (`runtime/host/game_machine.c`). The same as the controller's
   `card pN insert` and `card pN save`, without files.
+- `view.h`, `view.c` (M6): the GPU path, `view_host_gpu`. A pass to the
+  screen is handed to the host after transform, lighting and the
+  translucent sort (`gpu_export`: the triangles in raster()'s order with
+  their states, the opaque list's volumes, the registers, the background
+  plane, the textures through an arena of texels) instead of being
+  rasterized; passes into textures are still drawn here. `target_clear`'s
+  plane is computed by `bg_plane`, which both use. Without
+  `view_host_gpu` nothing behaves differently.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`.

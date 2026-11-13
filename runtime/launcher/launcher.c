@@ -381,7 +381,8 @@ static int st_row;                      /* the row with the focus on a settings 
 static int capturing;                   /* a controls row waits for its key or button */
 static Uint64 capture_since;
 
-enum { R_COINS, R_FULLSCREEN, R_PICTURE, R_FILTER, R_SOUND, R_CARDS, R_PAD, R_KEY1, R_KEY2, R_BACK, R_COUNT };
+enum { R_COINS, R_RENDERER, R_SCALE, R_FULLSCREEN, R_PICTURE, R_FILTER, R_SOUND, R_CARDS, R_PAD, R_KEY1, R_KEY2, R_BACK,
+       R_COUNT };
 
 static void settings_open(void)
 {
@@ -421,6 +422,8 @@ static void setting_change(int row, int dir)
     switch (row) {
     case R_COINS: st.coins = !st.coins; break;
     case R_FULLSCREEN: st.fullscreen = (st.fullscreen + 1 + (dir > 0 ? 1 : 2)) % 3 - 1; break;
+    case R_RENDERER: st.renderer = !st.renderer; break;
+    case R_SCALE: st.scale = (st.scale - 1 + (dir > 0 ? 1 : 3)) % 4 + 1; break;
     case R_PICTURE: st.picture = !st.picture; break;
     case R_FILTER: st.filter = !st.filter; break;
     case R_SOUND: st.sound = !st.sound; break;
@@ -623,6 +626,11 @@ static void draw_settings(void)
             static const char *const fs[] = {"Auto (on for Steam Deck)", "Off", "On"};
             switch (r) {
             case R_COINS: label = "Credits"; SDL_strlcpy(v, st.coins == COINS_ARCADE ? "Arcade coins" : "Free play", sizeof v); break;
+            case R_RENDERER: label = "Renderer"; SDL_strlcpy(v, st.renderer == RENDERER_GPU ? "GPU (Vulkan)" : "Software (CPU)", sizeof v); break;
+            case R_SCALE:
+                label = "Resolution";
+                snprintf(v, sizeof v, "%d x %d%s", 640 * st.scale, 480 * st.scale, st.renderer == RENDERER_GPU ? "" : " (GPU only)");
+                break;
             case R_FULLSCREEN: label = "Fullscreen"; SDL_strlcpy(v, fs[st.fullscreen + 1], sizeof v); break;
             case R_PICTURE: label = "Picture"; SDL_strlcpy(v, st.picture == PICTURE_STRETCH ? "Stretch" : "4:3", sizeof v); break;
             case R_FILTER: label = "Scaling"; SDL_strlcpy(v, st.filter == FILTER_SHARP ? "Sharp" : "Smooth", sizeof v); break;

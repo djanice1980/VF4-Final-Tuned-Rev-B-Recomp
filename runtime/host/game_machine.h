@@ -37,6 +37,13 @@ typedef struct game_input {
  * when the frame is due). */
 typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int booting, game_input *in);
 
+/* The GPU renderer (runtime/host/gpu_render.c): set before game_machine_init,
+ * a pass to the screen goes to fn (view.h, view_gpu_frame) instead of the
+ * software picture, which then stays NULL */
+struct view_gpu_frame;
+typedef void (*game_gpu_fn)(const struct view_gpu_frame *f);
+void game_machine_gpu(game_gpu_fn fn);
+
 /* Everything up to the first instruction: memory, the program image, the
  * DIMM image, devices, the BIOS stand-in, the translated code's tables.
  * dimm_key NULL: dimm is the decrypted image (development) and image the

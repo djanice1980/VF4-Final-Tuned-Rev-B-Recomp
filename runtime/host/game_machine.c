@@ -26,6 +26,12 @@ _Static_assert(GAME_BTN_UP == BTN_UP && GAME_BTN_DOWN == BTN_DOWN && GAME_BTN_LE
                "control.h's bits");
 
 static game_frame_fn frame_fn;
+static game_gpu_fn gpu_fn;
+
+void game_machine_gpu(game_gpu_fn fn)
+{
+    gpu_fn = fn;
+}
 static char why[700];
 
 /* control.c's "save" writes the harness's reports; the game has no script */
@@ -113,6 +119,8 @@ int game_machine_init(const char *image, const char *dimm, const char *dimm_key,
         return 1;
     hw_net_boot(&cpu);
     view_host_start();
+    if (gpu_fn)
+        view_host_gpu(gpu_fn);
     mem_guards();
     if (rt_native_init(image))
         return 1;

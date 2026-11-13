@@ -2625,7 +2625,12 @@ static scene *scene_of_render(void)
 /* The background plane: three corners with a colour each, where the
  * register at +0x8c says (bg_plane_defaults_set, tex_target_bg_plane_write);
  * and everything else a new picture starts from. */
-static void target_clear(void)
+typedef struct bgplane {               /* recomp (M6): target_clear's plane, for the GPU path too */
+    float c0[3], ga[3], gb[3], x0, y0;
+    int flat, fog;
+} bgplane;
+
+static void bg_plane(bgplane *bp)
 {
     u32 tag = view_core_reg(0, 0x8c), base = view_core_reg(0, 0x20) & 0x00f00000u;
     u32 at = VRAM1_32 + ((base + ((tag >> 3 & 0x1fffffu) << 2)) & 0x00fffffcu);
@@ -2661,11 +2666,28 @@ static void target_clear(void)
     /* the plane takes the table's fog like any polygon whose third word asks for it: it
      * lies at the far end, so with the fog the game fades a scene out by, it fades too */
     int fog = tg.fog_on && plane_ok && (w[1] >> 22 & 3) == 0 ? (int)fog_at(plane_z) : 0;
-    u32 fc[3] = { tg.fog_col >> 16 & 255, tg.fog_col >> 8 & 255, tg.fog_col & 255 };
     fog += fog >> 7;
+    for (int k = 0; k < 3; k++) {
+        bp->c0[k] = c[0][k];
+        bp->ga[k] = ga[k];
+        bp->gb[k] = gb[k];
+    }
+    bp->x0 = x[0];
+    bp->y0 = y[0];
+    bp->flat = flat;
+    bp->fog = fog;
+}
+
+static void target_clear(void)
+{
+    bgplane bp;
+    bg_plane(&bp);
+    const float *c0 = bp.c0, *ga = bp.ga, *gb = bp.gb;
+    int flat = bp.flat, fog = bp.fog;
+    u32 fc[3] = { tg.fog_col >> 16 & 255, tg.fog_col >> 8 & 255, tg.fog_col & 255 };
     u32 one = 0;
     for (int k = 0; k < 3; k++)
-        one = one << 8 | (u32)((int)c[0][k] + (((int)fc[k] - (int)c[0][k]) * fog >> 8));
+        one = one << 8 | (u32)((int)c0[k] + (((int)fc[k] - (int)c0[k]) * fog >> 8));
     for (int yy = 0; yy < tg.h; yy++) {
         u32 *frow = fb + yy * FBW;
         if (flat) {
@@ -2675,7 +2697,7 @@ static void target_clear(void)
             for (int xx = 0; xx < tg.w; xx++) {
                 u32 px = 0;
                 for (int k = 0; k < 3; k++) {
-                    float v = c[0][k] + ga[k] * ((float)xx + 0.5f - x[0]) + gb[k] * ((float)yy + 0.5f - y[0]);
+                    float v = c0[k] + ga[k] * ((float)xx + 0.5f - bp.x0) + gb[k] * ((float)yy + 0.5f - bp.y0);
                     int iv = v < 0 ? 0 : v > 255 ? 255 : (int)v;
                     px = px << 8 | (u32)(iv + (((int)fc[k] - iv) * fog >> 8));
                 }
@@ -2838,6 +2860,241 @@ static void tables_once(void)
     }
 }
 
+/* ---- recomp (M6): the GPU path (view.h, view_host_gpu) ----
+ *
+ * A pass to the screen leaves here as the rasterizer would take it: its
+ * triangles with their states, in the order raster() would draw them
+ * (opaque, punch-through, the translucent list from the back), the opaque
+ * list's volumes, the background plane and the registers. The textures go
+ * into an arena of texels that the host keeps on the GPU: a slot of the
+ * texture cache keeps its place in the arena until the arena is full, and
+ * only what changed is sent. */
+
+static void (*gpu_submit)(const view_gpu_frame *f);
+static view_gpu_vertex *gpu_v;
+static u32 gpu_v_n, gpu_v_cap;
+static view_gpu_state *gpu_st;
+static u32 gpu_st_cap;
+static view_gpu_draw *gpu_d;
+static u32 gpu_d_n, gpu_d_cap;
+static float *gpu_vol;
+static u32 gpu_vol_n, gpu_vol_cap;
+static view_gpu_volume *gpu_vols;
+static u32 gpu_vols_cap;
+static u32 *gpu_arena;
+static u32 gpu_arena_top;
+static view_gpu_range *gpu_dirty;
+static u32 gpu_dirty_n, gpu_dirty_cap;
+static int gpu_reset = 1;
+static struct gpu_slot {
+    u32 tcw, size_bits, stride, sum, at, cap;
+    int valid;
+} gpu_slots[TEX_SLOTS];
+
+void view_host_gpu(void (*submit)(const view_gpu_frame *f))
+{
+    gpu_submit = submit;
+    if (submit && !gpu_arena) {
+        gpu_arena = malloc((size_t)VIEW_GPU_ARENA * sizeof(u32));
+        if (!gpu_arena) {
+            fprintf(stderr, "view: no memory\n");
+            exit(1);
+        }
+    }
+}
+
+static u32 tex_texels(const tex *t)
+{
+    u32 n = 0;
+    for (int l = 0; l < t->levels; l++)
+        n += (u32)(t->w >> l) * (u32)(t->h >> l);
+    return n;
+}
+
+/* the texture's place in the arena; 0xffffffff when the arena cannot take it this frame */
+static u32 gpu_tex(const tex *t, int *full)
+{
+    struct gpu_slot *g = &gpu_slots[t - texc];
+    u32 n = tex_texels(t);
+    int copy = 0;
+    if (!g->valid || g->cap < n) {
+        if (gpu_arena_top + n > VIEW_GPU_ARENA) {
+            *full = 1;
+            return 0xffffffffu;
+        }
+        g->at = gpu_arena_top;
+        g->cap = n;
+        gpu_arena_top += n;
+        g->valid = 1;
+        copy = 1;
+    }
+    if (copy || g->tcw != t->tcw || g->size_bits != t->size_bits || g->stride != t->stride || g->sum != t->sum) {
+        memcpy(gpu_arena + g->at, t->pix, (size_t)n * 4);
+        GROW(gpu_dirty, gpu_dirty_cap, gpu_dirty_n + 1);
+        if (gpu_dirty_n && gpu_dirty[gpu_dirty_n - 1].at + gpu_dirty[gpu_dirty_n - 1].n == g->at)
+            gpu_dirty[gpu_dirty_n - 1].n += n;
+        else
+            gpu_dirty[gpu_dirty_n++] = (view_gpu_range){ g->at, n };
+        g->tcw = t->tcw;
+        g->size_bits = t->size_bits;
+        g->stride = t->stride;
+        g->sum = t->sum;
+    }
+    return g->at;
+}
+
+static inline u32 gpu_rgba(float r, float g, float b, float a)
+{
+#define B8(f) ((u32)((f) <= 0 ? 0 : (f) >= 255 ? 255 : (int)(f)))
+    return B8(r) | B8(g) << 8 | B8(b) << 16 | B8(a) << 24;
+#undef B8
+}
+
+static void gpu_tri(const scene *sc, const dtri *d, u32 list, float *zmax)
+{
+    const rstate *st = &sc->st[d->st];
+    u32 depth = st->isp >> 29;
+    if (!depth)
+        return;
+    view_gpu_draw k = { gpu_v_n, 3, list, depth, list != 2 && !(st->isp >> 26 & 1), list == 2 ? st->tsp >> 29 : 1,
+                        list == 2 ? st->tsp >> 26 & 7 : 0, list != 2 && (st->pcw >> 7 & 1) };
+    view_gpu_draw *last = gpu_d_n ? &gpu_d[gpu_d_n - 1] : NULL;
+    if (last && last->first + last->count == gpu_v_n && last->list == k.list && last->depth == k.depth &&
+        last->zwrite == k.zwrite && last->src == k.src && last->dst == k.dst && last->shadow == k.shadow) {
+        last->count += 3;
+    } else {
+        GROW(gpu_d, gpu_d_cap, gpu_d_n + 1);
+        gpu_d[gpu_d_n++] = k;
+    }
+    GROW(gpu_v, gpu_v_cap, gpu_v_n + 3);
+    for (int i = 0; i < 3; i++) {
+        const rv *p = &d->v[i];
+        view_gpu_vertex *o = &gpu_v[gpu_v_n++];
+        o->x = p->x;
+        o->y = p->y;
+        o->z = p->z;
+        o->u = p->u;
+        o->v = p->v;
+        o->col = gpu_rgba(p->r, p->g, p->b, p->a);
+        o->ofs = gpu_rgba(p->or_, p->og, p->ob, p->oa);
+        o->state = d->st;
+        if (p->z > *zmax && p->z < 1e30f)
+            *zmax = p->z;
+    }
+}
+
+static void gpu_export(scene *sc)
+{
+    view_gpu_frame f;
+    memset(&f, 0, sizeof f);
+    /* the states and their textures; a full arena starts again, once */
+    GROW(gpu_st, gpu_st_cap, sc->st_n + 1);
+    for (int pass = 0; pass < 2; pass++) {
+        int full = 0;
+        if (gpu_reset) {
+            for (u32 i = 0; i < TEX_SLOTS; i++)
+                gpu_slots[i].valid = 0;
+            gpu_arena_top = 0;
+            gpu_dirty_n = 0;
+            f.arena_reset = 1;
+            gpu_reset = 0;
+        }
+        for (u32 i = 0; i < sc->st_n; i++) {
+            const rstate *r = &sc->st[i];
+            view_gpu_state *o = &gpu_st[i];
+            memset(o, 0, sizeof *o);
+            o->pcw = r->pcw;
+            o->isp = r->isp;
+            o->tsp = r->tsp;
+            o->tcw = r->tcw;
+            for (int k = 0; k < 4; k++)
+                o->clip[k] = r->clip[k];
+            if (r->t) {
+                u32 at = gpu_tex(r->t, &full);
+                if (at != 0xffffffffu) {
+                    o->tex_at = at;
+                    o->tex_w = (u32)r->t->w;
+                    o->tex_h = (u32)r->t->h;
+                    o->tex_levels = (u32)r->t->levels;
+                }
+            }
+        }
+        if (!full || pass)
+            break;
+        gpu_reset = 1;
+    }
+    float zmax = 0;
+    gpu_v_n = gpu_d_n = 0;
+    for (u32 k = 0; k < 2; k++)
+        for (u32 r = 0; r < sc->runs_n[k]; r++) {
+            const dtri *d = sc->tris[k] + sc->runs[k][r].first;
+            for (u32 i = sc->runs[k][r].n; i; i--, d++)
+                gpu_tri(sc, d, k, &zmax);
+        }
+    for (u32 i = 0; i < sc->order_n; i++)
+        gpu_tri(sc, sc->tris[2] + sc->order[i], 2, &zmax);
+    /* the opaque list's volumes */
+    gpu_vol_n = 0;
+    GROW(gpu_vols, gpu_vols_cap, sc->vols_n[0] + 1);
+    for (u32 n = 0; n < sc->vols_n[0]; n++) {
+        const vol *v = &sc->vols[0][n];
+        gpu_vols[n].first = gpu_vol_n / 3;
+        gpu_vols[n].count = v->n * 3;
+        gpu_vols[n].kind = v->kind;
+        gpu_vols[n].x0 = v->x0;
+        gpu_vols[n].y0 = v->y0;
+        gpu_vols[n].x1 = v->x1;
+        gpu_vols[n].y1 = v->y1;
+        GROW(gpu_vol, gpu_vol_cap, gpu_vol_n + v->n * 9);
+        for (u32 i = 0; i < v->n; i++) {
+            const vtri *t = sc->vt[0] + v->first + i;
+            for (int c = 0; c < 3; c++) {
+                gpu_vol[gpu_vol_n++] = t->x[c];
+                gpu_vol[gpu_vol_n++] = t->y[c];
+                gpu_vol[gpu_vol_n++] = t->z[c];
+                if (t->z[c] > zmax && t->z[c] < 1e30f)
+                    zmax = t->z[c];
+            }
+        }
+    }
+    bgplane bp;
+    bg_plane(&bp);
+    f.frame = machine_frame;
+    f.w = tg.w;
+    f.h = tg.h;
+    f.zmax = zmax;
+    f.alpha_ref = tg.alpha_ref;
+    f.fog_on = tg.fog_on;
+    f.fog_density = tg.fog_density;
+    memcpy(f.fog_tab, tg.fog_tab, sizeof f.fog_tab);
+    f.fog_col = tg.fog_col;
+    f.fog_col_vert = tg.fog_col_vert;
+    f.shadow_scale = tg.shadow_scale;
+    memcpy(f.bg_c0, bp.c0, sizeof f.bg_c0);
+    memcpy(f.bg_ga, bp.ga, sizeof f.bg_ga);
+    memcpy(f.bg_gb, bp.gb, sizeof f.bg_gb);
+    f.bg_x0 = bp.x0;
+    f.bg_y0 = bp.y0;
+    f.bg_fog = bp.fog;
+    f.v = gpu_v;
+    f.nv = gpu_v_n;
+    f.st = gpu_st;
+    f.nst = sc->st_n;
+    f.draws = gpu_d;
+    f.ndraws = gpu_d_n;
+    f.vol_xyz = gpu_vol;
+    f.nvol_xyz = gpu_vol_n / 3;
+    f.vols = gpu_vols;
+    f.nvols = sc->vols_n[0];
+    f.translucent_volumes = sc->vols_n[1];
+    f.arena = gpu_arena;
+    f.arena_texels = gpu_arena_top;
+    f.dirty = gpu_dirty;
+    f.ndirty = gpu_dirty_n;
+    gpu_submit(&f);
+    gpu_dirty_n = 0;
+}
+
 static void scene_draw(scene *sc, int to_texture)
 {
     u32 xc = view_core_reg(0, 0x68), yc = view_core_reg(0, 0x6c), sof = view_core_reg(0, 0x60);
@@ -2874,7 +3131,9 @@ static void scene_draw(scene *sc, int to_texture)
     tg.shadow_scale = shad & 0x100 ? (int)(shad & 0xff) : 256;
 
     tables_once();
-    target_clear();
+    int gpu = gpu_submit && !to_texture;    /* recomp (M6): the GPU path draws it */
+    if (!gpu)
+        target_clear();
     /* the textures as video memory has them now: a pass into a texture that the game
      * rendered after these lists were sent is in them, as it would be for the chip */
     for (u32 i = 0; i < sc->st_n; i++)
@@ -2896,6 +3155,12 @@ static void scene_draw(scene *sc, int to_texture)
         for (u32 r = 0; r < sc->runs_n[k]; r++)
             tri_count += sc->runs[k][r].n;
     double t1 = now_seconds();
+    if (gpu) {
+        gpu_export(sc);
+        raster_seconds += now_seconds() - t1;
+        tl_seconds += t1 - t0;
+        return;
+    }
     pool_run(band_item, BANDS, sc);
     raster_seconds += now_seconds() - t1;
     tl_seconds += t1 - t0;
@@ -2926,7 +3191,9 @@ static void render_started(void)
                 pic_targets_drawn++;
         }
     } else {
-        if (drawn) {
+        if (drawn && gpu_submit) {
+            pictures++;                 /* recomp (M6): the host draws it */
+        } else if (drawn) {
             if (marks)
                 marks_draw();
             for (int y = 0; y < VH; y++) {

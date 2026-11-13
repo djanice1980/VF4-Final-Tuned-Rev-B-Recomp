@@ -93,7 +93,7 @@ if(TARGET vf4ft_gen_main)
     # gets data/main.bin and data/vf41_s.dec as links to the decompilation's
     # files.
     add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c runtime/host/dimm_image.c
-                         runtime/host/settings.c)
+                         runtime/host/settings.c runtime/host/gpu_render.c)
     target_link_libraries(vf4ft PRIVATE SDL3::SDL3 vf4ft_machine)
     target_compile_options(vf4ft PRIVATE -Wall -Wextra ${VF4FT_FP_FLAGS})
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/data")

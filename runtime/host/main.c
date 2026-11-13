@@ -25,6 +25,8 @@
  *   --log FILE        log somewhere else
  *   --press LIST      for tests: buttons pressed for 6 vertical blanks at given ones, as
  *                     "6500:p1:start,6800:p1:p+g" (p1 or p2; up down left right p k g start coin)
+ *   --shot N FILE     for tests: the machine waits at vertical blank N while the newest picture, as
+ *                     shown (before scaling to the window), goes to a BMP file; up to 8 of them
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
  *
@@ -52,6 +54,7 @@
 
 #include "game_machine.h"
 #include "settings.h"
+#include "gpu_render.h"
 
 #define VF4FT_TITLE "Virtua Fighter 4 Final Tuned"
 #ifndef VF4FT_VERSION
@@ -104,6 +107,46 @@ static char user_dir[4096];             /* ends in a separator */
 static char backup_path[4200];
 static int backup_ok = 1;               /* 0: the file there is not a backup; never written over */
 #define BACKUP_EVERY 600                /* vertical blanks: 10 seconds */
+
+/* --shot: pictures for tests */
+static struct { unsigned frame; const char *path; int done; } shots[8];
+static int nshots;
+static SDL_AtomicInt shot_pause;        /* 1 + the shot the machine waits for at its vertical blank */
+
+/* the picture in tex (w x h, RGBA) to a BMP file: waits for the GPU */
+static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 h, const char *path)
+{
+    SDL_GPUTransferBufferCreateInfo ti;
+    SDL_zero(ti);
+    ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+    ti.size = w * h * 4;
+    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(gpu, &ti);
+    SDL_GPUCommandBuffer *cmd = tb ? SDL_AcquireGPUCommandBuffer(gpu) : NULL;
+    if (!cmd) {
+        logf_("--shot %s: %s", path, SDL_GetError());
+        return;
+    }
+    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureRegion reg = { .texture = tex, .w = w, .h = h, .d = 1 };
+    SDL_GPUTextureTransferInfo dst = { .transfer_buffer = tb, .offset = 0 };
+    SDL_DownloadFromGPUTexture(cp, &reg, &dst);
+    SDL_EndGPUCopyPass(cp);
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence) {
+        SDL_WaitForGPUFences(gpu, true, &fence, 1);
+        SDL_ReleaseGPUFence(gpu, fence);
+    }
+    void *px = SDL_MapGPUTransferBuffer(gpu, tb, false);
+    SDL_Surface *sf = px ? SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, px, (int)w * 4) : NULL;
+    if (sf && SDL_SaveBMP(sf, path))
+        logf_("--shot: %s (%ux%u)", path, w, h);
+    else
+        logf_("--shot %s: %s", path, SDL_GetError());
+    SDL_DestroySurface(sf);
+    if (px)
+        SDL_UnmapGPUTransferBuffer(gpu, tb);
+    SDL_ReleaseGPUTransferBuffer(gpu, tb);
+}
 
 /* --press: scripted presses for tests */
 #define PRESS_MAX 64
@@ -309,6 +352,13 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
         }
     if (frames_max && frame >= frames_max)
         game_machine_stop();
+    for (int i = 0; i < nshots; i++)
+        if (shots[i].frame == frame) {
+            SDL_SetAtomicInt(&shot_pause, i + 1);
+            while (SDL_GetAtomicInt(&shot_pause))
+                SDL_Delay(5);
+            due = 0;
+        }
     if (frame % BACKUP_EVERY == 0) {
         backup_save();
         cards_save();
@@ -522,6 +572,10 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(a, "--log") && v) log_path = argv[++i];
         else if (!strcmp(a, "--user") && v) user_arg = argv[++i];
+        else if (!strcmp(a, "--shot") && v && i + 2 < argc && nshots < 8) {
+            shots[nshots].frame = (unsigned)strtoul(argv[++i], NULL, 10);
+            shots[nshots++].path = argv[++i];
+        }
         else if (!strcmp(a, "--press") && v) {
             if (press_parse(argv[++i])) { fprintf(stderr, "vf4ft: --press: FRAME:p1|p2:BUTTON[+BUTTON],...\n"); return 2; }
         }
@@ -595,7 +649,8 @@ int main(int argc, char **argv)
         fullscreen = cfg_.fullscreen == FULLSCREEN_ON ||
                      (cfg_.fullscreen == FULLSCREEN_AUTO && ((deck && atoi(deck)) || (tenfoot && atoi(tenfoot))));
     }
-    logf_("settings: coins %s, fullscreen %s, picture %s, filter %s, sound %s, cards %s",
+    logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s, cards %s",
+          cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
           cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
           cfg_.picture == PICTURE_STRETCH ? "stretch" : "4:3", cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
           silent ? "off" : "on", cfg_.cards ? "on" : "off");
@@ -624,6 +679,38 @@ int main(int argc, char **argv)
     shared.lock = SDL_CreateMutex();
     machine_event = SDL_RegisterEvents(1);
 
+    SDL_Window *win = SDL_CreateWindow(VF4FT_TITLE, 1280, 960, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+                                       (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+    if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
+    /* The GPU renderer's shaders are SPIR-V: a Vulkan device (natively, or
+     * Proton's winevulkan). Without one the software picture is shown, on
+     * whatever device SDL picks. */
+    SDL_GPUDevice *gpu = NULL;
+    int use_gpu = cfg_.renderer == RENDERER_GPU && !(gpu_name && SDL_strcasecmp(gpu_name, "vulkan"));
+    if (use_gpu) {
+        gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, "vulkan");
+        if (!gpu) {
+            logf_("no Vulkan device (%s): the software picture instead", SDL_GetError());
+            use_gpu = 0;
+        }
+    }
+    if (!gpu)
+        gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_name);
+    if (!gpu) { logf_("SDL_CreateGPUDevice(%s) failed: %s", gpu_name ? gpu_name : "default", SDL_GetError()); return 1; }
+    logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
+    if (!SDL_ClaimWindowForGPUDevice(gpu, win)) { logf_("claim window failed: %s", SDL_GetError()); return 1; }
+    if (use_gpu && gpu_render_init(gpu, cfg_.scale)) {
+        logf_("the GPU renderer cannot start (%s): the software picture instead", SDL_GetError());
+        gpu_render_quit();
+        use_gpu = 0;
+    }
+    if (use_gpu) {
+        game_machine_gpu(gpu_render_submit);
+        logf_("renderer: GPU, %d x %d", PIC_W * cfg_.scale, PIC_H * cfg_.scale);
+    } else {
+        logf_("renderer: software, %d x %d", PIC_W, PIC_H);
+    }
+
     /* the machine's thread: the translated code nests a C call for every guest
      * call and every interrupt, so it gets a large stack (Windows' default is 1 MB) */
     SDL_PropertiesID tp = SDL_CreateProperties();
@@ -637,13 +724,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    SDL_Window *win = SDL_CreateWindow(VF4FT_TITLE, 1280, 960, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                       (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
-    if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
-    SDL_GPUDevice *gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_name);
-    if (!gpu) { logf_("SDL_CreateGPUDevice(%s) failed: %s", gpu_name ? gpu_name : "default", SDL_GetError()); return 1; }
-    logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
-    if (!SDL_ClaimWindowForGPUDevice(gpu, win)) { logf_("claim window failed: %s", SDL_GetError()); return 1; }
 
     /* the picture: uploaded into a texture whenever a new one is there, then
      * blitted to the window, scaled */
@@ -753,6 +833,19 @@ int main(int argc, char **argv)
             SDL_CancelGPUCommandBuffer(cmd);
             break;
         }
+        SDL_GPUTexture *src_tex = pic_tex;
+        Uint32 src_w = PIC_W, src_h = PIC_H;
+        if (use_gpu) {
+            unsigned gf = 0;
+            SDL_GPUTexture *t = gpu_render_frame(cmd, &src_w, &src_h, &gf);
+            if (t) {
+                src_tex = t;
+                if (gf != shown_frame)
+                    pictures++;
+                shown_frame = gf;
+                have_picture = 1;
+            }
+        }
         if (sc) {
             /* 4:3, as large as fits, black bars on the other sides (or stretched) */
             Uint32 dw = w, dh = h;
@@ -763,9 +856,9 @@ int main(int argc, char **argv)
             if (have_picture) {
                 SDL_GPUBlitInfo bl;
                 SDL_zero(bl);
-                bl.source.texture = pic_tex;
-                bl.source.w = PIC_W;
-                bl.source.h = PIC_H;
+                bl.source.texture = src_tex;
+                bl.source.w = src_w;
+                bl.source.h = src_h;
                 bl.destination.texture = sc;
                 bl.destination.x = (w - dw) / 2;
                 bl.destination.y = (h - dh) / 2;
@@ -788,12 +881,22 @@ int main(int argc, char **argv)
                 logf_("first present: swapchain %ux%u", w, h);
         }
         SDL_SubmitGPUCommandBuffer(cmd);
+        /* a shot: two turns of this loop after the machine stopped for it, the newest picture is shown */
+        static int shot_turns;
+        int sp = SDL_GetAtomicInt(&shot_pause);
+        if (sp && ++shot_turns >= 3 && have_picture) {
+            shot_save(gpu, src_tex, src_w, src_h, shots[sp - 1].path);
+            shots[sp - 1].done = 1;
+            shot_turns = 0;
+            SDL_SetAtomicInt(&shot_pause, 0);
+        }
         if (!sc)
             SDL_Delay(10);      /* minimized: nothing to present to */
         if (st >= 2)
             running = 0;
     }
 
+    SDL_SetAtomicInt(&shot_pause, 0);
     /* the machine ends at its next vertical blank (at once if it is not running) */
     stopping = SDL_GetAtomicInt(&machine_state) < 2;
     game_machine_stop();
@@ -811,6 +914,13 @@ int main(int argc, char **argv)
         logf_("audio: %u frames dropped (boot, unpaced or a stall); last queue %.0f ms", audio_dropped,
               audio_level / 44.1);
         SDL_DestroyAudioStream(audio);
+    }
+    if (use_gpu) {
+        unsigned gf, gt, gv;
+        gpu_render_stats(&gf, &gt, &gv);
+        logf_("GPU renderer: %u frames drawn, at most %u triangles; %u frames had translucent volumes (not drawn)",
+              gf, gt, gv);
+        gpu_render_quit();
     }
     SDL_ReleaseGPUTransferBuffer(gpu, upload);
     SDL_ReleaseGPUTexture(gpu, pic_tex);

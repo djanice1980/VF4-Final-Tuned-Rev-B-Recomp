@@ -3,6 +3,7 @@
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 const char *const settings_action_name[ACT_COUNT] = {
@@ -28,6 +29,8 @@ void settings_defaults(settings *s)
     s->fullscreen = FULLSCREEN_AUTO;
     s->picture = PICTURE_4_3;
     s->filter = FILTER_SMOOTH;
+    s->renderer = RENDERER_GPU;
+    s->scale = 2;
     s->sound = 1;
     s->cards = 1;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
@@ -116,6 +119,7 @@ static const char *const coins_names[] = { "free play", "arcade" };
 static const char *const onoff_names[] = { "off", "on" };
 static const char *const picture_names[] = { "4:3", "stretch" };
 static const char *const filter_names[] = { "smooth", "sharp" };
+static const char *const renderer_names[] = { "gpu", "software" };
 
 static void parse_binding(binding *b, char *v)
 {
@@ -179,6 +183,13 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "filter")) {
                 if ((ok = choice(v, filter_names, 2, &x)))
                     s->filter = x;
+            } else if (!strcmp(name, "renderer")) {
+                if ((ok = choice(v, renderer_names, 2, &x)))
+                    s->renderer = x;
+            } else if (!strcmp(name, "scale")) {
+                x = atoi(v);
+                if ((ok = x >= 1 && x <= 4))
+                    s->scale = x;
             } else if (!strcmp(name, "sound")) {
                 if ((ok = choice(v, onoff_names, 2, &x)))
                     s->sound = x;
@@ -229,6 +240,8 @@ int settings_save(const settings *s, const char *path)
         s->fullscreen == FULLSCREEN_AUTO ? "auto" : onoff_names[s->fullscreen]);
     PUT("picture = %s          # 4:3 | stretch\n", picture_names[s->picture]);
     PUT("filter = %s           # smooth | sharp (how the picture is scaled to the window)\n", filter_names[s->filter]);
+    PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture)\n", renderer_names[s->renderer]);
+    PUT("scale = %d               # the GPU renderer's resolution: 1 to 4 times 640 x 480\n", s->scale);
     PUT("sound = %s\n", onoff_names[s->sound]);
     PUT("cards = %s            # the two card units; the cards are user/cards/p1.card and p2.card\n",
         onoff_names[s->cards]);
