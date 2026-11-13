@@ -347,10 +347,12 @@ static void cards_load(void)
 
 /* on the machine's thread, every vertical blank: the menu's new cards go
  * in. The card in the unit is written to its file first, and a card the
- * game is using stays (and is kept written) until the game lets go of it */
+ * game is using stays (and is kept written) until the game lets go of it.
+ * One card is in one unit at a time: a card the other player's unit still
+ * holds (the menu swapped the two) goes in once that unit has let it go */
 static void cards_swap(void)
 {
-    static int waiting[2];
+    static int waiting[2], held[2];
     for (int side = 0; side < 2; side++) {
         if (!SDL_GetAtomicInt(&card_swap[side]))
             continue;
@@ -364,10 +366,26 @@ static void cards_swap(void)
             logf_("player %d: the game let go of the card (%s) after %d vertical blanks", side + 1, card_in[side],
                   waiting[side]);
         waiting[side] = 0;
+        card_ok[side] = 0;      /* the unit is empty */
+        card_in[side][0] = 0;
+        char want[CARD_NAME_MAX];
         SDL_LockMutex(shared.lock);
-        SDL_strlcpy(card_in[side], card_want[side], sizeof card_in[side]);
-        SDL_SetAtomicInt(&card_swap[side], 0);
+        SDL_strlcpy(want, card_want[side], sizeof want);
+        int other = want[0] && !SDL_strcasecmp(want, card_in[!side]);
+        if (!other) {
+            SDL_strlcpy(card_in[side], want, sizeof card_in[side]);
+            SDL_SetAtomicInt(&card_swap[side], 0);
+        }
         SDL_UnlockMutex(shared.lock);
+        if (other) {
+            if (!held[side]++)
+                logf_("player %d: %s goes in once player %d's unit has let it go", side + 1, want, 2 - side);
+            continue;
+        }
+        if (held[side])
+            logf_("player %d: player %d's unit let %s go after %d vertical blanks", side + 1, 2 - side, want,
+                  held[side]);
+        held[side] = 0;
         card_insert(side);
     }
 }

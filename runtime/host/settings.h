@@ -78,6 +78,10 @@ int settings_save(const settings *s, const char *path);
  * characters, no space or dot at either end, not "none") */
 int settings_card_name_ok(const char *name);
 
+/* each player's own card by default: "p1" and "p2" (the cards' files before
+ * profiles; the game makes one at its player's first game) */
+extern const char *const settings_card_default[2];
+
 /* a binding as text: "Up, W" (empty: "-") */
 void settings_binding_text(const binding *b, char *out, size_t n);
 

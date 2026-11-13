@@ -24,6 +24,8 @@ static void set(binding *b, const char *a, const char *c)
         settings_binding_add(b, c);
 }
 
+const char *const settings_card_default[2] = { "p1", "p2" };
+
 int settings_card_name_ok(const char *name)
 {
     size_t n = strlen(name);
@@ -59,8 +61,8 @@ void settings_defaults(settings *s)
     s->sound = 1;
     s->volume = 100;
     s->cards = 1;
-    SDL_strlcpy(s->card[0], "p1", sizeof s->card[0]);      /* the cards' files before profiles */
-    SDL_strlcpy(s->card[1], "p2", sizeof s->card[1]);
+    SDL_strlcpy(s->card[0], settings_card_default[0], sizeof s->card[0]);
+    SDL_strlcpy(s->card[1], settings_card_default[1], sizeof s->card[1]);
     s->network = 0;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];

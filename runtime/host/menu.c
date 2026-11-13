@@ -103,8 +103,6 @@ static int change(int d)
         return MENU_STAY;
     if (id == OPT_SCALE && s->renderer != RENDERER_GPU)
         return MENU_STAY;
-    if ((id == OPT_CARD1 || id == OPT_CARD2) && !s->cards)
-        return MENU_STAY;
     option_change(s, id, d);
     return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_VOLUME ? MENU_LIVE
                                                                                             : MENU_STAY;

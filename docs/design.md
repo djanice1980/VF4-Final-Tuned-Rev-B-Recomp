@@ -2248,13 +2248,26 @@ Character row is what David's "character profile" is.
 
 **The game's menu** has a Cards tab (Player 1 card, Player 2 card, and the
 card units' switch, moved from the Game tab). Left and Right go through
-None and the profiles in `user/cards` (not the other player's). As the
+None and, by name, the profiles in `user/cards`, the players' cards not
+made yet, and the player's own new card (`p1`, `p2`) while no file has
+that name, shown "p2 (new)". Choosing the other player's card swaps the
+two, as the launcher's Player 1 and Player 2 do. The rows change with the
+card units off too (for the next start), as the launcher's do. As the
 menu closes, a changed card is swapped in on the machine's thread: the
 card in the unit is written to its file, then taken out (`hw_card_take`,
 a `recomp` addition to VF4debug's card unit model). A card the game holds
 (its lock, while a game uses it) leaves once the game lets it go, as the
 cabinet's unit ejects a card when it is unlocked; the new one goes in
-then.
+then. One card is in one unit at a time: a card the other unit still holds
+(a swap) goes in once that unit has let it go (`cards_swap`).
+
+*Fixed after 2a54824:* the first menu left the other player's card out of
+each list, so two cards could not be swapped, and offered a card not made
+yet only while it was the player's: with player 2's `p2` (not made yet)
+set to None, player 2 had only None to choose, `p1` being player 1's.
+Its two-step way round (None for one player, then that card for the
+other) could also put a card held by a game into the second unit before
+the first let it go; `cards_swap` now waits for that.
 
 **The launcher's Cards tab** (Settings): the list of cards, a player's
 card with no file yet among them ("not made yet": the game makes it at

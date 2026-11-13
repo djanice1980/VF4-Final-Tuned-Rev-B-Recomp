@@ -9,12 +9,14 @@ const option_info options[OPT_COUNT] = {
                     "The cabinet's two VF.NET card readers: a card keeps its player's ring name, rank, "
                     "record and items. Player 1 card and Player 2 card choose whose card is in each.", 1 },
     [OPT_CARD1] = { "Player 1 card",
-                    "The card profile in player 1's unit (a file in the game's user/cards folder; the "
-                    "launcher's Profiles page makes and edits them). A change swaps the card when the menu "
+                    "The card in player 1's unit: one in the game's user/cards folder (the launcher's "
+                    "Settings, Cards tab makes and edits them), or a new one the game makes at the player's "
+                    "first game. Choosing player 2's card swaps the two cards. They change as the menu "
                     "closes; a card in use in a game leaves once the game has written it.", 0 },
     [OPT_CARD2] = { "Player 2 card",
-                    "The card profile in player 2's unit (a file in the game's user/cards folder; the "
-                    "launcher's Profiles page makes and edits them). A change swaps the card when the menu "
+                    "The card in player 2's unit: one in the game's user/cards folder (the launcher's "
+                    "Settings, Cards tab makes and edits them), or a new one the game makes at the player's "
+                    "first game. Choosing player 1's card swaps the two cards. They change as the menu "
                     "closes; a card in use in a game leaves once the game has written it.", 0 },
     [OPT_FULLSCREEN] = { "Fullscreen",
                          "Auto is fullscreen on the Steam Deck and in Steam's Big Picture, and a window "
@@ -55,26 +57,53 @@ void options_card_names(const char *const *names, int n)
     card_n = n;
 }
 
-/* Player 1 card or Player 2 card: None, the profiles (not the other
- * player's), and the one chosen now when it is not a file yet */
+/* 1: the card profile's file is in user/cards (the list the menu was given) */
+static int card_is_file(const char *name)
+{
+    for (int i = 0; i < card_n; i++)
+        if (!SDL_strcasecmp(card_names[i], name))
+            return 1;
+    return 0;
+}
+
+static int by_name(const void *a, const void *b)
+{
+    return SDL_strcasecmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+#define CARD_CHOICES 72
+
+/* Player 1 card or Player 2 card: None, then by name every card in
+ * user/cards, the players' cards the game has not made yet, and the
+ * player's own new card (p1, p2) while no file has that name. Choosing the
+ * other player's card swaps the two: that player gets this one's */
 static void card_change(settings *s, int side, int d)
 {
-    const char *list[66];
-    int n = 0, at = 0;
-    list[n++] = "";
-    for (int i = 0; i < card_n && n < 65; i++)
-        if (!s->card[!side][0] || SDL_strcasecmp(card_names[i], s->card[!side]))
-            list[n++] = card_names[i];
-    if (s->card[side][0]) {
-        at = -1;
-        for (int i = 1; i < n; i++)
-            if (!SDL_strcasecmp(list[i], s->card[side]))
-                at = i;
-        if (at < 0)
-            list[at = n++] = s->card[side];
+    const char *names[CARD_CHOICES], *list[CARD_CHOICES + 1];
+    const char *more[3] = { s->card[side], s->card[!side], settings_card_default[side] };
+    int n = 0;
+    for (int i = 0; i < card_n && n < CARD_CHOICES - 3; i++)
+        names[n++] = card_names[i];
+    for (int k = 0; k < 3; k++) {
+        int listed = !more[k][0];
+        for (int i = 0; i < n && !listed; i++)
+            listed = !SDL_strcasecmp(names[i], more[k]);
+        if (!listed)
+            names[n++] = more[k];
     }
-    char next[CARD_NAME_MAX];
-    SDL_strlcpy(next, list[wrap(at, d, n)], sizeof next);   /* list may point into s */
+    SDL_qsort(names, (size_t)n, sizeof names[0], by_name);
+    int at = 0;
+    list[0] = "";
+    for (int i = 0; i < n; i++) {
+        list[i + 1] = names[i];
+        if (s->card[side][0] && !SDL_strcasecmp(names[i], s->card[side]))
+            at = i + 1;
+    }
+    char next[CARD_NAME_MAX], old[CARD_NAME_MAX];   /* list points into s */
+    SDL_strlcpy(next, list[wrap(at, d, n + 1)], sizeof next);
+    SDL_strlcpy(old, s->card[side], sizeof old);
+    if (next[0] && !SDL_strcasecmp(next, s->card[!side]))
+        SDL_strlcpy(s->card[!side], old, sizeof s->card[!side]);
     SDL_strlcpy(s->card[side], next, sizeof s->card[side]);
 }
 
@@ -91,10 +120,14 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
     case OPT_CARDS: row->kind = UI_ROW_TOGGLE; row->on = s->cards; break;
     case OPT_NETWORK: row->kind = UI_ROW_TOGGLE; row->on = s->network; break;
     case OPT_CARD1:
-    case OPT_CARD2:
-        SDL_strlcpy(buf, s->card[o - OPT_CARD1][0] ? s->card[o - OPT_CARD1] : "None", n);
-        row->off = !s->cards;
+    case OPT_CARD2: {
+        const char *name = s->card[o - OPT_CARD1];
+        if (!name[0])
+            SDL_strlcpy(buf, "None", n);
+        else
+            SDL_snprintf(buf, n, card_is_file(name) ? "%s" : "%s (new)", name);
         break;
+    }
     case OPT_FULLSCREEN: SDL_strlcpy(buf, fs[s->fullscreen + 1], n); break;
     case OPT_PICTURE: SDL_strlcpy(buf, s->picture == PICTURE_STRETCH ? "Stretch" : "4:3", n); break;
     case OPT_FILTER: SDL_strlcpy(buf, s->filter == FILTER_SHARP ? "Sharp" : "Smooth", n); break;
