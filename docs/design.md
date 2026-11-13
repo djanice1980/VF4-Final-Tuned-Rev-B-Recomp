@@ -1561,3 +1561,86 @@ Ko-fi's orange with the same words.
 **Not done.** A real Windows PC, a Deck in Game Mode (where the browser
 opens), and the old-SDL fallback button (both of this project's SDLs are
 3.4).
+
+## 27. Install folder, set choice and plain Wine (2026-11-13)
+
+David ran the 0.5.0 release's launcher under plain Wine 11.21 (not Proton)
+and reported three things: no way to change where the game goes, the
+launcher taking his ROM folder without asking, and a build stuck at
+"compiled 50 of 111" for 15 minutes.
+
+**The set is offered, not taken.** `find_set` used to choose the first set
+it found, save it, and open the Build page, so the Game files page never
+showed. Now it only remembers what it found (`found_path`). The Game files
+page says *A vf4tuned set is in this folder*, with the path and two
+buttons: **Use this set** (the focus, so the Deck's A still does it in one
+press) and **Choose another folder…**. `launcher-set.txt` is written only
+when the player chooses.
+
+**The install folder can be changed.** The Build page's Install folder row
+has **Change…** (a folder dialog). The choice is kept in
+`launcher-game.txt` beside the launcher; with none, the game goes in
+`game/` as before.
+
+- The builder writes fixed names in the install folder (`build/`,
+  `data/`, `user/`, the program, `READ ME.txt`, `build.json`...) and deletes
+  `build/` at the end. So a picked folder is used as it is only when it is
+  empty or holds nothing but those (an earlier install). Any other folder
+  gets a `VF4 Final Tuned` folder inside it, and the page says so. When
+  that folder too has other files, nothing changes and the page says why.
+- `tools/make_game.py` refuses such a folder itself (`INSTALL_NAMES`; the
+  launcher's `install_names` lists the same, with what the game and Wine or
+  Proton add beside it: `vf4ft.log`, the vkd3d and DXVK caches). An
+  `--update` of an existing install is not checked.
+- Leaving an install that has saves: at the next Build, its `user/` is
+  copied into the new folder, unless that folder has its own. The old
+  folder is left as it was. The Build page says where they come from.
+- The game finds its release folder for **Check for updates** as its
+  folder's parent (`game/`). An install elsewhere could not, so the builder
+  now writes `"release"` (with `/` separators, since the game's JSON
+  reader does not unescape) into `build.json`, and `gu_init` reads it when
+  the parent has no `release.json`.
+
+**The stuck build was a frozen window.** The build had finished: 82
+seconds, `the game is built` in `launcher.log`, `game/vf4ft.exe` there.
+The window still showed "compiled 50 of 111", and the launcher used about
+60% of a core. The journal had six `d3d12_swapchain_resize_buffers` lines
+at 08:08:32, one second after "compiled 50" (08:08:30.7): the window had
+been resized, and nothing after that reached the screen.
+
+- Under plain Wine on this machine, SDL's first renderer, Direct3D 11
+  (Wine's wined3d), does not start. SDL then takes Direct3D 12 (Wine's own
+  vkd3d, not vkd3d-proton).
+- Reproduced with the development launcher. After six resizes through a
+  KWin script, the window shows a shrunken old frame in its corner and
+  black elsewhere. `SDL_RenderPresent` reports no failure, so the frames
+  are lost after SDL hands them to Wine's D3D12 swapchain.
+- Forced with `SDL_RENDER_DRIVER`, the Vulkan and OpenGL renderers drew
+  correctly after the same resizes. The GPU renderer's run was not seen.
+- Under Proton, DXVK gives SDL a working Direct3D 11, which every earlier
+  test used.
+
+So the fault is in Wine's Direct3D 12 presentation on this system, not in
+the launcher's code. The launcher now logs its renderer and video driver
+at start, a present that fails (and when it works again), device
+resets, and the first window sizes, so the next report has that in
+`launcher.log`. Not decided yet: whether the launcher should prefer
+Vulkan over Direct3D 12 when Direct3D 11 is not there (a workaround for
+plain Wine). Not tried: why wined3d's Direct3D 11 does not start, and
+the game window under plain Wine (it draws with SDL_GPU, Direct3D 12
+first).
+
+**Checked** (offscreen, no window; the dialog's answer given by the test
+option `--pick-game DIR`):
+
+- The Game files page with a found set.
+- Change into an empty folder, into a folder with other files (a
+  `VF4 Final Tuned` folder inside it), and into one whose
+  `VF4 Final Tuned` folder has other files (refused).
+- A real build through the launcher into a new folder: the old `user/`
+  was copied in, and `build.json` named the release folder.
+- `make_game.py --out` on a folder with other files stopped before
+  writing anything.
+- `gu_init` (in a small harness) found the release through `build.json`,
+  found none for an install without it, and logged a release folder that
+  was missing.

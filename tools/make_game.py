@@ -81,8 +81,38 @@ class Log:
             self.last_pct = v
 
 
+# what an install folder holds: the builder's files, and what the game and
+# Wine or Proton add beside the game (the launcher's install_names, which
+# lists the same). A first build refuses a folder with anything else in it,
+# since the build writes and deletes these names there.
+INSTALL_NAMES = {"build", "data", "user", "build.log", "build.json", "build.json.part", "READ ME.txt",
+                 "Font license.txt", "vf4ft.exe", "vf4ft", "SDL3.dll", "vf4ft.log", "vkd3d-proton.cache",
+                 "vkd3d-proton.cache.write", "vf4ft.dxvk-cache"}
+
+
+def check_install_folder(out):
+    if not os.path.isdir(out):
+        return
+    known = {n.lower() for n in INSTALL_NAMES} if os.name == "nt" else INSTALL_NAMES
+    others = sorted(n for n in os.listdir(out) if (n.lower() if os.name == "nt" else n) not in known)
+    if others:
+        raise naomi.SetError("the install folder %s has other files in it (%s): choose an empty folder"
+                             % (out, ", ".join(others[:5]) + (", ..." if len(others) > 5 else "")))
+
+
+def release_folder():
+    """the release folder this builder is in (its release.json beside
+    builder/), as the game reads it from build.json; None in a repository"""
+    rel = os.path.dirname(os.path.abspath(ROOT))
+    if os.path.isfile(os.path.join(rel, "release.json")):
+        return rel.replace("\\", "/")         # no escapes in build.json for the game's reader
+    return None
+
+
 def run(args):
     out = os.path.abspath(args.update or args.out)
+    if not args.update:
+        check_install_folder(out)
     os.makedirs(out, exist_ok=True)
     log = Log(os.path.join(out, "build.log"), args.launcher)
     if args.launcher:
@@ -173,6 +203,9 @@ def run(args):
         info = {"builder": VERSION, "target": target, "program": tc.program,
                 "built": datetime.datetime.now().isoformat(timespec="seconds"),
                 "compiler": tc.version, "set": os.path.abspath(args.set) if args.set else old.get("set")}
+        rel = release_folder()
+        if rel:
+            info["release"] = rel
         with open(info_path + ".part", "w") as f:
             json.dump(info, f, indent=2)
         os.replace(info_path + ".part", info_path)

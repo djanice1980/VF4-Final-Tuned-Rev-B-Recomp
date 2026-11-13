@@ -13,15 +13,18 @@
  *   builder/   this repository's tools/, translator/, runtime/, meta/ (a release's
  *              layout; a development build finds the repository above itself)
  *   python/    Windows: the embeddable Python the release carries (pythonw.exe)
- *   game/      the install the builder makes (game/build.json once built)
+ *   game/      the install the builder makes (game/build.json once built), unless
+ *              the player chose another folder (Change on the Build page)
  *   launcher-set.txt   the set folder last chosen
+ *   launcher-game.txt  the install folder chosen (none: game/ beside the launcher)
  *   launcher.log       what it showed (Windows has no console for it)
  * On Linux, Python is the system's python3.
  *
  * Steam Deck: the Windows release, added to Steam as a non-Steam game with
  * Proton, runs in Game Mode; the D-pad and A work it. With no set chosen it
  * looks for one in the usual places (find_set), Linux folders through Wine's
- * Z: drive. Play starts the game in the same Proton prefix and the launcher
+ * Z: drive, and offers what it finds (Use this set); it never chooses one by
+ * itself. Play starts the game in the same Proton prefix and the launcher
  * hides until it ends.
  *
  * Settings (M6): the game's settings file, game/user/settings.txt
@@ -29,7 +32,8 @@
  * or coins, the card units, fullscreen, picture, sound, and the controls (a
  * row takes the next key or button). The game reads it when it starts.
  *
- * For testing: --game DIR (another install folder), --set DIR, --do ACTION
+ * For testing: --game DIR (another install folder), --pick-game DIR (as if
+ * Change on the Build page picked DIR), --set DIR, --do ACTION
  * (set, build, update, play or steam: pressed at the start) and --exit (quit
  * when that action's process ends, with its result as the exit code; 1 when
  * the action started nothing), --cancel-after S (presses Cancel S seconds
@@ -86,6 +90,13 @@ static int built, built_linux;
 static char built_ver[64];
 static SDL_AtomicInt picked;        /* the folder dialog's answer waits here for the main thread */
 static char picked_path[1024];
+static SDL_AtomicInt picked_game;   /* the same for the install folder's dialog */
+static char picked_game_path[1024];
+static char game_file[1024];        /* launcher-game.txt */
+static char found_path[1024];       /* a set find_set found: offered, used once the player says so */
+static char saves_from[1024];       /* the install before Change: its user/ goes into the new one at Build */
+static char game_note[400];         /* the Build page's line about the install folder */
+static int game_note_bad;
 
 static void say(const char *fmt, ...)
 {
@@ -142,6 +153,14 @@ static void find_paths(void)
     }
     snprintf(game, sizeof game, "%sgame", base);
     snprintf(set_file, sizeof set_file, "%slauncher-set.txt", base);
+    snprintf(game_file, sizeof game_file, "%slauncher-game.txt", base);
+    char *g = SDL_LoadFile(game_file, NULL);
+    if (g) {
+        g[strcspn(g, "\r\n")] = 0;
+        if (g[0])
+            SDL_strlcpy(game, g, sizeof game);
+        SDL_free(g);
+    }
 #ifdef _WIN32
     snprintf(python, sizeof python, "%spython\\pythonw.exe", base);
     if (!exists(python))
@@ -161,19 +180,13 @@ static void find_paths(void)
     SDL_free(s);
 }
 
-static void load_state(void)
+/* what the install folder holds: built, for which target, by which builder */
+static void load_install(void)
 {
     size_t n = 0;
-    char *s = SDL_LoadFile(set_file, &n);
-    set_path[0] = 0;
-    if (s) {
-        SDL_strlcpy(set_path, s, sizeof set_path);
-        set_path[strcspn(set_path, "\r\n")] = 0;
-        SDL_free(s);
-    }
     char p[1100];
     snprintf(p, sizeof p, "%s/build.json", game);
-    s = SDL_LoadFile(p, &n);
+    char *s = SDL_LoadFile(p, &n);
     built = s != NULL;
     built_linux = 0;
     built_ver[0] = 0;
@@ -187,6 +200,18 @@ static void load_state(void)
         }
         SDL_free(s);
     }
+}
+
+static void load_state(void)
+{
+    char *s = SDL_LoadFile(set_file, NULL);
+    set_path[0] = 0;
+    if (s) {
+        SDL_strlcpy(set_path, s, sizeof set_path);
+        set_path[strcspn(set_path, "\r\n")] = 0;
+        SDL_free(s);
+    }
+    load_install();
 }
 
 static int update_ready(void)
@@ -214,10 +239,166 @@ static int found_set(const char *dir)
 {
     if (!is_set(dir))
         return 0;
-    SDL_strlcpy(set_path, dir, sizeof set_path);
-    SDL_SaveFile(set_file, set_path, strlen(set_path));
-    say("found the set: %s", set_path);
+    SDL_strlcpy(found_path, dir, sizeof found_path);
+    say("found a set in %s: offered on the Game files page", found_path);
     return 1;
+}
+
+/* ---- the install folder ---- */
+
+/* what the builder puts in an install folder (tools/make_game.py's
+ * INSTALL_NAMES, which refuses a folder with anything else in it), and what
+ * the game and Wine or Proton add beside the game */
+static const char *const install_names[] = {
+    "build", "data", "user", "build.log", "build.json", "build.json.part", "READ ME.txt", "Font license.txt",
+    "vf4ft.exe", "vf4ft", "SDL3.dll", "vf4ft.log", "vkd3d-proton.cache", "vkd3d-proton.cache.write",
+    "vf4ft.dxvk-cache", NULL};
+
+typedef struct dir_look { int entries, others; char other[128]; } dir_look;
+
+static SDL_EnumerationResult SDLCALL look_one(void *ud, const char *dir, const char *name)
+{
+    (void)dir;
+    dir_look *l = ud;
+    l->entries++;
+    for (int i = 0; install_names[i]; i++)
+#ifdef _WIN32
+        if (!SDL_strcasecmp(name, install_names[i]))
+#else
+        if (!strcmp(name, install_names[i]))
+#endif
+            return SDL_ENUM_CONTINUE;
+    if (!l->others++)
+        SDL_strlcpy(l->other, name, sizeof l->other);
+    return SDL_ENUM_CONTINUE;
+}
+
+/* 0: not there or empty, 1: a game's install (the builder's own files
+ * only), -1: other files too (*other: the first of them) */
+static int install_kind(const char *dir, char *other, size_t n)
+{
+    if (!exists(dir))
+        return 0;
+    dir_look l;
+    SDL_zero(l);
+    if (!SDL_EnumerateDirectory(dir, look_one, &l)) {
+        SDL_strlcpy(other, SDL_GetError(), n);
+        return -1;
+    }
+    if (l.others) {
+        SDL_strlcpy(other, l.other, n);
+        return -1;
+    }
+    return l.entries ? 1 : 0;
+}
+
+static int has_files(const char *dir)
+{
+    dir_look l;
+    SDL_zero(l);
+    return exists(dir) && SDL_EnumerateDirectory(dir, look_one, &l) && l.entries > 0;
+}
+
+/* the folder the player picked with Change: the game goes in it when it is
+ * empty or a game's install already; else into a "VF4 Final Tuned" folder
+ * in it, so that the builder never writes among other files */
+static void choose_game_dir(const char *pick)
+{
+    char dir[1024], other[160];
+    size_t pl = strlen(pick);
+    int sep = pl && (pick[pl - 1] == '/' || pick[pl - 1] == '\\');
+    if (install_kind(pick, other, sizeof other) >= 0) {
+        SDL_snprintf(dir, sizeof dir, "%.*s", (int)(sep ? pl - 1 : pl), pick);
+        game_note[0] = 0;
+    } else {
+#ifdef _WIN32
+        SDL_snprintf(dir, sizeof dir, "%.*s\\VF4 Final Tuned", (int)(sep ? pl - 1 : pl), pick);
+#else
+        SDL_snprintf(dir, sizeof dir, "%.*s/VF4 Final Tuned", (int)(sep ? pl - 1 : pl), pick);
+#endif
+        if (install_kind(dir, other, sizeof other) < 0) {
+            SDL_snprintf(game_note, sizeof game_note,
+                         "Not changed: the folder you chose has other files in it, and so has its "
+                         "\"VF4 Final Tuned\" folder. Choose an empty folder.");
+            game_note_bad = 1;
+            say("install folder: not changed: %s has other files in it (%s)", dir, other);
+            return;
+        }
+        SDL_snprintf(game_note, sizeof game_note,
+                     "The folder you chose has other files in it, so the game goes in a folder of its own there.");
+        game_note_bad = 0;
+    }
+    if (!strcmp(dir, game))
+        return;
+    /* the saves of the install it leaves go with the player (copied at Build) */
+    char u[1100];
+    snprintf(u, sizeof u, "%s/user", game);
+    if (!saves_from[0] && has_files(u))
+        SDL_strlcpy(saves_from, game, sizeof saves_from);
+    if (saves_from[0] && !strcmp(saves_from, dir))
+        saves_from[0] = 0;
+    SDL_strlcpy(game, dir, sizeof game);
+    SDL_SaveFile(game_file, game, strlen(game));
+    say("install folder: %s (chosen)", game);
+    load_install();
+}
+
+/* recursive copy of src's files into dst (made); 0 when all went */
+static int copy_tree(const char *src, const char *dst);
+
+typedef struct copy_ctx { const char *dst; int failed; } copy_ctx;
+
+static SDL_EnumerationResult SDLCALL copy_one(void *ud, const char *dir, const char *name)
+{
+    copy_ctx *c = ud;
+    char from[1400], to[1400];
+    size_t dl = strlen(dir);
+    int sep = dl && (dir[dl - 1] == '/' || dir[dl - 1] == '\\');
+    snprintf(from, sizeof from, "%.*s/%s", (int)(sep ? dl - 1 : dl), dir, name);
+    snprintf(to, sizeof to, "%s/%s", c->dst, name);
+    SDL_PathInfo info;
+    if (!SDL_GetPathInfo(from, &info))
+        c->failed = 1;
+    else if (info.type == SDL_PATHTYPE_DIRECTORY)
+        c->failed |= copy_tree(from, to) != 0;
+    else if (!SDL_CopyFile(from, to)) {
+        say("saves: cannot copy %s: %s", from, SDL_GetError());
+        c->failed = 1;
+    }
+    return SDL_ENUM_CONTINUE;
+}
+
+static int copy_tree(const char *src, const char *dst)
+{
+    if (!exists(dst) && !SDL_CreateDirectory(dst)) {
+        say("saves: cannot make %s: %s", dst, SDL_GetError());
+        return -1;
+    }
+    copy_ctx c = {dst, 0};
+    if (!SDL_EnumerateDirectory(src, copy_one, &c))
+        return -1;
+    return c.failed ? -1 : 0;
+}
+
+/* at Build into a new install folder: the old one's saves and settings */
+static void copy_saves(void)
+{
+    if (!saves_from[0])
+        return;
+    char src[1100], dst[1100];
+    snprintf(src, sizeof src, "%s/user", saves_from);
+    snprintf(dst, sizeof dst, "%s/user", game);
+    if (has_files(dst)) {
+        say("saves: %s has its own already; those in %s stay where they are", dst, src);
+    } else {
+        if (!exists(game))
+            SDL_CreateDirectory(game);
+        if (copy_tree(src, dst) == 0)
+            say("saves: copied your saves and settings from %s", src);
+        else
+            say("saves: not all of %s could be copied (the old ones are still there)", src);
+    }
+    saves_from[0] = 0;
 }
 
 /* each folder in `dir` + `tail`; `tail` may itself have one "*" level */
@@ -462,7 +643,7 @@ static int pump_process(void)
     proc = NULL;
     proc_out = NULL;
     proc_in = NULL;
-    load_state();
+    load_install();
     switch (proc_kind) {
     case K_BUILD:
     case K_UPDATE:
@@ -926,11 +1107,28 @@ static void SDLCALL on_folder(void *ud, const char *const *files, int filter)
     }
 }
 
+static void SDLCALL on_game_folder(void *ud, const char *const *files, int filter)
+{
+    (void)ud;
+    (void)filter;
+    if (files && files[0]) {
+        SDL_strlcpy(picked_game_path, files[0], sizeof picked_game_path);
+        SDL_SetAtomicInt(&picked_game, 1);
+    }
+}
+
+/* the found set is offered while no set is chosen */
+static int found_offered(void)
+{
+    return found_path[0] && !set_path[0];
+}
+
 /* ---- the buttons ---- */
 
 enum {
     B_CHOOSE, B_CONTINUE, B_BACK, B_TARGET, B_BUILD, B_CANCEL, B_RETRY, B_PLAY, B_SETTINGS, B_STEAM,
-    B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_COUNT
+    B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_USE_FOUND, B_GAME_DIR,
+    B_COUNT
 };
 static int focus = -1;
 #define HITS 24
@@ -968,6 +1166,7 @@ static int enabled(int b)
     case B_UPD_CLOSE: return upd == U_AVAILABLE && !uproc;
     case B_UPD_CANCEL: return upd == U_FETCHING && uproc_in != NULL;
     case B_CHECK: return upd == U_IDLE || upd == U_NONE || upd == U_CHECK_FAILED;
+    case B_USE_FOUND: return found_offered() && !proc;
 #ifdef _WIN32
     case B_TARGET: return 0;
 #endif
@@ -980,8 +1179,9 @@ static int page_buttons(int *ids)
 {
     int n = 0;
     switch (page) {
-    case P_FILES: ids[n++] = B_CHOOSE; ids[n++] = B_CONTINUE; break;
+    case P_FILES: ids[n++] = B_CHOOSE; ids[n++] = found_offered() ? B_USE_FOUND : B_CONTINUE; break;
     case P_BUILD:
+        ids[n++] = B_GAME_DIR;
 #ifndef _WIN32
         ids[n++] = B_TARGET;
 #endif
@@ -1018,7 +1218,7 @@ static int page_buttons(int *ids)
 static int default_focus(void)
 {
     switch (page) {
-    case P_FILES: return set_ok() ? B_CONTINUE : B_CHOOSE;
+    case P_FILES: return set_ok() ? B_CONTINUE : found_offered() ? B_USE_FOUND : B_CHOOSE;
     case P_BUILD: return B_BUILD;
     case P_WORK: return B_CANCEL;
     case P_FAIL: return B_RETRY;
@@ -1179,6 +1379,8 @@ static void do_build(int update)
     const char *build_args[] = {python, "-I", script, "--set", set_path, "--out", game, "--target", target,
                                 "--launcher", NULL};
     const char *update_args[] = {python, "-I", script, "--update", game, "--launcher", NULL};
+    if (!update)
+        copy_saves();
     nlines = 0;
     error_line[0] = 0;
     stage_n = stage_of = 0;
@@ -1203,6 +1405,27 @@ static void press(int b)
         SDL_ShowOpenFolderDialog(on_folder, NULL, win, set_path[0] ? set_path : NULL, false);
         break;
     case B_CONTINUE: go(P_BUILD); break;
+    case B_USE_FOUND:
+        SDL_strlcpy(set_path, found_path, sizeof set_path);
+        SDL_SaveFile(set_file, set_path, strlen(set_path));
+        say("set: %s (the one found, chosen)", set_path);
+        go(P_BUILD);
+        break;
+    case B_GAME_DIR: {
+        /* the dialog opens where the install folder is (or would be) */
+        static char at[1024];
+        SDL_strlcpy(at, game, sizeof at);
+        while (at[0] && !exists(at)) {
+            char *sl = strrchr(at, '/'), *bs = strrchr(at, '\\');
+            if (bs > sl)
+                sl = bs;
+            if (!sl)
+                break;
+            *sl = 0;
+        }
+        SDL_ShowOpenFolderDialog(on_game_folder, NULL, win, at[0] ? at : NULL, false);
+        break;
+    }
     case B_BACK: go(page == P_FAIL && built ? P_PLAY : page == P_FAIL ? P_BUILD : P_FILES); break;
     case B_TARGET: target_linux = !target_linux; break;
     case B_BUILD: do_build(0); break;
@@ -1419,23 +1642,32 @@ static void draw_files(void)
     title("Find your game files",
           "The builder makes the game from your own MAME set of Virtua Fighter 4 Final Tuned: "
           "vf4tuned.zip and its GD-ROM, vf4tuned/gds-0036f.chd.");
-    card(240, 120);
-    int ok = set_ok();
-    ui_round(CX + 28, 276, 48, 48, 24, ok ? UI_GOOD : set_path[0] ? UI_BAD : UI_RAISED);
+    int ok = set_ok(), offer = found_offered();
+    card(240, offer ? 140 : 120);
+    ui_round(CX + 28, 276, 48, 48, 24, ok ? UI_GOOD : set_path[0] ? UI_BAD : offer ? UI_ACCENT : UI_RAISED);
     ui_icon(ok ? UI_I_CHECK : set_path[0] ? UI_I_FAIL : UI_I_DOT, CX + 52, 300, 36,
-            ok || set_path[0] ? UI_ON_ACCENT : UI_FAINT);
-    ui_text(UI_MEDIUM, 19, CX + 100, 284,
-            UI_TEXT, ok ? "Found your set" : set_path[0] ? "This folder has no vf4tuned set" : "No set chosen yet");
+            ok || set_path[0] || offer ? UI_ON_ACCENT : UI_FAINT);
+    ui_text(UI_MEDIUM, 19, CX + 100, 284, UI_TEXT,
+            ok              ? "Your set"
+            : set_path[0]   ? "This folder has no vf4tuned set"
+            : offer         ? "A vf4tuned set is in this folder"
+                            : "No set chosen yet");
     char shown[1024];
     ui_text_in(UI_MONO, 14, CX + 100, 316, CW - 128, 0, 1, UI_MUTED,
-               set_path[0] ? home_short(set_path, shown, sizeof shown) : "Choose the folder that holds vf4tuned.zip.");
-    ui_wrap(UI_REGULAR, 14, CX, 400, CW, 22, UI_FAINT,
+               set_path[0] ? home_short(set_path, shown, sizeof shown)
+               : offer     ? home_short(found_path, shown, sizeof shown)
+                           : "Choose the folder that holds vf4tuned.zip.");
+    if (offer)
+        ui_text(UI_REGULAR, 14, CX + 100, 346, UI_FAINT, "Build from this one, or choose another folder.");
+    ui_wrap(UI_REGULAR, 14, CX, 420, CW, 22, UI_FAINT,
             "Nothing from your set leaves this computer, and the game the builder makes is yours alone: "
             "never share it.");
     static const int ids[] = { B_CHOOSE, B_CONTINUE };
+    static const int ids_offer[] = { B_CHOOSE, B_USE_FOUND };
     static const char *const labels[] = { "Choose folder\xE2\x80\xA6", "Continue" };
+    static const char *const labels_offer[] = { "Choose another folder\xE2\x80\xA6", "Use this set" };
     static const int styles[] = { 0, 1 };
-    buttons_right(ids, labels, styles, 2);
+    buttons_right(offer ? ids_offer : ids, offer ? labels_offer : labels, styles, 2);
     hints_bottom();
 }
 
@@ -1459,7 +1691,31 @@ static void draw_build(void)
     card(y, 120);
 #endif
     path_line(CX + 28, y + 34, CW - 56, "Your set", set_path[0] ? set_path : "-");
-    path_line(CX + 28, y + 70, CW - 56, "Install folder", game);
+    const char *change = "Change\xE2\x80\xA6";
+    float cw = ui_text_w(UI_MEDIUM, 16, change) + 40;
+    path_line(CX + 28, y + 70, CW - 56 - cw - 16, "Install folder", game);
+    button(B_GAME_DIR, CX + CW - 28 - cw, y + 70 - 19, cw, 38, change, 0, -1);
+    /* what Change did, and whose saves go along */
+    float ny = y + 120 + 34;
+#ifndef _WIN32
+    ny += 56;
+#endif
+    char u[1100], line[1200];
+    snprintf(u, sizeof u, "%s/user", game);
+    if (game_note[0]) {
+        ui_wrap(UI_REGULAR, 14, CX, ny, CW, 21, game_note_bad ? UI_BAD : UI_MUTED, game_note);
+        ny += 21 * (float)ui_wrap_lines(UI_REGULAR, 14, CW, game_note) + 8;
+    }
+    if (saves_from[0] && !has_files(u)) {
+        ui_text(UI_REGULAR, 14, CX, ny, UI_MUTED, "When you build, your saves and settings are copied from:");
+#ifdef _WIN32
+        snprintf(line, sizeof line, "%s\\user", saves_from);
+#else
+        snprintf(line, sizeof line, "%s/user", saves_from);
+#endif
+        char shown[1300];
+        ui_text_in(UI_MONO, 13.5f, CX, ny + 23, CW, 0, 1, UI_MUTED, home_short(line, shown, sizeof shown));
+    }
 #ifndef _WIN32
     ui_text(UI_REGULAR, 14, CX + 28, y + 124, UI_FAINT, "Program");
     /* the target: a two-way switch */
@@ -1735,7 +1991,16 @@ static void draw(void)
     case P_PLAY: draw_play(); break;
     case P_SETTINGS: draw_settings(); break;
     }
-    SDL_RenderPresent(ren);
+    /* a present that fails leaves the window showing an old page: say so
+     * (once, and again when it works again), since nothing else would */
+    static int present_failing;
+    if (!SDL_RenderPresent(ren)) {
+        if (!present_failing++)
+            say("window: the picture cannot be shown (%s)", SDL_GetError());
+    } else if (present_failing) {
+        say("window: the picture shows again (after %d failed frames)", present_failing);
+        present_failing = 0;
+    }
 }
 
 /* ---- input on the main pages ---- */
@@ -1847,7 +2112,7 @@ static void shot_fake(void)
 
 int main(int argc, char **argv)
 {
-    const char *opt_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL,
+    const char *opt_game = NULL, *opt_pick_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL,
                *shot_device = NULL;
     int shot_scale = 1;
     const char *unknown[8];
@@ -1856,6 +2121,7 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) opt_game = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc) opt_set = argv[++i];
+        else if (!strcmp(argv[i], "--pick-game") && i + 1 < argc) opt_pick_game = argv[++i];
         else if (!strcmp(argv[i], "--do") && i + 1 < argc) opt_do = argv[++i];
         else if (!strcmp(argv[i], "--exit")) opt_exit = 1;
         else if (!strcmp(argv[i], "--after-game")) after_game = 1;
@@ -1897,6 +2163,9 @@ int main(int argc, char **argv)
     for (int i = 0; i < nunknown; i++)
         say("not an option: %s (ignored)", unknown[i]);
     say("builder files: %s", root[0] ? root : "(not found)");
+    say("window: SDL %d.%d.%d, renderer %s, video %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
+        SDL_VERSIONNUM_MINOR(SDL_GetVersion()), SDL_VERSIONNUM_MICRO(SDL_GetVersion()),
+        SDL_GetRendererName(ren), SDL_GetCurrentVideoDriver());
     say("install folder: %s", game);
     upd_startup();
     if (!shot_page)
@@ -1905,6 +2174,8 @@ int main(int argc, char **argv)
         say("--after-game: %s", upd_auto       ? "started by the game for the update it asked for"
                                 : just_updated ? "the new launcher: it builds the game again, then closes"
                                                : "nothing asked for: closing");
+    if (opt_pick_game)
+        choose_game_dir(opt_pick_game);     /* as the install folder's dialog answers */
     if (!set_path[0] && !built)
         find_set();
     go(built ? P_PLAY : set_ok() ? P_BUILD : P_FILES);
@@ -2002,6 +2273,17 @@ int main(int argc, char **argv)
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             ui_note_event(&e);
+            if (e.type == SDL_EVENT_RENDER_DEVICE_RESET || e.type == SDL_EVENT_RENDER_DEVICE_LOST ||
+                e.type == SDL_EVENT_RENDER_TARGETS_RESET)
+                say("window: %s", e.type == SDL_EVENT_RENDER_DEVICE_LOST    ? "the renderer's device is lost"
+                                  : e.type == SDL_EVENT_RENDER_DEVICE_RESET ? "the renderer's device was reset"
+                                                                            : "the renderer's targets were reset");
+            else if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+                static int sizes;
+                if (++sizes <= 12)
+                    say("window: %d x %d pixels%s", (int)e.window.data1, (int)e.window.data2,
+                        sizes == 12 ? " (no more of these)" : "");
+            }
             if (e.type == SDL_EVENT_QUIT)
                 running = 0;
             else if (e.type == SDL_EVENT_GAMEPAD_ADDED)
@@ -2015,6 +2297,10 @@ int main(int argc, char **argv)
         }
         if (quit_asked)
             running = 0;
+        if (SDL_GetAtomicInt(&picked_game)) {
+            SDL_SetAtomicInt(&picked_game, 0);
+            choose_game_dir(picked_game_path);
+        }
         if (SDL_GetAtomicInt(&picked)) {
             SDL_SetAtomicInt(&picked, 0);
             SDL_strlcpy(set_path, picked_path, sizeof set_path);

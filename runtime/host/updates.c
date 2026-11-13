@@ -64,7 +64,8 @@ void gu_init(const char *exe_dir, void (*log)(const char *line))
     state = GU_OFF;
     const char *env = SDL_getenv("VF4FT_LAUNCHER");
     by_launcher = env && !strcmp(env, "1");
-    /* the release folder: the game's folder's parent */
+    /* the release folder: the game's folder's parent (its game/), or the
+     * one build.json names (an install folder the player chose elsewhere) */
     SDL_strlcpy(rel, exe_dir ? exe_dir : "", sizeof rel);
     size_t n = strlen(rel);
     if (n > 1 && (rel[n - 1] == '/' || rel[n - 1] == '\\'))
@@ -80,8 +81,25 @@ void gu_init(const char *exe_dir, void (*log)(const char *line))
     char *s = SDL_LoadFile(p, NULL);
     int ok = s && json_str(s, "version", version, sizeof version);
     SDL_free(s);
-    if (!ok)
-        return;         /* a development build, or a game folder that is not a release's game/ */
+    if (!ok) {
+        char named[900];
+        SDL_snprintf(p, sizeof p, "%sbuild.json", exe_dir ? exe_dir : "");
+        s = SDL_LoadFile(p, NULL);
+        ok = s && json_str(s, "release", named, sizeof named) && named[0];
+        SDL_free(s);
+        if (!ok)
+            return;     /* a development build */
+        size_t m = strlen(named);
+        SDL_snprintf(rel, sizeof rel, "%s%s", named, named[m - 1] == '/' || named[m - 1] == '\\' ? "" : "/");
+        SDL_snprintf(p, sizeof p, "%srelease.json", rel);
+        s = SDL_LoadFile(p, NULL);
+        ok = s && json_str(s, "version", version, sizeof version);
+        SDL_free(s);
+        if (!ok) {
+            sayf("updates: build.json names the release folder %s, which has no release.json", rel);
+            return;
+        }
+    }
 #ifdef _WIN32
     SDL_snprintf(python, sizeof python, "%spython\\pythonw.exe", rel);
 #else

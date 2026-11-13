@@ -128,15 +128,24 @@ python3 -I tools/make_game.py --update ~/Games/vf4ft
 **With the launcher.** A release is a zip with `vf4ft-launcher` and
 everything it runs (on Windows also SDL3.dll and Python's embeddable
 package, so nothing has to be installed). It walks through three steps,
-shown at its top: Game files (choose the set's folder; it looks in the
-usual places first), Build (the stage, a progress bar, the time so far and
-the builder's last lines; Cancel stops it cleanly), and Play. The Play page
+shown at its top: Game files (choose the set's folder; a set it finds in
+the usual places is offered with Use this set, never taken by itself),
+Build (where the game goes, with Change…; then the stage, a progress bar,
+the time so far and the builder's last lines; Cancel stops it cleanly),
+and Play. The Play page
 also has Settings (the game's settings and controls, in tabs), Add to Steam
 (adds the game as a non-Steam game; close Steam first), Build again, and an
 Update card when the builder is newer than the game it built. The mouse,
 the keyboard (arrows, Enter, Esc; Q and E switch tabs) and a gamepad
 (D-pad, A, B; LB and RB switch tabs) all work it. The game goes into
-`game/` beside the launcher. To build the launcher from this
+`game/` beside the launcher unless you choose another folder with Change…
+on the Build page: an empty folder or an earlier install is used as it is,
+and any other folder gets a `VF4 Final Tuned` folder of its own inside it
+(the builder never writes among other files). Changing it copies your
+saves and settings into the new folder at the next build; the old folder
+stays as it was. Plain Wine is not a tested way to run the Windows
+launcher; use Proton (Steam, or `umu-run`) or Windows
+([why](docs/design.md#27-install-folder-set-choice-and-plain-wine-2026-11-13)). To build the launcher from this
 repository: `cmake --build build/linux --target vf4ft-launcher` (it needs no
 translated code), then `build/linux/vf4ft-launcher`. A release folder is put
 together by `tools/package_release.py` (its usage is at its top).
@@ -187,11 +196,12 @@ Proton on a desktop PC.
    copy the zip over (USB stick, SD card or a network share), right-click
    it in Dolphin, Extract, Extract archive here. Put the folder anywhere,
    for example `~/Games/vf4ft-release`.
-3. **Your set** (`gds-0036f.chd` and `vf4tuned.zip`): the launcher finds it
-   by itself in EmuDeck's ROM folders (`Emulation/roms/arcade`, `naomi2`,
+3. **Your set** (`gds-0036f.chd` and `vf4tuned.zip`): the launcher looks
+   for it in EmuDeck's ROM folders (`Emulation/roms/arcade`, `naomi2`,
    `naomi` or `mame`, on the Deck or the SD card), or in `~/Games`,
-   `~/Games/naomi2`, `~/roms`, `~/Downloads` or `~/Desktop`. Anywhere else,
-   pick it with Choose folder… on the Game files page.
+   `~/Games/naomi2`, `~/roms`, `~/Downloads` or `~/Desktop`, and offers
+   what it finds: Use this set. Anywhere else, pick it with Choose
+   folder… on the Game files page.
 4. **Add it to Steam:** open Steam on the desktop, Games menu, "Add a
    Non-Steam Game to My Library", Browse, set the file type to "All Files",
    pick `vf4ft-launcher.exe` in the release folder, then "Add Selected
@@ -200,7 +210,7 @@ Proton on a desktop PC.
    Proton Experimental.
 5. **In Game Mode**, start it from the library (the Non-Steam tab). The
    D-pad and A work the buttons (B goes back, LB and RB switch tabs):
-   Continue, Build (the first run downloads about 190
+   Use this set (or Continue), Build (the first run downloads about 190
    MB of compiler, and takes several minutes on the Deck), then Play. The
    game runs fullscreen in the same Proton prefix and the launcher comes
    back when it ends. Settings is where controls, the coin setting, the

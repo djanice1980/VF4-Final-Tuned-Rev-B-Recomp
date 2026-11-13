@@ -18,7 +18,8 @@ enum {
     GU_ASKED,       /* it goes in when the game quits */
 };
 
-/* finds the release folder: the parent of exe_dir (SDL_GetBasePath()) */
+/* finds the release folder: the parent of exe_dir (SDL_GetBasePath()), or
+ * the one build.json there names (an install folder chosen elsewhere) */
 void gu_init(const char *exe_dir, void (*log)(const char *line));
 int gu_state(void);
 const char *gu_version(void);       /* this release's */
