@@ -901,7 +901,8 @@ and Desktop folders. Under Proton it reaches the Linux side through Wine's
 Z: drive. Play starts the game in the same Proton prefix, and the launcher
 hides until the game ends. The game goes fullscreen by itself (`fullscreen
 = auto`), Steam Input's pad is player 1, and holding View + Menu for a
-second quits. The native Linux launcher still links the system's SDL3, so
+second opens the game's menu (section 21; it quit the game until then).
+The native Linux launcher still links the system's SDL3, so
 the Windows release is the one for the Deck.
 
 **Test mode.** On the board, Test makes the game call BIOS service 0x44;
@@ -972,3 +973,83 @@ screens such as the input test end with Service and Test together. The
 coin and free play settings are not in the game's test mode (they are the
 BIOS's); they stay in the settings file.
 
+## 21. The game's menu (2026-11-12)
+
+A menu over the picture, as Hookshot's recomps have, so a player with only
+a gamepad can change settings, reach the operator's test mode, restart or
+quit without the launcher or a keyboard. `test.bin` is not rewritten into
+it: the test mode stays the game's own program (section 20), and the menu
+only presses its switches.
+
+**Opening it.** Insert or Esc on the keyboard; a gamepad's Guide button
+(Xbox, PS); View + Menu held for a second on either of the first two pads,
+which is the way on the Steam Deck, whose Steam button Steam keeps. The same
+key or button closes it, and so do B and Esc (back). While it is open the
+machine waits in the frame hook before its pacing (`menu_pause`), so the
+paused time is not counted as the machine's, and the audio device pauses.
+The game itself is not told: it is stopped between two vertical blanks.
+
+**Using it.** Up and Down choose (D-pad, left stick or the arrows; a held
+direction repeats after 350 ms, every 110 ms), Left and Right change, A or
+Enter selects. Any pad steers, so a second player can too. The rows:
+
+| Row | What it does | When it applies |
+|---|---|---|
+| Resume | closes it | |
+| Credits | free play or arcade coins | at a restart or the next start (the game reads the EEPROM as it starts) |
+| Picture, Scaling, Fullscreen | 4:3 or stretch, smooth or sharp, auto/off/on | at once |
+| Volume | the game's sound, 0 to 100% in tens (new `volume` setting) | at once; shown as "(sound off)" with the sound chip off |
+| Renderer, Resolution, Card units | GPU or software, 1 to 4 times 640 x 480, the card units | at the next start; marked `*` while they differ from this run |
+| Operator test menu | presses the Test switch, then the operator bar | at once |
+| Restart the game | power off and on: the game starts again | at once, after a second A |
+| Quit | saves and closes | at once, after a second A |
+
+The settings file is written when the menu closes, if anything changed.
+The line under the rows says what the chosen one does.
+
+**Test mode from a gamepad.** Operator test menu holds the Test switch for
+six vertical blanks, which starts the test program, and shows the operator
+bar at the top of the picture: A is Test and X is Service until B closes
+it or the test program's EXIT starts the game again. F2 and F3 work as
+before. The bar is drawn for 6 seconds; its buttons work until it closes.
+Opened in the test program, that row is Operator buttons and only brings
+the bar back. The cost: while the bar is on, the pad's A, X and B are the
+operator's, so the input test cannot show them; B closes the bar for that.
+
+**Restart.** `game_machine_restart` puts the coin setting in the EEPROM,
+then `rt_native_restart` takes the same `longjmp` as the test program's
+EXIT (section 20) to the power-on state, keeping the backup, the EEPROM and
+the cards; the backup and the cards are saved first. It runs from the
+frame hook, which is safe because nothing is half done there: the picture
+of the frame is drawn before the hook (the view's pool waits) and the
+event list keeps no state across a call.
+
+**Handing the controls back.** A key or button held as the menu closes
+(the A that chose Resume, the View + Menu that opened it) stays the menu's
+until it is let go, so it does not reach the game as a throw or a coin.
+The chord itself never reaches the game while both are held.
+
+**Drawing.** `runtime/host/menu.c` draws the panel (320 x 216) with SDL's
+software renderer and its 8 x 8 debug font into a surface. The surface is
+uploaded to a texture, and blitted over the swapchain after the picture
+with nearest filtering at the largest whole scale that fits 85% of the
+picture (3 times at 1280 x 960). No shaders, so it works on whatever
+device the window has, the software picture's included.
+
+**Tests.** `--keys "FRAME:item,..."` presses keys one after another once
+the machine reaches vertical blank FRAME: SDL key names, `@N` (wait for
+vertical blank N), `shot=FILE` (the window as shown, the menu included),
+and `pad:a+x=N`, buttons of a virtual gamepad (SDL's virtual joystick)
+held for N turns of the window's loop. The virtual pad is attached at
+start-up: SDL sends no press for a button already down when a pad is
+opened, so a pad made at its first press missed it.
+
+Checked in a window on Linux with the GPU renderer: every row; the live
+settings applied and saved; Test into the test program with the bar, the
+bar's X and A through the input test and out with X + A, B closing it;
+Restart from the test program, with arcade coins, back to INSERT COIN(S);
+Quit; View + Menu, Guide and the D-pad's repeat on the virtual gamepad.
+The Windows exe under Proton draws it through Vulkan the same way. Not
+done: a real gamepad and the Steam Deck (the virtual pad goes through the
+same SDL gamepad events, but Steam Input was not in the way), and changing
+controls from the menu (the launcher's Controls page does that).

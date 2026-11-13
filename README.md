@@ -20,7 +20,10 @@ Playable with sound, built on your PC from your own set by the builder
 (M5): from the command line or with the launcher. M6 added saves, free
 play, the card units, a settings page with rebinding, the GPU renderer at
 up to 4 times the resolution, the Steam Deck route, and the operator's
-test mode. No release has been published yet. The plan, with its
+test mode. The game has its own menu over the picture (Insert, Esc, a
+gamepad's Guide button, or View + Menu held): it pauses the game, changes
+settings, reaches test mode from a gamepad, restarts and quits. No release
+has been published yet. The plan, with its
 milestones: [docs/design.md](docs/design.md).
 
 | Milestone | State |
@@ -137,7 +140,9 @@ Proton on a desktop PC.
 
 On the Deck's controls the game's defaults are: X guard, Y punch, B kick,
 A throw (P+G), L1 P+K, R1 P+K+G, Menu start, View coin (not needed with free
-play). Holding View + Menu for a second quits.
+play). Holding View + Menu for a second opens the game's menu (below,
+"Playing"): settings, the operator's test mode, restart and quit. The Steam
+button stays Steam's.
 
 ## Development build (CachyOS / Arch)
 
@@ -274,9 +279,21 @@ The default controls (all of them can be changed, below):
 | Punch + Kick / Punch + Kick + Guard | I / O | LB / RB |
 | Start | Enter | Menu |
 | Coin | 5 (slot 1), 6 (slot 2) | View |
-| Test / Service (the operator's) | F2 / F3 | |
+| Test / Service (the operator's) | F2 / F3 | A / X on the operator bar (the menu's Operator test menu) |
 | Fullscreen | F11 or Alt+Enter | |
-| Quit | Esc | hold View + Menu for a second |
+| The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox or PS button), or hold View + Menu for a second |
+
+**The game's menu** pauses the game until it closes. Up and Down choose,
+Left and Right change, A or Enter selects, B or Esc goes back. Picture,
+scaling, fullscreen and volume change at once; renderer, resolution and
+the card units are kept for the next start (marked `*` until then), and
+credits (free play or arcade coins) apply at the next restart. Operator
+test menu presses the cabinet's Test switch and shows the operator bar,
+where A is Test and X is Service until B or the test menu's EXIT. Restart
+the game turns the cabinet off and on (records, settings and cards are
+kept); it and Quit ask for a second A. Changes are saved to
+`settings.txt` when the menu closes. Controls are changed in the
+launcher's Controls page, not here.
 
 **Test mode,** the operator's: Test (F2) opens the game's test menu (its
 own test program, `test.bin`, as the cabinet's BIOS starts it). Service
@@ -285,7 +302,8 @@ end with Service and Test together. EXIT starts the game again, from power
 on, keeping what the cabinet keeps: the game assignments and book keeping
 (`backup.bin`) and the cards. Free play and coins are not in the game's
 test menu (they are the BIOS's): they are the `coins` setting below. Test
-and Service can be moved to other keys or pad buttons like any control.
+and Service can be moved to other keys or pad buttons like any control;
+with only a gamepad, the menu's Operator test menu does the same.
 
 **The player's folder,** `user/` beside the program (or `--user DIR`):
 
@@ -294,7 +312,8 @@ and Service can be moved to other keys or pad buttons like any control.
   arcade), `fullscreen` (auto | on | off; auto is on for the Steam Deck and
   Big Picture), `picture` (4:3 | stretch), `filter` (smooth | sharp),
   `renderer` (gpu | software), `scale` (1 to 4 times 640 x 480; default 2),
-  `sound` (on | off), `cards` (on | off), then the controls: `key1.punch =
+  `sound` (on | off), `volume` (0 to 100; default 100), `cards` (on |
+  off), then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad.*` for gamepads, with SDL's key
   and button names, several separated by commas, `-` for none. The file
@@ -317,8 +336,11 @@ after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `--dimm FILE` (a decrypted image, or the disc's `VF41_S.BIN` with
 `dimm.key` beside it), `--log FILE`, `--silent` (no sound chip: VF4debug's
 mailbox model, as in M3), `--user DIR`, and for tests `--press LIST`
-(buttons at given vertical blanks, as `6500:p1:start,6800:p1:p+g`) and
-`--shot N FILE` (the picture at vertical blank N to a BMP file). Every 600
+(buttons at given vertical blanks, as `6500:p1:start,6800:p1:p+g`),
+`--shot N FILE` (the picture at vertical blank N to a BMP file) and
+`--keys LIST` (keys and virtual gamepad buttons one after another from a
+vertical blank on, as `6400:Insert,Down,shot=menu.bmp,pad:guide`, with
+`shot=FILE` saving the window, menu included). Every 600
 frames `vf4ft.log` (beside the program) records how long the machine took
 per frame, on average and at most, and how much audio is queued. Sound
 plays from the warning screen on.
