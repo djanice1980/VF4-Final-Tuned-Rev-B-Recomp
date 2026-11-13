@@ -129,6 +129,7 @@ Build). It adds itself to your Linux Steam, named Virtua Fighter 4 Final
 Tuned and set to Proton Experimental.
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
 Plain Wine is not supported for playing: the game runs through Proton.
+Under plain Wine, Play first says what to expect and offers Add to Steam.
 
 Updates: the launcher checks for a newer release when it starts and
 offers Update now. Your saves and settings stay.

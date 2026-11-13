@@ -1996,3 +1996,45 @@ Not tried: a real Steam reading the entry after it starts (the format is
 the Linux tool's, which Steam has read since M0), Windows itself, and the
 Deck, which has no Wine outside Steam: there the README's steps (Steam's
 own Add a Non-Steam Game) stay the way in.
+
+
+## 34. Play's note under plain Wine (2026-11-13)
+
+David asked for a warning when Play is pressed on Linux outside Proton and
+Steam: the kinds of problems to expect.
+
+**When:** the Windows launcher under Wine (`wine_get_version` in ntdll)
+with none of Steam's launch variables (`SteamGameId`, `SteamClientLaunch`,
+`SteamAppId`) and no `STEAM_COMPAT_DATA_PATH` (Proton's; umu-run sets
+`SteamGameId` too). `launcher.log` says "plain Wine, not Proton: Play
+warns first" and names the host (`wine_get_host_version`).
+
+**The note** ("Playing under plain Wine", over the Play page): Proton is
+what the game is made and tested for; controllers go through Wine rather
+than Steam Input (no Steam layouts or overlay, and a pad Wine does not know
+may not work); the picture and sound depend on the Wine version and drivers;
+the launcher's own window can stop updating after a resize (section 27).
+Its buttons: **Add to Steam** (the focus: section 33's flow), **Play
+anyway** (no note again until the launcher is closed), and **Cancel** (Esc
+or Back). Start the game directly (section 29) does not show it: that
+switch is turned on from the Play page.
+
+**What plain Wine was seen to do** (Wine 11.21, this machine):
+- The launcher: Wine's Direct3D 11 does not start, SDL's renderer takes
+  Direct3D 12, and after resizes the window stops updating (section 27).
+- The game: SDL_GPU takes Vulkan (the RTX 5070 Ti, NVIDIA 620.70.06), and
+  it held 60 frames a second through the attract sequence. David's own run
+  (12:28) found his DualSense through Wine's HID. In a headless KWin with
+  sound off, six quick resizes, then fullscreen on and off by F11: the
+  nested screen showed the picture right at every capture (0.4 s to 9 s
+  after each change; the 4:3 bars even), and one earlier capture caught a
+  switch half done, gone by the next.
+
+**Checked:** the Windows launcher under plain Wine in a headless KWin:
+`--do play` gives the note and starts nothing; with
+`STEAM_COMPAT_DATA_PATH` or `SteamAppId` set there is no note. The note's
+picture at 1:1 (`--shot wine-play`).
+
+Not tried: sound under plain Wine (the runs had it off), other Wine
+versions, and other GPUs (where SDL_GPU might take Direct3D 12 as the
+launcher does).

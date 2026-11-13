@@ -67,7 +67,9 @@ and open `vf4ft-launcher.exe` again from its folder.
 
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode
 ([more for the Deck](#steam-deck-m6)). Plain Wine is not supported for
-playing: the game runs through Steam's Proton.
+playing: the game runs through Steam's Proton. Under plain Wine, Play first
+says what to expect (Steam Input missing, Wine's graphics and sound) and
+offers Add to Steam, Play anyway or Cancel.
 
 ## Screenshots
 

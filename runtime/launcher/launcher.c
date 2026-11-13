@@ -99,6 +99,8 @@ static char saves_from[1024];       /* the install before Change: its user/ goes
 static char game_note[400];         /* the Build page's line about the install folder */
 static int game_note_bad;
 static int steam_started;           /* Steam started the launcher: Add to Steam asks for Steam closed first */
+static int plain_wine;              /* the Windows launcher under Wine, not Proton: Play warns first */
+static int wine_warned;             /* that warning was answered with Play anyway (this run) */
 #ifdef _WIN32
 static char self_exe[1024];         /* the launcher's own program: what Add to Steam adds */
 static const char *argv0 = "";
@@ -545,8 +547,19 @@ static void steam_setup(void)
 #ifdef _WIN32
     SDL_SharedObject *nt = SDL_LoadObject("ntdll.dll");
     const char *(*wine_version)(void) = nt ? (const char *(*)(void))SDL_LoadFunction(nt, "wine_get_version") : NULL;
-    if (wine_version)
-        say("steam: Wine %s: Add to Steam adds the launcher to the Linux host's Steam", wine_version());
+    if (wine_version) {
+        /* plain Wine (no Steam variables, and none of Proton's): Play warns
+         * first (docs/design.md section 34) */
+        void (*host)(const char **, const char **) =
+            (void (*)(const char **, const char **))SDL_LoadFunction(nt, "wine_get_host_version");
+        const char *sys = NULL, *rel = NULL;
+        if (host)
+            host(&sys, &rel);
+        const char *compat = SDL_getenv("STEAM_COMPAT_DATA_PATH");
+        plain_wine = !(compat && compat[0]);
+        say("steam: Wine %s on %s: Add to Steam adds the launcher to the host's Steam%s", wine_version(),
+            sys ? sys : "an unknown system", plain_wine ? "; plain Wine, not Proton: Play warns first" : "");
+    }
     if (nt)
         SDL_UnloadObject(nt);
 #endif
@@ -584,8 +597,8 @@ enum { P_FILES, P_BUILD, P_WORK, P_FAIL, P_PLAY, P_SETTINGS };
 static int page;
 static void go(int p);
 
-/* a note over the Play page (Add to Steam's): only its buttons answer */
-enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED };
+/* a note over the Play page (Add to Steam's, and Play's under plain Wine): only its buttons answer */
+enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE };
 static int pop;
 static int steam_proton;            /* the tool set Proton for the entry */
 static void pop_open(int kind);
@@ -1227,7 +1240,7 @@ static int found_offered(void)
 enum {
     B_CHOOSE, B_CONTINUE, B_BACK, B_TARGET, B_BUILD, B_CANCEL, B_RETRY, B_PLAY, B_SETTINGS, B_STEAM,
     B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_USE_FOUND, B_GAME_DIR,
-    B_DIRECT, B_POP_OK, B_POP_RETRY, B_COUNT
+    B_DIRECT, B_POP_OK, B_POP_RETRY, B_POP_PLAY, B_POP_STEAM, B_COUNT
 };
 static int focus = -1;
 #define HITS 24
@@ -1299,6 +1312,10 @@ static int page_buttons(int *ids)
 {
     int n = 0;
     if (pop) {
+        if (pop == POP_WINE) {
+            ids[n++] = B_POP_STEAM;
+            ids[n++] = B_POP_PLAY;
+        }
         if (pop == POP_CLOSE_STEAM)
             ids[n++] = B_POP_RETRY;
         ids[n++] = B_POP_OK;
@@ -1585,6 +1602,10 @@ static void press(int b)
         upd_start(1);
         break;
     case B_PLAY: {
+        if (plain_wine && !wine_warned) {   /* what plain Wine may do, and Steam's way instead */
+            pop_open(POP_WINE);
+            break;
+        }
 #ifndef _WIN32
         if (!built_linux) {
             /* the Windows exe on Linux plays through Steam (Proton, Steam Input) */
@@ -1648,8 +1669,20 @@ static void press(int b)
         press(B_STEAM);
         break;
     case B_POP_OK:
+        focus = pop == POP_WINE ? B_PLAY : B_STEAM;
+        pop = POP_NONE;
+        break;
+    case B_POP_PLAY:
+        pop = POP_NONE;
+        wine_warned = 1;
+        focus = B_PLAY;
+        say("plain Wine: Play anyway");
+        press(B_PLAY);
+        break;
+    case B_POP_STEAM:
         pop = POP_NONE;
         focus = B_STEAM;
+        press(B_STEAM);
         break;
     }
 }
@@ -2157,13 +2190,56 @@ static void draw_settings(void)
     ui_hints(LW - 40 - w - 24, 558, 24, done_hint, 1, 2);
 }
 
+/* Play's note under plain Wine (docs/design.md section 34). Paragraphs are
+ * lines; one that starts with a bullet hangs under its first word. */
+#define BULLET "\xE2\x80\xA2 "
+static const char WINE_NOTE[] =
+    "This launcher runs under plain Wine, not Steam's Proton. The game is made and tested for Proton, so "
+    "here:\n"
+    BULLET "Controllers go through Wine, not Steam Input: no Steam controller layouts or overlay, and a pad "
+    "Wine does not know may not work.\n"
+    BULLET "The picture and sound depend on your Wine version and drivers: they may stutter, glitch or not "
+    "start at all.\n"
+    BULLET "This launcher's window can stop updating after it is resized (Wine's Direct3D 12). Closing and "
+    "opening it again fixes it.\n"
+    "For the supported way, choose Add to Steam, then play it from your Steam library.";
+
+/* a note's text, paragraph by paragraph: its height, drawn when draw is set */
+static float pop_text(float x, float y, float w, const char *text, int draw)
+{
+    const float line_h = 24, gap = 10, hang = 16;
+    float h = 0;
+    char para[600];
+    while (*text) {
+        const char *e = SDL_strchr(text, '\n');
+        size_t n = e ? (size_t)(e - text) : SDL_strlen(text);
+        SDL_strlcpy(para, text, SDL_min(n + 1, sizeof para));
+        int bullet = !SDL_strncmp(para, BULLET, sizeof BULLET - 1);
+        const char *body = bullet ? para + sizeof BULLET - 1 : para;
+        float bx = bullet ? x + hang : x, bw = bullet ? w - hang : w;
+        if (h > 0)
+            h += gap;
+        if (draw) {
+            if (bullet)
+                ui_text(UI_REGULAR, 16, x + 2, y + h, UI_MUTED, "\xE2\x80\xA2");
+            ui_wrap(UI_REGULAR, 16, bx, y + h, bw, line_h, UI_MUTED, body);
+        }
+        h += line_h * ui_wrap_lines(UI_REGULAR, 16, bw, body);
+        text += n;
+        if (*text == '\n')
+            text++;
+    }
+    return h;
+}
+
 static void pop_open(int kind)
 {
-    say("Add to Steam: %s", kind == POP_FROM_STEAM    ? "the note to close Steam and open the launcher again"
-                            : kind == POP_CLOSE_STEAM ? "the note to close Steam (Try again)"
-                                                      : "the note that it was added");
+    say("%s", kind == POP_FROM_STEAM    ? "Add to Steam: the note to close Steam and open the launcher again"
+              : kind == POP_CLOSE_STEAM ? "Add to Steam: the note to close Steam (Try again)"
+              : kind == POP_WINE        ? "Play: the note on plain Wine (Add to Steam, Play anyway, Cancel)"
+                                        : "Add to Steam: the note that it was added");
     pop = kind;
-    focus = kind == POP_CLOSE_STEAM ? B_POP_RETRY : B_POP_OK;
+    focus = kind == POP_CLOSE_STEAM ? B_POP_RETRY : kind == POP_WINE ? B_POP_STEAM : B_POP_OK;
 }
 
 /* Add to Steam's note, over the page: the page dimmed, a card with the
@@ -2190,23 +2266,33 @@ static void draw_pop(void)
         text = steam_proton ? "Start Steam: Virtua Fighter 4 Final Tuned is in your library, set to run with Proton."
                             : "Start Steam: Virtua Fighter 4 Final Tuned is in your library.";
         break;
+    case POP_WINE:      /* docs/design.md section 34: what was seen under plain Wine */
+        t = "Playing under plain Wine";
+        text = WINE_NOTE;
+        break;
     }
     nhits = 0;                      /* the page's buttons do not answer under the note */
     SDL_SetRenderDrawColor(ren, 6, 7, 10, 210);
     SDL_RenderFillRect(ren, NULL);
-    float w = 620, tw = w - 72;
-    int lines = ui_wrap_lines(UI_REGULAR, 16, tw, text);
-    float h = 88 + lines * 24 + 28 + BTN_H + 36;
+    float w = pop == POP_WINE ? 760 : 620, tw = w - 72;
+    float h = 88 + pop_text(0, 0, tw, text, 0) + 28 + BTN_H + 36;
     float x0 = (LW - w) / 2, y0 = (LH - h) / 2;
     ui_round_line(x0, y0, w, h, 16, 1, UI_LINE, UI_CARD);
     ui_text(UI_BOLD, 22, x0 + 36, y0 + 48, UI_TEXT, t);
-    ui_wrap(UI_REGULAR, 16, x0 + 36, y0 + 88, tw, 24, UI_MUTED, text);
+    pop_text(x0 + 36, y0 + 88, tw, text, 1);
     float by = y0 + h - 36 - BTN_H, bx = x0 + w - 36;
     if (pop == POP_CLOSE_STEAM) {
         bx -= button_w("Close");
         button(B_POP_OK, bx, by, 0, BTN_H, "Close", 0, -1);
         bx -= 14 + button_w("Try again");
         button(B_POP_RETRY, bx, by, 0, BTN_H, "Try again", 1, -1);
+    } else if (pop == POP_WINE) {
+        bx -= button_w("Cancel");
+        button(B_POP_OK, bx, by, 0, BTN_H, "Cancel", 0, -1);
+        bx -= 14 + button_w("Play anyway");
+        button(B_POP_PLAY, bx, by, 0, BTN_H, "Play anyway", 0, -1);
+        bx -= 14 + button_w("Add to Steam");
+        button(B_POP_STEAM, bx, by, 0, BTN_H, "Add to Steam", 1, -1);
     } else {
         bx -= button_w("OK");
         button(B_POP_OK, bx, by, 0, BTN_H, "OK", 1, -1);
@@ -2555,9 +2641,10 @@ int main(int argc, char **argv)
                             sizeof upd_error);
                 focus = default_focus();
             }
-        /* the Play page under Add to Steam's notes: steam-started, steam-close, steam-added */
+        /* the Play page under its notes: steam-started, steam-close, steam-added, wine-play */
         static const struct { const char *name; int kind; } pops[] = {
             {"steam-started", POP_FROM_STEAM}, {"steam-close", POP_CLOSE_STEAM}, {"steam-added", POP_ADDED},
+            {"wine-play", POP_WINE},
         };
         for (size_t i = 0; i < SDL_arraysize(pops); i++)
             if (!strcmp(shot_page, pops[i].name)) {
@@ -2588,6 +2675,7 @@ int main(int argc, char **argv)
             say("start the game directly: not this time (%s)", why);
         } else {
             say("start the game directly (the Play page's switch): the launcher stays hidden");
+            wine_warned = 1;        /* no plain Wine note: the switch was turned on from the Play page */
             press(B_PLAY);
             direct_run = game_proc != NULL;
         }
