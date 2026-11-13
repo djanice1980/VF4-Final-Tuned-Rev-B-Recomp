@@ -1067,7 +1067,8 @@ device the window has, the software picture's included.
 the machine reaches vertical blank FRAME: SDL key names, `@N` (wait for
 vertical blank N), `shot=FILE` (the window as shown, the menu included),
 and `pad:a+x=N`, buttons of a virtual gamepad (SDL's virtual joystick)
-held for N turns of the window's loop. The virtual pad is attached at
+held for N turns of the window's loop. `padtype=ps5` anywhere in the
+list gives that pad a DualSense's ids (section 22). The virtual pad is attached at
 start-up: SDL sends no press for a button already down when a pad is
 opened, so a pad made at its first press missed it.
 
@@ -1140,7 +1141,11 @@ renderer that draws the overlay (section 21).
 The stepper at the top lights the page's step and checks the steps that are
 done. The mouse, the keyboard and a gamepad all work every page.
 `--shot PAGE FILE` draws a page offscreen for tests, and `--cancel-after S`
-presses Cancel.
+presses Cancel. For the README's pictures, `--shot-device keys|xbox|ps|switch`
+picks the style of the caps, and `--shot-scale K` makes the window K times
+as big from the start. The offscreen driver keeps its first framebuffer
+when a window is resized later, so a later resize drew only a corner. On
+Linux a path under the home folder shows as `~/…`.
 
 **The builder's side** (`make_game.py --launcher`).
 
@@ -1201,6 +1206,10 @@ about a fifth of the picture's brightness. The fill is gone.
   renderers: every tab, the dot, and the pad's caps on the virtual pad.
 - F11 to 3840 x 2160 and back with the menu open.
 - The operator bar.
+- The PlayStation glyphs. In the launcher they come from `--shot-device
+  ps`. In the game's menu they come from a virtual pad with a DualSense's
+  vendor and product ids (`--keys "…,padtype=ps5,…"`), which SDL reports
+  as a PS5 pad.
 - The Windows build compiles without warnings.
 - The Windows release (`package_release.py`) under Proton:
   - `--do build --exit` built the game in 83 s, including the first
@@ -1210,6 +1219,6 @@ about a fifth of the picture's brightness. The fill is gone.
     translator or clang was left running. With `--exit` the launcher ends
     with 1, and its log says "cancelled".
 
-**Not done:** a real gamepad and the Steam Deck (the glyphs change by pad
-type, which only a real pad shows), and a window resized by dragging while
+**Not done:** a real gamepad and the Steam Deck (the glyphs follow SDL's
+pad type, and only the virtual DualSense has shown them), and a window resized by dragging while
 the menu is open (each new size takes the picture again).

@@ -14,6 +14,32 @@ emulator runs at play time.
 > `vf4tuned.zip` (the 317-0387-COM PIC). Everything the build creates comes
 > from your set and stays on your PC. Never share those files.
 
+## Screenshots
+
+**The launcher** makes the game from your set in three steps. These are
+the Linux launcher's pages; the Windows release is the same program.
+
+| Game files | Build |
+|---|---|
+| <img src="docs/images/launcher-game-files.png" alt="The launcher's Game files page: it found the set in ~/Games/naomi2"> | <img src="docs/images/launcher-build.png" alt="The launcher's Build page: step 4 of 6, Compiling, 45%, with the builder's last lines and Cancel"> |
+| It finds your MAME set, or you choose its folder. | About a minute. Cancel stops it and keeps the game you had. |
+
+| Play | Settings |
+|---|---|
+| <img src="docs/images/launcher-play.png" alt="The launcher's Play page: Play, Settings, Add to Steam, Build again, Game files"> | <img src="docs/images/launcher-settings-gamepad.png" alt="The launcher's Settings, Gamepad tab, with PlayStation button glyphs"> |
+| Play, add the game to Steam, or build it again. | The game's settings and controls in tabs. The defaults are the PlayStation 2 version's layout. |
+
+**The game's menu**, over the paused game: Insert or Esc, a gamepad's Guide
+button, or View + Menu held for a second. The keys and buttons at its foot
+are the ones you last used, here a DualSense's. Settings that apply at the
+next start keep a dot until then.
+
+<img src="docs/images/menu-picture.png" alt="The game's menu, Picture tab: the renderer changed to Software, marked to apply at the next start, with DualSense button glyphs">
+
+| Game (keyboard) | Controls (DualSense) |
+|---|---|
+| <img src="docs/images/menu-game.png" alt="The game's menu, Game tab: Resume, Credits, Card units, Operator test menu, Restart, Quit, with keyboard keys"> | <img src="docs/images/menu-controls.png" alt="The game's menu, Controls tab: the gamepad's buttons as PlayStation glyphs"> |
+
 ## Status
 
 Playable with sound, built on your PC from your own set by the builder
