@@ -1647,7 +1647,8 @@ option `--pick-game DIR`):
   was missing.
 
 **Add to Steam only from outside Steam** (David's decision, the same
-day). `tools/steam_shortcut.py` edits Steam's shortcut files, which Steam
+day; replaced by section 33, which shows the button everywhere and asks
+for Steam to be closed). `tools/steam_shortcut.py` edits Steam's shortcut files, which Steam
 rewrites when it exits, so it needs Steam closed. Run from Steam, the
 launcher could never use it; under Proton the launcher's own Steam entry
 is already how the game is played (Play starts it in the same Proton).
@@ -1919,3 +1920,79 @@ not show.
   same final hash.
 
 VF4debug has the same gap; it is left to that repository.
+
+
+## 33. Add to Steam from the launcher, Steam open or closed (2026-11-13)
+
+David asked for it to be easy: open the launcher, have an option to create
+or recreate its Steam shortcut, and when Steam is open, a note asking to
+close Steam (and, when Steam started the launcher, to open the launcher
+again with Steam closed). It replaces section 27's "Add to Steam only from
+outside Steam", which hid the button under Wine or Proton and when Steam
+started the launcher.
+
+**What it adds:** the Windows launcher adds itself (`vf4ft-launcher.exe`,
+from SDL's base path and the name it was started by), named Virtua
+Fighter 4 Final Tuned. Its entry plays the game straight away with *Start
+the game directly* (section 29) and keeps the launcher's update checks.
+An entry of that name is updated in place, so pressing it again recreates
+a deleted or moved shortcut; the same path gives the same appid, so Steam
+keeps its settings for it. (Before, the Windows launcher added
+`game\vf4ft.exe`; the native Linux launcher still adds the Windows build
+that its Play starts through Steam.)
+
+**The button:** on the Play page whenever the game is a Windows build:
+Windows, plain Wine and Proton alike. Pressing it gives one of three notes
+over the page (the page dimmed; only the note's buttons answer; Esc or
+Back closes it):
+
+- *Steam closed:* `tools/steam_shortcut.py add` writes the entry, and on
+  Linux sets Proton Experimental for it, then "Added to Steam: Start
+  Steam: Virtua Fighter 4 Final Tuned is in your library, set to run with
+  Proton."
+- *Steam running:* the tool changes nothing and ends with code 3. "Close
+  Steam first", with Try again (runs it again) and Close.
+- *Steam started the launcher* (`SteamGameId`, `SteamClientLaunch` or
+  `SteamAppId` set): no tool runs. Closing Steam ends a launcher under
+  Steam's Proton, so the note says to exit Steam, then open
+  `vf4ft-launcher.exe` again from its folder with Steam closed and choose
+  Add to Steam.
+
+**Under Wine on Linux, the real Steam** (`tools/steam_shortcut.py`): the
+Windows Python sees Wine's stand-in Steam through the registry, so when
+`ntdll.wine_get_host_version` says the host is Linux the tool works on the
+Linux host's Steam instead:
+
+- Steam's folder: the Linux home (`HOME` when it is a Linux path, else
+  Wine's `WINEHOMEDIR`), then
+  `~/.steam/steam`, `~/.local/share/Steam` or the Flatpak's, each turned
+  into a Wine path with `kernel32.wine_get_dos_file_name`.
+- Steam running: Wine's `Z:` drive shows the host's `/proc`, and a process
+  whose `comm` is `steam` counts (as do Steam's launch variables).
+- The entry is the one the Linux tool writes: the exe's Linux path
+  (`kernel32.wine_get_unix_file_name`), a bare start folder with a
+  trailing slash, and the compatibility tool in `config.vdf`.
+
+So a double-click on `vf4ft-launcher.exe` (the Linux desktop opens it with
+Wine) is enough to put the launcher in Steam, set to Proton.
+
+**Checked** (never on Steam's own files: copies of `shortcuts.vdf` and
+`config.vdf`, through `--steam` or a stand-in `HOME`):
+- The tool, Linux and Windows (the release's embedded Python under plain
+  Wine 11.21): with Steam running, both end with 3 and write nothing; with
+  Steam hidden by a PID namespace (`bwrap --unshare-pid`), both write their
+  copy, and the two copies are byte for byte the same. `list` under Wine
+  with no `--steam` finds the real Steam folder (read only).
+- The Windows launcher under plain Wine in a headless KWin (`--do steam
+  --exit`, a stand-in release and `HOME`): Steam running, the close-Steam
+  note; `SteamAppId` set, the note to reopen the launcher and no tool run;
+  Steam hidden, the copy's entry of that name updated to the launcher's
+  Linux path, Proton Experimental set in the copy's `config.vdf`, and the
+  added note.
+- The Play page and the three notes, offscreen at 1:1 (`--shot
+  steam-close`, `steam-started`, `steam-added`).
+
+Not tried: a real Steam reading the entry after it starts (the format is
+the Linux tool's, which Steam has read since M0), Windows itself, and the
+Deck, which has no Wine outside Steam: there the README's steps (Steam's
+own Add a Non-Steam Game) stay the way in.

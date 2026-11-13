@@ -98,7 +98,11 @@ static char found_path[1024];       /* a set find_set found: offered, used once 
 static char saves_from[1024];       /* the install before Change: its user/ goes into the new one at Build */
 static char game_note[400];         /* the Build page's line about the install folder */
 static int game_note_bad;
-static int no_add_to_steam;         /* Steam started the launcher, or Wine/Proton runs it: no Add to Steam */
+static int steam_started;           /* Steam started the launcher: Add to Steam asks for Steam closed first */
+#ifdef _WIN32
+static char self_exe[1024];         /* the launcher's own program: what Add to Steam adds */
+static const char *argv0 = "";
+#endif
 
 /* Start the game directly (docs/design.md section 29): with the Play page's
  * switch on, the launcher starts hidden and presses Play itself, and closes
@@ -509,31 +513,40 @@ static void find_set(void)
     say("no set found by itself: choose its folder");
 }
 
-/* Add to Steam edits Steam's shortcut files, which Steam rewrites when it
- * exits: it works only with Steam closed, from outside Steam. So it is not
- * offered when Steam started the launcher (Steam's own launch variables;
- * under Proton the launcher's Steam entry is already how the game is
- * played), nor to the Windows launcher under Wine or Proton, where the
- * tool would see the prefix's stand-in Steam and not the real one. */
+/* Add to Steam (docs/design.md section 33) edits Steam's shortcut files,
+ * which Steam rewrites when it exits: it works only with Steam closed. The
+ * tool says so with exit code 3, and the launcher asks for Steam to be
+ * closed. When Steam started the launcher (Steam's own launch variables),
+ * closing Steam closes the launcher too, so it asks for that and for the
+ * launcher to be opened again from its folder. The Windows launcher under
+ * Wine or Proton on Linux adds itself to the Linux host's Steam: the tool
+ * finds that Steam through Wine's drives. */
 static void steam_setup(void)
 {
+#ifdef _WIN32
+    /* the launcher's own program: its folder (SDL's base path) and the
+     * name it was started by */
+    const char *n = argv0 + strlen(argv0);
+    while (n > argv0 && n[-1] != '\\' && n[-1] != '/')
+        n--;
+    size_t nl = strlen(n);
+    snprintf(self_exe, sizeof self_exe, "%s%s%s", base, nl ? n : "vf4ft-launcher.exe",
+             nl && (nl < 4 || SDL_strcasecmp(n + nl - 4, ".exe")) ? ".exe" : "");
+#endif
     static const char *const vars[] = {"SteamGameId", "SteamClientLaunch", "SteamAppId", NULL};
     for (int i = 0; vars[i]; i++) {
         const char *v = SDL_getenv(vars[i]);
         if (v && v[0]) {
-            no_add_to_steam = 1;
-            say("steam: started by Steam (%s=%s): no Add to Steam, the launcher is in Steam already", vars[i], v);
+            steam_started = 1;
+            say("steam: started by Steam (%s=%s): Add to Steam asks for Steam to be closed first", vars[i], v);
             return;
         }
     }
 #ifdef _WIN32
     SDL_SharedObject *nt = SDL_LoadObject("ntdll.dll");
     const char *(*wine_version)(void) = nt ? (const char *(*)(void))SDL_LoadFunction(nt, "wine_get_version") : NULL;
-    if (wine_version) {
-        no_add_to_steam = 1;
-        say("steam: Wine %s (Proton or plain Wine): no Add to Steam, which needs the real Steam closed",
-            wine_version());
-    }
+    if (wine_version)
+        say("steam: Wine %s: Add to Steam adds the launcher to the Linux host's Steam", wine_version());
     if (nt)
         SDL_UnloadObject(nt);
 #endif
@@ -570,6 +583,12 @@ static char status_text[300];
 enum { P_FILES, P_BUILD, P_WORK, P_FAIL, P_PLAY, P_SETTINGS };
 static int page;
 static void go(int p);
+
+/* a note over the Play page (Add to Steam's): only its buttons answer */
+enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED };
+static int pop;
+static int steam_proton;            /* the tool set Proton for the entry */
+static void pop_open(int kind);
 
 static int start(int kind, const char **args, int capture)
 {
@@ -662,6 +681,8 @@ static void take_line(const char *s)
     }
     if (proc_kind == K_STEAM || proc_kind == K_STEAM_PLAY)
         SDL_strlcpy(status_text, s, sizeof status_text);
+    if (proc_kind == K_STEAM && !strncmp(s, "compat tool ", 12))
+        steam_proton = 1;
     say("%s", s);
 }
 
@@ -720,9 +741,13 @@ static int pump_process(void)
         }
         break;
     case K_STEAM:
-        status_kind = code == 0 ? ST_GOOD : ST_BAD;
-        if (code == 0)
+        status_kind = code == 0 ? ST_GOOD : code == 3 ? ST_NONE : ST_BAD;
+        if (code == 0) {
             SDL_strlcpy(status_text, "Added to Steam: start Steam again and it is in your library.", sizeof status_text);
+            pop_open(POP_ADDED);
+        } else if (code == 3) {     /* tools/steam_shortcut.py: Steam is running */
+            pop_open(POP_CLOSE_STEAM);
+        }
         break;
     case K_STEAM_PLAY:
         status_kind = code == 0 ? ST_GOOD : ST_BAD;
@@ -1202,7 +1227,7 @@ static int found_offered(void)
 enum {
     B_CHOOSE, B_CONTINUE, B_BACK, B_TARGET, B_BUILD, B_CANCEL, B_RETRY, B_PLAY, B_SETTINGS, B_STEAM,
     B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_USE_FOUND, B_GAME_DIR,
-    B_DIRECT, B_COUNT
+    B_DIRECT, B_POP_OK, B_POP_RETRY, B_COUNT
 };
 static int focus = -1;
 #define HITS 24
@@ -1249,7 +1274,7 @@ static int enabled(int b)
     case B_BUILD: return set_ok() && root[0] && !proc;
     case B_UPDATE: return built && root[0] && !proc;
     case B_PLAY: return built && !game_proc && !proc;
-    case B_STEAM: return built && root[0] && !proc && !built_linux && !no_add_to_steam;
+    case B_STEAM: return built && root[0] && !proc && !built_linux;
     case B_CANCEL: return (proc || shot_working) && !cancel_at;
     case B_REBUILD: return root[0] && !proc;
     /* a download starts only once the check's update.py has ended (it says
@@ -1273,6 +1298,12 @@ static int enabled(int b)
 static int page_buttons(int *ids)
 {
     int n = 0;
+    if (pop) {
+        if (pop == POP_CLOSE_STEAM)
+            ids[n++] = B_POP_RETRY;
+        ids[n++] = B_POP_OK;
+        return n;
+    }
     switch (page) {
     case P_FILES: ids[n++] = B_CHOOSE; ids[n++] = found_offered() ? B_USE_FOUND : B_CONTINUE; break;
     case P_BUILD:
@@ -1298,7 +1329,7 @@ static int page_buttons(int *ids)
         }
         ids[n++] = B_PLAY;
         ids[n++] = B_SETTINGS;
-        if (!built_linux && !no_add_to_steam)
+        if (!built_linux)
             ids[n++] = B_STEAM;
         ids[n++] = B_REBUILD;
         ids[n++] = B_FILES;
@@ -1590,17 +1621,36 @@ static void press(int b)
         break;
     }
     case B_STEAM: {
+        if (steam_started) {        /* closing Steam closes this launcher too */
+            say("Add to Steam: Steam started the launcher, so it asks for Steam to be closed first");
+            pop_open(POP_FROM_STEAM);
+            break;
+        }
         snprintf(script, sizeof script, "%stools/steam_shortcut.py", root);
-        const char *args[] = {python, "-I", script, "add", prog, NULL};
+#ifdef _WIN32
+        const char *what = self_exe;    /* the launcher: its entry can start the game directly (section 29) */
+#else
+        const char *what = prog;        /* the Windows build that Play starts through Steam */
+#endif
+        const char *args[] = {python, "-I", script, "add", what, NULL};
         status_kind = ST_WORKING;
-        SDL_strlcpy(status_text, "Adding it to Steam (Steam must be closed: Steam menu, Exit)\xE2\x80\xA6",
-                    sizeof status_text);
+        SDL_strlcpy(status_text, "Adding it to Steam\xE2\x80\xA6", sizeof status_text);
+        steam_proton = 0;
         if (start(K_STEAM, args, 1)) {
             status_kind = ST_BAD;
             SDL_strlcpy(status_text, error_line, sizeof status_text);
         }
         break;
     }
+    case B_POP_RETRY:
+        pop = POP_NONE;
+        focus = B_STEAM;
+        press(B_STEAM);
+        break;
+    case B_POP_OK:
+        pop = POP_NONE;
+        focus = B_STEAM;
+        break;
     }
 }
 
@@ -2030,7 +2080,7 @@ static void draw_play(void)
     button(B_PLAY, CX, y + 6, 220, 64, "Play", update_ready() || upd_card() ? 0 : 1, UI_I_PLAY);
     float x = CX + 244;
     x += button(B_SETTINGS, x, y + 14, 0, BTN_H, "Settings", 0, -1) + 14;
-    if (!built_linux && !no_add_to_steam)
+    if (!built_linux)
         x += button(B_STEAM, x, y + 14, 0, BTN_H, "Add to Steam", 0, -1) + 14;
     x += button(B_REBUILD, x, y + 14, 0, BTN_H, "Build again", 0, -1) + 14;
     button(B_FILES, x, y + 14, 0, BTN_H, "Game files", 0, -1);
@@ -2107,6 +2157,62 @@ static void draw_settings(void)
     ui_hints(LW - 40 - w - 24, 558, 24, done_hint, 1, 2);
 }
 
+static void pop_open(int kind)
+{
+    say("Add to Steam: %s", kind == POP_FROM_STEAM    ? "the note to close Steam and open the launcher again"
+                            : kind == POP_CLOSE_STEAM ? "the note to close Steam (Try again)"
+                                                      : "the note that it was added");
+    pop = kind;
+    focus = kind == POP_CLOSE_STEAM ? B_POP_RETRY : B_POP_OK;
+}
+
+/* Add to Steam's note, over the page: the page dimmed, a card with the
+ * note's buttons (the only ones that answer while it is up) */
+static void draw_pop(void)
+{
+    if (!pop)
+        return;
+    const char *t = "", *text = "";
+    switch (pop) {
+    case POP_FROM_STEAM:
+        t = "Close Steam first";
+        text = "Steam takes a new shortcut only while it is closed, and Steam started this launcher. Exit "
+               "Steam (in Steam's menu: Steam, Exit); this window closes with it. Then open vf4ft-launcher.exe "
+               "again from its folder, with Steam closed, and choose Add to Steam.";
+        break;
+    case POP_CLOSE_STEAM:
+        t = "Close Steam first";
+        text = "Steam takes a new shortcut only while it is closed. Exit Steam (in Steam's menu: Steam, Exit), "
+               "then choose Try again.";
+        break;
+    case POP_ADDED:
+        t = "Added to Steam";
+        text = steam_proton ? "Start Steam: Virtua Fighter 4 Final Tuned is in your library, set to run with Proton."
+                            : "Start Steam: Virtua Fighter 4 Final Tuned is in your library.";
+        break;
+    }
+    nhits = 0;                      /* the page's buttons do not answer under the note */
+    SDL_SetRenderDrawColor(ren, 6, 7, 10, 210);
+    SDL_RenderFillRect(ren, NULL);
+    float w = 620, tw = w - 72;
+    int lines = ui_wrap_lines(UI_REGULAR, 16, tw, text);
+    float h = 88 + lines * 24 + 28 + BTN_H + 36;
+    float x0 = (LW - w) / 2, y0 = (LH - h) / 2;
+    ui_round_line(x0, y0, w, h, 16, 1, UI_LINE, UI_CARD);
+    ui_text(UI_BOLD, 22, x0 + 36, y0 + 48, UI_TEXT, t);
+    ui_wrap(UI_REGULAR, 16, x0 + 36, y0 + 88, tw, 24, UI_MUTED, text);
+    float by = y0 + h - 36 - BTN_H, bx = x0 + w - 36;
+    if (pop == POP_CLOSE_STEAM) {
+        bx -= button_w("Close");
+        button(B_POP_OK, bx, by, 0, BTN_H, "Close", 0, -1);
+        bx -= 14 + button_w("Try again");
+        button(B_POP_RETRY, bx, by, 0, BTN_H, "Try again", 1, -1);
+    } else {
+        bx -= button_w("OK");
+        button(B_POP_OK, bx, by, 0, BTN_H, "OK", 1, -1);
+    }
+}
+
 static void draw(void)
 {
     int pw = 0, ph = 0;
@@ -2124,6 +2230,7 @@ static void draw(void)
     case P_PLAY: draw_play(); break;
     case P_SETTINGS: draw_settings(); break;
     }
+    draw_pop();
     /* a present that fails leaves the window showing an old page: say so
      * (once, and again when it works again), since nothing else would */
     static int present_failing;
@@ -2178,7 +2285,9 @@ static void page_event(const SDL_Event *e)
         else
             press(focus);
     } else if (k == SDLK_ESCAPE || face == UI_IN_BACK) {
-        if (page == P_BUILD || page == P_FAIL)
+        if (pop)
+            press(B_POP_OK);
+        else if (page == P_BUILD || page == P_FAIL)
             press(B_BACK);
         else if (k == SDLK_ESCAPE && page != P_WORK)
             quit_asked = 1;
@@ -2287,6 +2396,10 @@ int main(int argc, char **argv)
     const char *unknown[8];
     int opt_exit = 0, opt_show = 0, nunknown = 0;
     double opt_cancel = -1;
+#ifdef _WIN32
+    if (argc > 0 && argv[0])
+        argv0 = argv[0];
+#endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) opt_game = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc) opt_set = argv[++i];
@@ -2441,6 +2554,16 @@ int main(int argc, char **argv)
                 SDL_strlcpy(upd_error, "cannot reach GitHub: [Errno -3] Temporary failure in name resolution",
                             sizeof upd_error);
                 focus = default_focus();
+            }
+        /* the Play page under Add to Steam's notes: steam-started, steam-close, steam-added */
+        static const struct { const char *name; int kind; } pops[] = {
+            {"steam-started", POP_FROM_STEAM}, {"steam-close", POP_CLOSE_STEAM}, {"steam-added", POP_ADDED},
+        };
+        for (size_t i = 0; i < SDL_arraysize(pops); i++)
+            if (!strcmp(shot_page, pops[i].name)) {
+                go(P_PLAY);
+                steam_proton = 1;
+                pop_open(pops[i].kind);
             }
         if (shot_device && ui_device_named(shot_device) >= 0)
             ui_set_device(ui_device_named(shot_device));    /* the caps' style (ui.h) */

@@ -31,9 +31,11 @@ holds the launcher and builder only, no game. You also need your MAME
 4. **Build:** the game goes into `game\` beside the launcher, or elsewhere
    with Change…. Press Build. The first build downloads about 200 MB of
    compiler and takes a few minutes.
-5. **Play.** Optional: to have the game in your Steam library too, exit
-   Steam (Steam menu, Exit), then press Add to Steam on the Play page
-   (Steam rewrites its shortcuts when it exits, so it must be closed).
+5. **Play.** Optional: to have the game in your Steam library too, press
+   **Add to Steam** on the Play page. Steam takes a new shortcut only while
+   it is closed (it rewrites its shortcuts when it exits), so if Steam is
+   open the launcher asks you to exit it (Steam menu, Exit) and then
+   choose Try again. Press it again any time to recreate the shortcut.
    Or turn on **Start the game directly** on the Play page: from then on
    the launcher opens the game straight away, and the game's menu has
    **Open the launcher**.
@@ -51,13 +53,21 @@ holds the launcher and builder only, no game. You also need your MAME
 4. Start it from your Steam library, then do steps 3 and 4 above, and
    press **Play**: the game starts under the same Proton, with Steam
    Input. This entry is how you play from now on (it opens on Play once
-   the game is built). The launcher does not offer Add to Steam here: it
-   is in Steam already. To have the entry open the game straight away,
+   the game is built). To have the entry open the game straight away,
    turn on **Start the game directly** on the Play page; the game's menu
    then has **Open the launcher**.
 
+If Wine is installed (opening `vf4ft-launcher.exe` from your file manager
+starts it), steps 2 and 3 can be done by the launcher instead: open it with
+Steam closed and press **Add to Steam** on the Play page (after Game files
+and Build). It adds itself to your Linux Steam, named Virtua Fighter 4
+Final Tuned and set to Proton Experimental; with Steam open it asks you to
+exit Steam first. Pressed from the Steam entry, it asks you to exit Steam
+and open `vf4ft-launcher.exe` again from its folder.
+
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode
-([more for the Deck](#steam-deck-m6)). Plain Wine is not supported.
+([more for the Deck](#steam-deck-m6)). Plain Wine is not supported for
+playing: the game runs through Steam's Proton.
 
 ## Screenshots
 
@@ -177,8 +187,9 @@ Build (where the game goes, with Change…; then the stage, a progress bar,
 the time so far and the builder's last lines; Cancel stops it cleanly),
 and Play. The Play page
 also has Settings (the game's settings and controls, in tabs), Add to Steam
-(adds the game as a non-Steam game; close Steam first; not offered when
-Steam started the launcher, or under Wine or Proton), Build again, an
+(adds the launcher as a non-Steam game, or recreates that entry; with
+Steam open it asks for Steam to be closed first; under Wine on Linux it
+adds it to the Linux Steam, set to Proton), Build again, an
 Update card when the builder is newer than the game it built, and **Start
 the game directly**: with it on, the launcher starts hidden, opens the
 game and closes with it, so its Steam entry plays the game; it still shows

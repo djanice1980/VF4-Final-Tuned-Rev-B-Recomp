@@ -99,8 +99,11 @@ ON WINDOWS
 4. Build: the game goes into game\\ beside the launcher, or elsewhere with
    Change.... Press Build. The first build downloads about 200 MB of
    compiler and takes a few minutes.
-5. Play. Optional: to have the game in your Steam library too, exit
-   Steam (Steam menu, Exit), then press Add to Steam on the Play page.
+5. Play. Optional: to have the game in your Steam library too, press
+   Add to Steam on the Play page. Steam takes a new shortcut only while it
+   is closed, so if Steam is open the launcher asks you to exit it (Steam
+   menu, Exit) and then choose Try again. Press it again any time to
+   recreate the shortcut.
    Or turn on Start the game directly on the Play page: from then on the
    launcher opens the game straight away, and the game's menu has Open
    the launcher.
@@ -116,12 +119,16 @@ ON LINUX OR A STEAM DECK (through Steam's Proton)
    compatibility tool" and choose Proton Experimental.
 4. Start it from your Steam library, do steps 3 and 4 above, and press
    Play: the game starts under the same Proton. This entry is how you
-   play from now on (the launcher does not offer Add to Steam here: it is
-   in Steam already). To have it open the game straight away, turn on
+   play from now on. To have it open the game straight away, turn on
    Start the game directly on the Play page; the game's menu then has
    Open the launcher.
+If Wine is installed (opening vf4ft-launcher.exe from your file manager
+starts it), steps 2 and 3 can be done by the launcher instead: open it with
+Steam closed and press Add to Steam on the Play page (after Game files and
+Build). It adds itself to your Linux Steam, named Virtua Fighter 4 Final
+Tuned and set to Proton Experimental.
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
-Plain Wine is not supported: run the launcher through Proton.
+Plain Wine is not supported for playing: the game runs through Proton.
 
 Updates: the launcher checks for a newer release when it starts and
 offers Update now. Your saves and settings stay.
