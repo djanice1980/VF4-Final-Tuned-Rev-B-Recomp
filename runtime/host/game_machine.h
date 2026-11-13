@@ -38,11 +38,14 @@ typedef struct game_input {
 typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int booting, game_input *in);
 
 /* Everything up to the first instruction: memory, the program image, the
- * DIMM image, devices, the BIOS stand-in, the translated code's tables;
- * sound_chip: the sound chip with the game's own driver (1), or VF4debug's
- * silent mailbox model (0). 0 on success; messages go to stderr. Call on
- * the thread that will run. */
-int game_machine_init(const char *image, const char *dimm, int sound_chip, game_frame_fn fn);
+ * DIMM image, devices, the BIOS stand-in, the translated code's tables.
+ * dimm_key NULL: dimm is the decrypted image (development) and image the
+ * program (main.bin). dimm_key set: dimm is the disc's encrypted file, which
+ * is decrypted with it (dimm_image.c), and image may be NULL to take the
+ * program from it. sound_chip: the sound chip with the game's own driver
+ * (1), or VF4debug's silent mailbox model (0). 0 on success; messages go to
+ * stderr. Call on the thread that will run. */
+int game_machine_init(const char *image, const char *dimm, const char *dimm_key, int sound_chip, game_frame_fn fn);
 
 /* from the frame function: the sound the chip made since the last call, up
  * to max stereo frames (44,100 a second); with sound_chip 0 there is none */

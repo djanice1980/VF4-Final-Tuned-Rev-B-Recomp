@@ -222,3 +222,16 @@ int hw_cart_init(const char *path)
     return 0;
 #endif
 }
+
+/* recomp (M5): the image already in memory, decrypted from the disc's file
+ * (runtime/host/dimm_image.c); the cartridge port owns it from here */
+int hw_cart_init_memory(u8 *buf, u32 size)
+{
+    memset(&cs, 0, sizeof cs);
+    snapshot_register("cartridge", &cs, sizeof cs);
+    hw_net_init();
+    event_register(dma_end_event, "cartridge DMA end");
+    image = buf;
+    image_size = size;
+    return 0;
+}

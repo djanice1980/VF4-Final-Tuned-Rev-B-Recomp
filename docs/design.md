@@ -34,23 +34,26 @@ model; nothing is copied. The decomp's names are used as they are.
 
 ```
  gds-0036f.chd + vf4tuned.zip (317-0387-COM PIC)   the player's MAME set, read in place
-        │  builder: CHD reader, GD-ROM file system, PIC key, DIMM DES (as the decomp's tools/extract.sh)
+        │  builder (tools/vf4build): CHD reader, GD-ROM file system, PIC key, DES; no MAME tools
         ▼
- work/vf41_s.dec (240 MiB DIMM image)  →  main.bin (0x0C020000, 0x340000 bytes)
-        │  checks: CHD SHA1 68edece4239e5adfef9df143defb711ff2b4db72,
+ data/VF41_S.BIN (240 MiB, encrypted, as on the disc) + data/dimm.key  →  main.bin (decrypted in memory)
+        │  checks: CHD SHA1 68edece4239e5adfef9df143defb711ff2b4db72, VF41_S.BIN SHA1,
         │          main.bin SHA1 e1288dda29d526c086086042b760fdc10be4662a
         ▼
- translator/ (Python 3)  +  meta/ (routine table, FPU context, code tables)
-        │  one C function per routine, grouped into ~64 files (work/gen, local, never committed)
+ translator/ (Python 3)  +  meta/ (routine table, FPU context, code tables, globals)
+        │  one C function per routine, grouped into ~64 files (<install>/build, removed afterwards)
         ▼
- clang (llvm-mingw, pinned release) -O2, lld
-        │  linked with the prebuilt runtime (runtime/, SDL3)
+ clang (llvm-mingw, pinned release) -O3, lld; or the system's clang/gcc for native Linux
+        │  with the runtime's sources (runtime/) and SDL3 (SDL's official mingw build)
         ▼
- vf4ft.exe  +  SDL3.dll  +  data/vf41_s.dec  (the install folder; saves in user/)
+ vf4ft.exe  +  SDL3.dll  +  data/  (the install folder; saves in user/)
 ```
 
 The DIMM image is needed at run time as well: the game loads its assets from
-it through the cartridge port model, exactly as on the board. `test.bin` (the
+it through the cartridge port model, exactly as on the board. The install
+keeps the disc's encrypted file and its key; the game decrypts it into
+memory when it starts (0.17 s on 16 threads), as the DIMM board does when
+it boots, and takes the program out of it. `test.bin` (the
 operator test mode program) is translated the same way and linked into the
 same executable with its own dispatch table: it loads at the same address as
 `main.bin`, so the runtime picks one program at boot, as the BIOS does.
@@ -228,9 +231,12 @@ the controller and its observer) as of the commit named in
 `runtime/machine/ORIGIN.md`, changed only where marked `recomp:`, so a
 later VF4debug fix can be carried over with a diff. M2 runs it in virtual
 time, exactly as VF4debug does; the changes for play come in M3. Its routine
-and global tables (names, addresses, argument shapes) are made at build time
-by VF4debug's `tools/gen_tables.py` from the decompilation in development
-builds; the player's build will make them from `meta/` instead (M5).
+and global tables (names, addresses, argument shapes) are made at build time:
+from `meta/` by `tools/make_tables.py` (the player's build, and CMake with
+`-DVF4FT_TABLES=meta`), or by VF4debug's `tools/gen_tables.py` from the
+decompilation (CMake's default when both checkouts are present), which adds
+the declarations the observer's call log uses. Both give the same routines,
+sizes and globals (checked: 6,632 and 4,266, identical).
 
 | Device | Source | Change for play |
 |---|---|---|
@@ -293,20 +299,27 @@ game) on its own ARM7 core and mixes 64 channels with a DSP for reverb.
 
 ## 8. Builder and launcher
 
-Command line first, a window later:
+Built in M5 (results: section 19).
 
-1. `python -I tools/make_game.py --set <folder with gds-0036f.chd and vf4tuned.zip> --out <install folder>`:
+1. `python -I tools/make_game.py --set <folder> --out <install folder>`:
    checks the set, extracts, translates, compiles, installs. `--update
-   <install folder>` rebuilds after a new release, keeping `user/`.
-2. Then a small builder program (Windows exe, and a Linux build for Steam
-   Deck / desktop Linux): finds or asks for the set, downloads the pinned
-   llvm-mingw and an embeddable Python, runs step 1, adds the game to Steam
-   (section 11), and acts as the launcher with
-   **Play** and **Update**.
+   <install folder>` rebuilds after a new release from the install's own
+   data (the set is not needed), keeping `user/`. `--target linux` makes a
+   native Linux program with the system's compiler and SDL3.
+2. `vf4ft-launcher` (`runtime/launcher/launcher.c`, SDL3 only): Choose set,
+   Build, Update, Play, Add to Steam; it runs step 1 and
+   `tools/steam_shortcut.py` and shows their output. The Windows release
+   carries SDL's official SDL3.dll and Python's embeddable package
+   (`python/`), so nothing is installed; the builder downloads the pinned
+   llvm-mingw and SDL3 on its first run. On Linux the launcher uses the
+   system's Python, and Play for the Windows exe goes through the Steam
+   shortcut (Proton, Steam Input).
+3. `tools/package_release.py` puts a release together from tracked files
+   only, so nothing made from a set can get into one.
 
 The set is read in place and never changed. The install folder holds only
-what the player's own set produced; the builder says so, and the README tells
-players never to share it.
+what the player's own set produced; the builder's notice in it (`READ
+ME.txt`) and the README tell players never to share it.
 
 ## 9. Checking that it is right
 
@@ -348,7 +361,7 @@ players never to share it.
 | M2 | Runtime with the device models, headless | boots to attract and plays CPU vs CPU matches; lockstep recording identical to VF4debug's (section 13) |
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton (done 2026-11-12, section 15) |
 | M4 | Sound | music, voices and effects (done 2026-11-12, section 17); the DSP's reverb (section 18) |
-| M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs |
+| M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs (section 19) |
 | M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered |
 
 ## 11. Decided 2026-11-12
@@ -684,3 +697,90 @@ possible cross-check for the timing details, if they ever matter.
   0x6000). Until the DSP's own writes have swept the ring (1.5 s), parts
   of it read as a constant. The start-up's sound is dropped, so this is
   not heard.
+
+## 19. M5 results (2026-11-12)
+
+**What a player runs.** `vf4ft-launcher` (Choose set, Build, Update, Play,
+Add to Steam) or `tools/make_game.py` directly. Section 8 has the flow and
+README.md the steps.
+
+**The set, with no MAME tools** (`tools/vf4build/`, each written from a
+public description; no code from MAME, libchdr or the decompilation's
+MAME-derived decrypter):
+
+- `chd.py`: CHD v5. Header; the compressed hunk map (its Huffman code, the
+  run lengths, copies from other hunks), checked against the map's CRC-16;
+  CD hunks in LZMA, Deflate and FLAC (`flac.py`, RFC 9639), and Zstandard
+  where the Python has it. The game's track 3 is LZMA, Deflate and copies;
+  FLAC is only in tracks 1 and 2, but it was checked anyway: all 1,352 audio
+  frames of track 2 match chdman's extraction, and 3,000 random sectors of
+  track 3 match it too.
+- `gdrom.py`: the ISO 9660 file system of the high-density area.
+- `naomi.py`: the PIC's key and boot file name; BHX.BIN names VF41_S.BIN.
+  The cipher is DES (FIPS 46-3, `des.py`, checked on the standard's worked
+  example). Its byte order was found by trying the eight possibilities
+  against the decompilation's decrypted image: the key is the PIC's eight
+  key bytes reversed, and each block is the file's 8 bytes read as a
+  little-endian number. Checks: the CHD's SHA-1, VF41_S.BIN's SHA-1 (as on
+  the disc), main.bin's and test.bin's SHA-1.
+- The whole step takes 5.5 s in Python, decryption of the two programs
+  included.
+
+**The install keeps the disc's file.** `data/VF41_S.BIN` (encrypted) and
+`data/dimm.key`; the game decrypts the image into memory at start
+(`runtime/host/dimm_image.c`, one thread per processor: 0.17 s for 240 MiB
+here) and takes main.bin out of it, so no decrypted copy is ever written.
+Its output is byte for byte the decompilation's `vf41_s.dec`.
+
+**Tables from meta/.** `meta/main/routines.tsv` gained the routine sizes and
+`meta/main/globals.tsv` the 4,266 named globals (`tools/sync_meta.py`,
+names and addresses only). `tools/make_tables.py` makes the machine's tables
+from them; they are identical to `gen_tables.py`'s in every routine,
+size and global.
+
+**Compiling with no CMake.** `tools/vf4build/build.py` runs the compiler
+with CMake's flags, one process per processor. The compiler and SDL3 are
+pinned by SHA-256 (`toolchain.py`): llvm-mingw 20261104 (the Linux or
+Windows build of it) and SDL's official `SDL3-devel-3.4.20-mingw` package,
+in place of the SDL3 the development build compiles itself. The
+native Linux target uses the system's compiler and SDL3.
+
+**Measured on this machine (32 threads):**
+
+| Run | Time |
+|---|---|
+| `make_game.py`, empty download cache, Windows exe | 59 s (11 s downloading and unpacking, 35 s translating, 13 s compiling) |
+| `--update` (no set) | 52 s |
+| `--target linux` | 57 s |
+| the Windows release under Proton, fresh prefix: launcher, embeddable Python, Windows llvm-mingw | 66 s |
+
+**Checked:**
+
+- The builder's `vf4ft.exe` under Proton (Direct3D 12) and natively boots
+  from the encrypted image through the warning screen to the attract demo.
+- In the Windows release under Proton, in a fresh prefix with nothing
+  installed, the launcher was used by hand: Choose set (the Windows folder
+  dialog), Build, Play. Its scripted mode (`--do build|update --exit`) ran
+  Build and Update and showed the builder's output as it came.
+- The first scripted Build, in the brand-new prefix, did not start; the same
+  command worked twice afterwards. The cause was not found: the launcher had
+  no log yet, and now writes `launcher.log`.
+- Development builds are unchanged: CMake still makes the tables from the
+  decompilation when both checkouts are there (`-DVF4FT_TABLES=meta` for the
+  player's way), and the game falls back to `data/main.bin` and
+  `data/vf41_s.dec`.
+
+**Not done yet:**
+
+- Releases: `tools/package_release.py` assembles the Windows release
+  (launcher, SDL3.dll, the embeddable Python 3.14.10, the builder's tracked
+  files: 15 MB zipped). No release has been published, and there is no CI
+  yet.
+- The Linux launcher links the system's SDL3. For Steam Deck it needs SDL3
+  built in, or the Windows release run under Proton.
+- Add to Steam on Windows (registry SteamPath, `tasklist`) is written but
+  not run on a real Windows Steam. On Linux it is the M0 tool.
+- Play from the launcher on Linux, for the Windows exe, goes through the
+  Steam shortcut, so Add to Steam has to come first. It was not run here,
+  because Steam was open.
+

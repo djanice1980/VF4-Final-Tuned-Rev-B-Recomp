@@ -144,6 +144,10 @@ static void rt_code_store(u32 addr, u32 n, const void *bytes)
  * whatever already differs (made before the run, or by a snapshot) */
 static int code_compare(const char *image)
 {
+    /* no file: the program came out of the DIMM image just before this
+     * (runtime/host/game_machine.c), so memory holds those very bytes */
+    if (!image)
+        return 0;
     FILE *f = fopen(image, "rb");
     if (!f) {
         fprintf(stderr, "vf4ft: cannot read %s\n", image);

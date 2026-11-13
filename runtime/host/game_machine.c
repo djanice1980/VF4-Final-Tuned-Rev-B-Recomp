@@ -14,6 +14,7 @@
 #include "rt_native.h"
 #include "aica.h"
 #include "game_machine.h"
+#include "dimm_image.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -64,7 +65,7 @@ unsigned game_machine_audio(short *dst, unsigned max)
     return hw_sound_chip ? aica_audio_take(dst, max) : 0;
 }
 
-int game_machine_init(const char *image, const char *dimm, int sound_chip, game_frame_fn fn)
+int game_machine_init(const char *image, const char *dimm, const char *dimm_key, int sound_chip, game_frame_fn fn)
 {
     memset(&cfg, 0, sizeof cfg);
     cfg.image = image;
@@ -77,16 +78,35 @@ int game_machine_init(const char *image, const char *dimm, int sound_chip, game_
     if (mem_init() || mem_add_ram("main-ram", RAM_BASE, RAM_SIZE) ||
         mem_add_ram("harness-scratch", CONTROL_SCRATCH, CONTROL_SCRATCH_SIZE))
         return 1;
-    u32 loaded = 0;
-    if (mem_load_file(image, IMAGE_BASE, 0x340000, &loaded) || loaded != 0x340000) {
-        fprintf(stderr, "vf4ft: %s is not the 3,407,872-byte program image (main.bin)\n", image);
+    /* The installed game has the disc's file and its key; the image is
+     * decrypted into memory here, and the program comes out of it as the
+     * BIOS takes it (the Naomi header's load table: 0x20000, 0x340000 bytes).
+     * A development build has a decrypted image and main.bin instead. */
+    u8 *dimm_mem = NULL;
+    u32 dimm_size = 0;
+    if (dimm_key) {
+        if (dimm_image_load(dimm, dimm_key, &dimm_mem, &dimm_size))
+            return 1;
+        if (dimm_size < 0x360000)
+            return 1;
+    }
+    if (image) {
+        u32 loaded = 0;
+        if (mem_load_file(image, IMAGE_BASE, 0x340000, &loaded) || loaded != 0x340000) {
+            fprintf(stderr, "vf4ft: %s is not the 3,407,872-byte program image (main.bin)\n", image);
+            return 1;
+        }
+    } else if (dimm_mem) {
+        memcpy(mem_ptr(IMAGE_BASE), dimm_mem + 0x20000, 0x340000);
+    } else {
+        fprintf(stderr, "vf4ft: no program image\n");
         return 1;
     }
     if (disp_init() || rt_native_names_check())
         return 1;
     machine_init();
     hw_init(&cpu);
-    if (hw_cart_init(dimm))
+    if (dimm_mem ? hw_cart_init_memory(dimm_mem, dimm_size) : hw_cart_init(dimm))
         return 1;
     sh4_reset(&cpu, IMAGE_BASE);
     if (control_init(NULL) || hle_init(&cpu))

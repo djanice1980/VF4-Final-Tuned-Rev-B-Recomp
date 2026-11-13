@@ -4,6 +4,10 @@
 usage:
   python3 -I tools/steam_shortcut.py add EXE [--name NAME] [--proton TOOL] [--steam DIR] [--dry-run]
   python3 -I tools/steam_shortcut.py list [--steam DIR]
+  python3 -I tools/steam_shortcut.py play EXE [--name NAME]    (starts the shortcut through Steam)
+
+DIR defaults to ~/.steam/steam on Linux and to the SteamPath in the
+registry on Windows.
 
 For every Steam user in DIR/userdata it adds (or updates, matched by the
 app name) an entry in config/shortcuts.vdf. For a Windows .exe on Linux it
@@ -170,8 +174,39 @@ def shortcut_appid(exe_field, name):
 
 
 def steam_running():
+    if os.name == "nt":
+        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steam.exe", "/NH"], capture_output=True, text=True,
+                           creationflags=0x08000000)       # CREATE_NO_WINDOW
+        return "steam.exe" in r.stdout.lower()
     r = subprocess.run(["pgrep", "-x", "steam"], capture_output=True)
     return r.returncode == 0
+
+
+def default_steam_dir():
+    if os.name == "nt":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+                return os.path.normpath(winreg.QueryValueEx(k, "SteamPath")[0])
+        except OSError:
+            return r"C:\Program Files (x86)\Steam"
+    return os.path.realpath(os.path.expanduser("~/.steam/steam"))
+
+
+def cmd_play(a):
+    """Starts the shortcut through Steam (so Steam Input and, on Linux, Proton apply)."""
+    exe = os.path.abspath(a.exe)
+    appid = shortcut_appid(f'"{exe}"', a.name)
+    url = "steam://rungameid/%d" % ((appid << 32) | 0x02000000)
+    print(url)
+    if os.name == "nt":
+        os.startfile(url)
+    else:
+        for opener in (["steam", url], ["xdg-open", url]):
+            if shutil.which(opener[0]):
+                subprocess.Popen(opener, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                return
+        raise SystemExit("neither steam nor xdg-open is on PATH")
 
 
 def backup(path, stamp):
@@ -226,7 +261,8 @@ def cmd_add(a):
     if steam_running():
         raise SystemExit("Steam is running: close it first (Steam > Exit), then run this again")
     exe_field = f'"{exe}"'
-    start_dir = os.path.dirname(exe) + "/"
+    # as Steam itself writes them: quoted with a backslash on Windows, bare on Linux
+    start_dir = f'"{os.path.dirname(exe)}\\"' if os.name == "nt" else os.path.dirname(exe) + "/"
     appid = shortcut_appid(exe_field, a.name)
     windows_exe = exe.lower().endswith(".exe")
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -294,7 +330,7 @@ def cmd_add(a):
 
 
 def main():
-    default_steam = os.path.realpath(os.path.expanduser("~/.steam/steam"))
+    default_steam = default_steam_dir()
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     pa = sub.add_parser("add")
@@ -307,9 +343,14 @@ def main():
     pa.add_argument("--dry-run", action="store_true")
     pl = sub.add_parser("list")
     pl.add_argument("--steam", default=default_steam)
+    pp = sub.add_parser("play")
+    pp.add_argument("exe")
+    pp.add_argument("--name", default="Virtua Fighter 4 Final Tuned")
     a = p.parse_args()
     if a.cmd == "list":
         cmd_list(a.steam)
+    elif a.cmd == "play":
+        cmd_play(a)
     else:
         cmd_add(a)
 

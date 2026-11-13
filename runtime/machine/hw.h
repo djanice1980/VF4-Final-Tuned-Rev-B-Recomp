@@ -79,6 +79,7 @@ void hw_card_stats(FILE *f);
 
 /* the cartridge port and the DIMM image behind it (hw_cart.c) */
 int hw_cart_init(const char *dimm_image_path);
+int hw_cart_init_memory(u8 *image, u32 size);   /* recomp (M5): an image already in memory, decrypted */
 int hw_cart_read(sh4 *c, u32 p, u32 *out);
 int hw_cart_write(sh4 *c, u32 p, u32 v);
 void hw_cart_stats(FILE *f);

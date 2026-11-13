@@ -11,6 +11,16 @@ if(WIN32 AND NOT DEFINED SDL3_DIR)
 endif()
 find_package(SDL3 3.4 REQUIRED CONFIG COMPONENTS SDL3-shared)
 
+# The launcher (M5): the builder's window, Build / Update / Play / Add to
+# Steam. It holds no game code, so it builds without the translation.
+add_executable(vf4ft-launcher runtime/launcher/launcher.c)
+target_link_libraries(vf4ft-launcher PRIVATE SDL3::SDL3)
+target_compile_options(vf4ft-launcher PRIVATE -Wall -Wextra)
+if(WIN32)
+    set_target_properties(vf4ft-launcher PROPERTIES WIN32_EXECUTABLE ON)
+    target_link_options(vf4ft-launcher PRIVATE -static)
+endif()
+
 # The translated CPU: runtime pieces, and the code the translator made from
 # your copy of the game (work/gen, from translator/translate.py). Warnings in
 # generated code are errors: they mean the translator emitted something wrong.
@@ -33,19 +43,36 @@ foreach(prog main test)
 endforeach()
 
 # The machine (milestone 2 and on): VF4debug's device models (runtime/machine)
-# and the seam to the translated main program (runtime/native). Development
-# builds make its routine and global tables from the decompilation, with
-# VF4debug's own tools/gen_tables.py (docs/design.md, section 5); the player's
-# build will make them from meta/ (M5).
+# and the seam to the translated main program (runtime/native). Its routine
+# and global tables (docs/design.md, section 5) come from meta/
+# (tools/make_tables.py, as in the player's build), or, with
+# -DVF4FT_TABLES=decomp, from the decompilation with VF4debug's own
+# tools/gen_tables.py, which adds the declarations the observer's call log
+# shows. The default is decomp when both checkouts are beside this one.
 if(TARGET vf4ft_gen_main)
     set(VF4_DECOMP "${CMAKE_CURRENT_SOURCE_DIR}/../vf4ft-decomp" CACHE PATH "the vf4ft-decomp checkout")
     set(VF4DEBUG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../VF4debug" CACHE PATH "the VF4debug checkout (its tools/)")
+    if(EXISTS "${VF4DEBUG_DIR}/tools/gen_tables.py" AND EXISTS "${VF4_DECOMP}/ghidra/source_map.tsv")
+        set(tables_default decomp)
+    else()
+        set(tables_default meta)
+    endif()
+    set(VF4FT_TABLES ${tables_default} CACHE STRING "where the machine's routine and global tables come from: meta or decomp")
     set(machine_gen "${CMAKE_CURRENT_BINARY_DIR}/machine_gen")
-    add_custom_command(OUTPUT "${machine_gen}/tables.c"
-        COMMAND python3 -I "${VF4DEBUG_DIR}/tools/gen_tables.py" "${VF4_DECOMP}" "${machine_gen}"
-        DEPENDS "${VF4DEBUG_DIR}/tools/gen_tables.py"
-        COMMENT "Routine and global tables from the decompilation"
-        VERBATIM)
+    if(VF4FT_TABLES STREQUAL "decomp")
+        add_custom_command(OUTPUT "${machine_gen}/tables.c"
+            COMMAND python3 -I "${VF4DEBUG_DIR}/tools/gen_tables.py" "${VF4_DECOMP}" "${machine_gen}"
+            DEPENDS "${VF4DEBUG_DIR}/tools/gen_tables.py"
+            COMMENT "Routine and global tables from the decompilation"
+            VERBATIM)
+    else()
+        add_custom_command(OUTPUT "${machine_gen}/tables.c"
+            COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_tables.py" "${machine_gen}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_tables.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/meta/main/routines.tsv" "${CMAKE_CURRENT_SOURCE_DIR}/meta/main/globals.tsv"
+            COMMENT "Routine and global tables from meta/"
+            VERBATIM)
+    endif()
     file(GLOB machine_src CONFIGURE_DEPENDS runtime/machine/*.c)
     # objects, not an archive: the translated code calls back into rt_native.c
     add_library(vf4ft_machine OBJECT runtime/native/rt_native.c ${machine_src} "${machine_gen}/tables.c"
@@ -60,9 +87,11 @@ if(TARGET vf4ft_gen_main)
     endif()
 
     # The game (milestone 3): the machine on its own thread, the window, the
-    # controls. Until the install layout of M5 it reads data/main.bin and
-    # data/vf41_s.dec beside itself: links to the decompilation's files here.
-    add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c)
+    # controls. Installed by the builder (tools/make_game.py), it reads the
+    # disc's file and its key from data/ beside itself; a development build
+    # gets data/main.bin and data/vf41_s.dec as links to the decompilation's
+    # files.
+    add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c runtime/host/dimm_image.c)
     target_link_libraries(vf4ft PRIVATE SDL3::SDL3 vf4ft_machine)
     target_compile_options(vf4ft PRIVATE -Wall -Wextra ${VF4FT_FP_FLAGS})
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/data")

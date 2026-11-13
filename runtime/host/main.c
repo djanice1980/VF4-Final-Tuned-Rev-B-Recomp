@@ -9,8 +9,12 @@
  * so a run under Proton can be checked afterwards.
  *
  * Options:
- *   --image FILE      the program image (default: data/main.bin beside the executable, or $VF4_IMAGE)
- *   --dimm FILE       the decrypted DIMM image (default: data/vf41_s.dec beside the executable, or $VF4_DIMM)
+ *   --image FILE      the program image (main.bin; or $VF4_IMAGE). By default the program comes out of
+ *                     the DIMM image when that is the disc's file, else data/main.bin beside the executable
+ *   --dimm FILE       the DIMM image (or $VF4_DIMM): the disc's encrypted file (a name ending in .BIN, any
+ *                     case: VF41_S.BIN, decrypted with dimm.key beside it, as the builder installs it), or
+ *                     a decrypted image (development). Default: data/VF41_S.BIN beside the executable if
+ *                     it is there, else data/vf41_s.dec
  *   --frames N        quit after N vertical blanks (0 = until the window closes)
  *   --unpaced         no waiting: the machine runs as fast as it can (for measuring)
  *   --real-boot       the game's first start-up step (WARNING.INIT, about 97 s) at its real pace too;
@@ -38,6 +42,9 @@
 #include "game_machine.h"
 
 #define VF4FT_TITLE "Virtua Fighter 4 Final Tuned"
+#ifndef VF4FT_VERSION
+#define VF4FT_VERSION "development build"   /* the builder (tools/make_game.py) gives its version */
+#endif
 #define PIC_W GAME_PICTURE_W
 #define PIC_H GAME_PICTURE_H
 #define FRAME_NS (1000000000ull / 60)   /* the machine's vertical blank (runtime/machine/machine.h) */
@@ -78,7 +85,7 @@ static struct {
     game_input in;                              /* the controls, as this thread last read them */
 } shared;
 
-static const char *image_path, *dimm_path;
+static const char *image_path, *dimm_path, *dimm_key;
 static int unpaced, real_boot, silent;
 static SDL_AudioStream *audio;          /* NULL: no sound */
 
@@ -169,7 +176,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
 static int SDLCALL machine_main(void *arg)
 {
     (void)arg;
-    if (game_machine_init(image_path, dimm_path, !silent, on_frame)) {
+    if (game_machine_init(image_path, dimm_path, dimm_key, !silent, on_frame)) {
         SDL_SetAtomicInt(&machine_state, 2);
     } else {
         SDL_SetAtomicInt(&machine_state, 1);
@@ -313,20 +320,37 @@ int main(int argc, char **argv)
     log_file = fopen(log_path, "w");
 #endif
     if (!image_path) image_path = SDL_getenv("VF4_IMAGE");
-    if (!image_path) image_path = beside_exe(default_image, sizeof default_image, "data/main.bin");
     if (!dimm_path) dimm_path = SDL_getenv("VF4_DIMM");
-    if (!dimm_path) dimm_path = beside_exe(default_dimm, sizeof default_dimm, "data/vf41_s.dec");
+    if (!dimm_path) {
+        /* the builder's install (M5), else a development build's links */
+        dimm_path = beside_exe(default_dimm, sizeof default_dimm, "data/VF41_S.BIN");
+        if (!SDL_GetPathInfo(dimm_path, NULL))
+            dimm_path = beside_exe(default_dimm, sizeof default_dimm, "data/vf41_s.dec");
+    }
+    size_t dl = strlen(dimm_path);
+    if (dl >= 4 && !SDL_strcasecmp(dimm_path + dl - 4, ".bin")) {
+        /* the disc's file: its key beside it */
+        static char key[4096];
+        const char *slash = SDL_strrchr(dimm_path, '/'), *bslash = SDL_strrchr(dimm_path, '\\');
+        if (bslash && (!slash || bslash > slash)) slash = bslash;
+        size_t dir = slash ? (size_t)(slash - dimm_path + 1) : 0;
+        snprintf(key, sizeof key, "%.*sdimm.key", (int)dir, dimm_path);
+        dimm_key = key;
+    } else if (!image_path) {
+        image_path = beside_exe(default_image, sizeof default_image, "data/main.bin");
+    }
 
     SDL_SetLogOutputFunction(sdl_log, NULL);
     SDL_SetLogPriority(SDL_LOG_CATEGORY_GPU, SDL_LOG_PRIORITY_INFO);
     int sdl_ver = SDL_GetVersion();
-    logf_("vf4ft M4; SDL %d.%d.%d (%s); platform %s", SDL_VERSIONNUM_MAJOR(sdl_ver), SDL_VERSIONNUM_MINOR(sdl_ver),
+    logf_("vf4ft " VF4FT_VERSION "; SDL %d.%d.%d (%s); platform %s", SDL_VERSIONNUM_MAJOR(sdl_ver), SDL_VERSIONNUM_MINOR(sdl_ver),
           SDL_VERSIONNUM_MICRO(sdl_ver), SDL_GetRevision(), SDL_GetPlatform());
     {
         const char *appid = SDL_getenv("SteamAppId"), *deck = SDL_getenv("SteamDeck");
         logf_("steam: SteamAppId=%s SteamDeck=%s", appid ? appid : "-", deck ? deck : "-");
     }
-    logf_("image %s; DIMM %s", image_path, dimm_path);
+    logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
+          dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
 
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | (silent ? 0 : SDL_INIT_AUDIO))) {

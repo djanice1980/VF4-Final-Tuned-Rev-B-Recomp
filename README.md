@@ -16,8 +16,9 @@ emulator runs at play time.
 
 ## Status
 
-Playable in a window as a development build, with no sound yet (M3), from
-the decompilation's files. The plan, with its milestones: [docs/design.md](docs/design.md).
+Playable with sound, built on your PC from your own set by the builder
+(M5): from the command line or with the launcher. No release has been
+published yet. The plan, with its milestones: [docs/design.md](docs/design.md).
 
 | Milestone | State |
 |---|---|
@@ -26,11 +27,13 @@ the decompilation's files. The plan, with its milestones: [docs/design.md](docs/
 | M2: runtime with the hardware models, headless | Done 2026-11-12. The translated game boots to attract and plays CPU vs CPU matches on VF4debug's hardware models, instruction for instruction the same run as VF4debug's (36,000 attract frames and two whole matches compared hash for hash); about 4 times the real hardware's speed with no picture yet ([details](docs/design.md#13-m2-results-2026-11-12)) |
 | M3: picture, input, real time | Done 2026-11-12. The game runs in a window at 60 fps natively on Linux and under Proton (Direct3D 12), with keyboard and gamepads, and gives the same run as VF4debug's; played through coin, start and a match with a DualSense. The picture is VF4debug's software renderer, 8 to 9 ms a frame with the machine while playing ([details](docs/design.md#15-m3-results-2026-11-12)) |
 | M4: sound | Done 2026-11-12. The game's own sound driver runs on an ARM7 interpreter with a model of the AICA chip and its effect DSP: music, voices, effects and the game's reverb play in the window on Linux and under Proton, and every run is deterministic ([details](docs/design.md#17-m4-results-2026-11-12), [the DSP](docs/design.md#18-the-effect-dsp-2026-11-12)) |
+| M5: builder and launcher | Done 2026-11-12. Your MAME set to an installed game in about a minute, with no MAME tools and nothing to install: the builder reads the CHD itself, keeps the disc's encrypted image (the game decrypts it at start), downloads a pinned compiler and SDL3, translates and compiles. The Windows launcher (with its own Python) built and played the game under Proton in a fresh prefix ([details](docs/design.md#19-m5-results-2026-11-12)) |
 
 ## How it works
 
-1. The builder reads your MAME set, checks it is the supported version, and
-   decrypts the program and the DIMM image.
+1. The builder reads your MAME set (its own CHD reader: no MAME tools),
+   checks it is the supported version, and takes out the DIMM image and its
+   key; it decrypts the program it translates.
 2. The translator turns every one of the game's 6,632 routines into C. It
    uses the routine tables of the matching decompilation
    ([VF4-Final-Tuned-Rev-B-Decomp-Source](https://github.com/djanice1980/VF4-Final-Tuned-Rev-B-Decomp-Source)).
@@ -39,6 +42,57 @@ the decompilation's files. The plan, with its milestones: [docs/design.md](docs/
    rendering chips (drawn with SDL_GPU), and the AICA sound chip.
 4. You play the resulting `vf4ft.exe` on Windows, or add it to Steam as a
    non-Steam game and run it with Proton.
+
+## Building the game from your set (M5)
+
+You need your MAME `vf4tuned` set in one folder: `gds-0036f.chd` and
+`vf4tuned.zip` side by side, or MAME's own layout (`roms/vf4tuned.zip` and
+`roms/vf4tuned/gds-0036f.chd`; then give the `roms` folder). The builder
+checks both files and stops with a message if either is not the right one.
+It downloads the pinned compiler (llvm-mingw, 84 MB on Linux, 191 MB on
+Windows) and SDL3 on its first run, into `~/.cache/vf4ft-builder` (Linux)
+or `%LOCALAPPDATA%\vf4ft-builder` (Windows), and checks their SHA-256. A
+build takes about a minute on a fast PC.
+
+**From this repository on Linux** (Python 3.12 or later: `python3
+--version`; Arch: `sudo pacman -S python`). Replace the two folders with
+yours:
+
+```bash
+python3 -I tools/make_game.py --set ~/Games/naomi2 --out ~/Games/vf4ft
+```
+
+That makes `~/Games/vf4ft/vf4ft.exe` (with `SDL3.dll`, `data/` and `user/`).
+To play it from Steam with Proton, close Steam (Steam menu, Exit), then:
+
+```bash
+python3 -I tools/steam_shortcut.py add ~/Games/vf4ft/vf4ft.exe
+```
+
+Start Steam and play "Virtua Fighter 4 Final Tuned" from the library. For
+a native Linux program instead (needs clang and SDL3: `sudo pacman -S clang
+sdl3 pkgconf`), add `--target linux` to the first command; that makes
+`~/Games/vf4ft/vf4ft`, which you run directly.
+
+After updating this repository (`git pull`), rebuild the install with the
+new code. The set is not needed again, and `user/` is kept:
+
+```bash
+python3 -I tools/make_game.py --update ~/Games/vf4ft
+```
+
+**With the launcher.** A release will be a zip with `vf4ft-launcher` and
+everything it runs (on Windows also SDL3.dll and Python's embeddable
+package, so nothing has to be installed). Run it, press Choose set, pick the
+set's folder, press Build, then Play. Update rebuilds after a new release;
+Add to Steam adds the game as a non-Steam game (close Steam first). The
+game goes into `game/` beside the launcher. To build the launcher from this
+repository: `cmake --build build/linux --target vf4ft-launcher` (it needs no
+translated code), then `build/linux/vf4ft-launcher`. A release folder is put
+together by `tools/package_release.py` (its usage is at its top).
+
+Whatever the builder makes is made from your copy of the game: never share
+the install folder.
 
 ## Development build (CachyOS / Arch)
 
@@ -106,7 +160,7 @@ CPU runtime is built and there is no `vf4ft` program.
 ## Translating the game (development, M1)
 
 The translator reads the two decrypted programs (`main.bin`, `test.bin`).
-Until the builder exists (M5) they come from a
+In development they come from a
 [decompilation](https://github.com/djanice1980/VF4-Final-Tuned-Rev-B-Decomp-Source)
 checkout beside this one (`../vf4ft-decomp/work/`, made there from the MAME
 set by its `tools/extract.sh`). Its output goes to `work/gen/`, which is
@@ -150,9 +204,10 @@ made from your copy of the game: never commit or share it.
 
 `build/linux/vf4ft` and `build/win64/vf4ft.exe` (steps 3 and 4, once
 `work/gen/` exists) are the game in a window. Each reads `data/main.bin`
-and `data/vf41_s.dec` beside itself. The build makes those as links to
-`../vf4ft-decomp/work/` (or `-DVF4_DECOMP=<path>`), until the builder's
-install layout (M5). Linux:
+and `data/vf41_s.dec` beside itself, which the build makes as links to
+`../vf4ft-decomp/work/` (or `-DVF4_DECOMP=<path>`). (An install made by the
+builder has the disc's `data/VF41_S.BIN` and `data/dimm.key` instead; the
+game prefers those when they are there.) Linux:
 
 ```bash
 build/linux/vf4ft
@@ -178,7 +233,8 @@ coins: press Coin, then Start.
 Options: `--fullscreen`, `--gpu direct3d12|vulkan`, `--frames N` (quit
 after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `--real-boot` (the start-up at its real pace too), `--image FILE`,
-`--dimm FILE`, `--log FILE`, `--silent` (no sound chip: VF4debug's
+`--dimm FILE` (a decrypted image, or the disc's `VF41_S.BIN` with
+`dimm.key` beside it), `--log FILE`, `--silent` (no sound chip: VF4debug's
 mailbox model, as in M3). Every 600 frames `vf4ft.log` (beside the
 program) records how long the machine took per frame, on average and at
 most, and how much audio is queued. Sound plays from the warning screen on.

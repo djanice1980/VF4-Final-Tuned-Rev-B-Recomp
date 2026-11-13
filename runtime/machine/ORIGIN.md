@@ -52,5 +52,9 @@ What the recomp changed:
   kept in the snapshots. `hw_sound_arm_budget` sets its ARM7's instructions
   a sample. With `hw_sound_chip` 0 (the default) nothing behaves
   differently.
+- `hw.h`, `hw_cart.c` (M5): `hw_cart_init_memory`, the DIMM image already
+  in memory. The installed game keeps the disc's encrypted file and decrypts
+  it at start (`runtime/host/dimm_image.c`); `hw_cart_init` and its file
+  mapping are unchanged for development builds.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`.
