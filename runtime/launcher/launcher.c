@@ -34,7 +34,8 @@
  * when that action's process ends, with its result as the exit code; 1 when
  * the action started nothing), --cancel-after S (presses Cancel S seconds
  * after it started); --shot PAGE FILE draws one page (files,
- * build, work, fail, play, settings, pad, key1, key2) to a BMP file and quits
+ * build, work, fail, play, settings, picture, pad, key1, key2) to a BMP file and quits,
+ * its caps as --shot-device keys|xbox|ps|switch names them, --shot-scale K times as big
  * (with SDL_VIDEO_DRIVER=offscreen no window shows).
  */
 #include <SDL3/SDL.h>
@@ -58,6 +59,21 @@
 static SDL_Window *win;
 static SDL_Renderer *ren;
 static char base[896], root[1024], game[1024], python[1024], set_path[1024], set_file[1024];
+
+/* a path as shown: under the home folder as ~/... (not on Windows) */
+static const char *home_short(const char *path, char *buf, size_t n)
+{
+#ifndef _WIN32
+    const char *home = SDL_getenv("HOME");
+    size_t h = home ? strlen(home) : 0;
+    if (h > 1 && !strncmp(path, home, h) && (path[h] == '/' || !path[h])) {
+        SDL_snprintf(buf, n, "~%s", path + h);
+        return buf;
+    }
+#endif
+    SDL_strlcpy(buf, path, n);
+    return buf;
+}
 static char builder_ver[64];        /* this release's builder: an update is there when it is not built_ver */
 static char lines[LOG_MAX][LOG_W];
 static int nlines;
@@ -306,6 +322,7 @@ static Uint64 proc_t0, cancel_at;   /* ms */
 static int stage_n, stage_of, stage_pct = -1;
 static char stage_text[96];
 static double shot_elapsed = -1;    /* --shot work: the time shown */
+static int shot_working;            /* --shot work: drawn as during a build (Cancel can be pressed) */
 static int cancelled;
 static char error_line[300];
 /* the Play page's line: what the last action came to */
@@ -509,7 +526,7 @@ static int enabled(int b)
     case B_UPDATE: return built && root[0] && !proc;
     case B_PLAY: return built && !game_proc && !proc;
     case B_STEAM: return built && root[0] && !proc && !built_linux;
-    case B_CANCEL: return proc && !cancel_at;
+    case B_CANCEL: return (proc || shot_working) && !cancel_at;
     case B_REBUILD: return root[0] && !proc;
 #ifdef _WIN32
     case B_TARGET: return 0;
@@ -941,8 +958,9 @@ static void draw_files(void)
             ok || set_path[0] ? UI_ON_ACCENT : UI_FAINT);
     ui_text(UI_MEDIUM, 19, CX + 100, 284,
             UI_TEXT, ok ? "Found your set" : set_path[0] ? "This folder has no vf4tuned set" : "No set chosen yet");
+    char shown[1024];
     ui_text_in(UI_MONO, 14, CX + 100, 316, CW - 128, 0, 1, UI_MUTED,
-               set_path[0] ? set_path : "Choose the folder that holds vf4tuned.zip.");
+               set_path[0] ? home_short(set_path, shown, sizeof shown) : "Choose the folder that holds vf4tuned.zip.");
     ui_wrap(UI_REGULAR, 14, CX, 400, CW, 22, UI_FAINT,
             "Nothing from your set leaves this computer, and the game the builder makes is yours alone: "
             "never share it.");
@@ -1256,13 +1274,18 @@ static void shot_fake(void)
         "[   4.9] decrypting test.bin",
         "[   5.5] compiler: clang version 23.1.4",
         "[   5.5] translating main.bin (about a minute)",
+        "[  38.2] translating test.bin",
+        "[  44.0] compiling 111 files, 32 at a time",
+        "[  47.9]   compiled 50 of 111",
     };
     for (size_t i = 0; i < SDL_arraysize(sample); i++)
         say("%s", sample[i]);
-    stage_n = 3;
+    stage_n = 4;
     stage_of = 6;
-    SDL_strlcpy(stage_text, "Translating the game's code", sizeof stage_text);
-    shot_elapsed = 83.4;
+    stage_pct = 45;
+    SDL_strlcpy(stage_text, "Compiling", sizeof stage_text);
+    shot_elapsed = 48.2;
+    shot_working = page == P_WORK;
     if (page == P_FAIL) {
         say("error: compiling runtime/host/main.c failed:");
         SDL_strlcpy(error_line, "compiling runtime/host/main.c failed:", sizeof error_line);
@@ -1271,7 +1294,9 @@ static void shot_fake(void)
 
 int main(int argc, char **argv)
 {
-    const char *opt_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL;
+    const char *opt_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL,
+               *shot_device = NULL;
+    int shot_scale = 1;
     const char *unknown[8];
     int opt_exit = 0, nunknown = 0;
     double opt_cancel = -1;
@@ -1282,13 +1307,17 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--exit")) opt_exit = 1;
         else if (!strcmp(argv[i], "--cancel-after") && i + 1 < argc) opt_cancel = SDL_atof(argv[++i]);
         else if (!strcmp(argv[i], "--shot") && i + 2 < argc) shot_page = argv[++i], shot_file = argv[++i];
+        else if (!strcmp(argv[i], "--shot-device") && i + 1 < argc) shot_device = argv[++i];
+        else if (!strcmp(argv[i], "--shot-scale") && i + 1 < argc) shot_scale = SDL_atoi(argv[++i]);
         else if (nunknown < 8) unknown[nunknown++] = argv[i];
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         SDL_Log("SDL_Init: %s", SDL_GetError());
         return 1;
     }
-    if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", (int)LW, (int)LH,
+    if (!shot_page || shot_scale < 1 || shot_scale > 4)
+        shot_scale = 1;     /* --shot-scale: the window made K times as big, as on a high-DPI screen */
+    if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", (int)LW * shot_scale, (int)LH * shot_scale,
                                      SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, &win, &ren)) {
         SDL_Log("window: %s", SDL_GetError());
         return 1;
@@ -1356,6 +1385,12 @@ int main(int argc, char **argv)
             }
         if (page == P_WORK || page == P_FAIL)
             shot_fake();
+        if (shot_device) {      /* the caps' style: keys, xbox, ps or switch */
+            static const char *const devs[] = { "keys", "xbox", "ps", "switch" };
+            for (int i = 0; i < 4; i++)
+                if (!strcmp(shot_device, devs[i]))
+                    ui_set_device(i);       /* UI_DEV_KEYS, _XBOX, _PS, _NINTENDO */
+        }
         draw();
         draw();         /* the second time with the hits of the first (focus rings) */
         SDL_Surface *sf = SDL_RenderReadPixels(ren, NULL);

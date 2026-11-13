@@ -32,7 +32,8 @@
  *                     once the machine is at vertical blank FRAME, as "6400:Insert,Down,Right,
  *                     shot=menu.bmp,Escape": SDL key names, "@N" waits for vertical blank N,
  *                     "shot=FILE" saves the window as shown (the menu included) to a BMP file,
- *                     "pad:a+x=N" holds buttons of a virtual gamepad (SDL's names) for N turns (6)
+ *                     "pad:a+x=N" holds buttons of a virtual gamepad (SDL's names) for N turns (6),
+ *                     "padtype=ps5" anywhere in the list makes that gamepad a DualSense (its glyphs)
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
  *
@@ -971,6 +972,9 @@ static void vpad_attach(void)
         d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
         d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
         d.name = "vf4ft --keys pad";
+        for (int i = 0; i < key_items; i++)     /* "padtype=ps5": a DualSense's ids, so its glyphs show */
+            if (!strcmp(key_item[i], "padtype=ps5"))
+                d.vendor_id = 0x054C, d.product_id = 0x0CE6;
         SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
         vpad = id ? SDL_OpenJoystick(id) : NULL;
         if (!vpad)
@@ -1150,7 +1154,7 @@ int main(int argc, char **argv)
     logf_("video driver: %s", SDL_GetCurrentVideoDriver());
     bindings_compile();     /* key names need the video subsystem */
     for (int i = 0; i < key_items; i++)
-        if (!strncmp(key_item[i], "pad:", 4)) {
+        if (!strncmp(key_item[i], "pad:", 4) || !strncmp(key_item[i], "padtype=", 8)) {
             vpad_attach();
             break;
         }
@@ -1417,6 +1421,8 @@ int main(int argc, char **argv)
                 window_shot = it + 5;
             else if (!strncmp(it, "pad:", 4))
                 vpad_press(it + 4);
+            else if (!strncmp(it, "padtype=", 8))
+                ;                   /* taken at start-up (vpad_attach) */
             else {
                 SDL_Event k;
                 SDL_zero(k);
