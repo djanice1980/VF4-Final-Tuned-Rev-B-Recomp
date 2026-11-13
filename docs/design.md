@@ -1202,6 +1202,13 @@ about a fifth of the picture's brightness. The fill is gone.
 - F11 to 3840 x 2160 and back with the menu open.
 - The operator bar.
 - The Windows build compiles without warnings.
+- The Windows release (`package_release.py`) under Proton:
+  - `--do build --exit` built the game in 83 s, including the first
+    download of llvm-mingw, with `Font license.txt` in the game's folder.
+  - `--cancel-after 25` stopped the builder during translation within the
+    same second. The built game was kept unchanged, and no Python,
+    translator or clang was left running. With `--exit` the launcher ends
+    with 1, and its log says "cancelled".
 
 **Not done:** a real gamepad and the Steam Deck (the glyphs change by pad
 type, which only a real pad shows), and a window resized by dragging while
