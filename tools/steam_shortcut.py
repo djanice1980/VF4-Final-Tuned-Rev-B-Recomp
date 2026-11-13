@@ -2,7 +2,7 @@
 """Add the game to Steam as a non-Steam game (the builder's "add to Steam").
 
 usage:
-  python3 -I tools/steam_shortcut.py add EXE [--name NAME] [--proton TOOL] [--steam DIR] [--dry-run]
+  python3 -I tools/steam_shortcut.py add EXE [--name NAME] [--proton TOOL] [--art DIR] [--steam DIR] [--dry-run]
   python3 -I tools/steam_shortcut.py list [--steam DIR]
   python3 -I tools/steam_shortcut.py play EXE [--name NAME]    (starts the shortcut through Steam)
 
@@ -16,7 +16,12 @@ the Flatpak's) through Wine's drives, sees whether Steam runs in /proc, and
 writes the entry as the Linux tool does (the exe's Linux path, Proton).
 
 For every Steam user in DIR/userdata it adds (or updates, matched by the
-app name) an entry in config/shortcuts.vdf. For a Windows .exe on Linux it
+app name) an entry in config/shortcuts.vdf. With --art DIR (the game's
+`vf4ft --art DIR`: capsule.png, wide.png, hero.png, icon.png) it also puts
+Steam's pictures for the entry in config/grid: <id>p.png (the library's
+capsule), <id>.png (the wide capsule), <id>_hero.png (the banner), a clear
+<id>_logo.png (the banner already shows the title, so Steam does not write
+the name over it) and <id>_icon.png, which becomes the entry's icon. For a Windows .exe on Linux it
 also sets the compatibility tool for that entry in DIR/config/config.vdf
 (default proton_experimental), as Steam's own "Force the use of a specific
 Steam Play compatibility tool" does.
@@ -27,7 +32,8 @@ Safety:
   - Each file is read, re-serialized and compared byte for byte with the
     original before anything is changed; if the parser does not reproduce it
     exactly, the tool stops and changes nothing.
-  - The originals are copied beside themselves as *.vf4ft-backup-<time>.
+  - The originals are copied beside themselves as *.vf4ft-backup-<time>
+    (pictures already in config/grid too, when they differ).
   - Writes go to a temporary file that is then renamed over the original.
 """
 import argparse
@@ -338,6 +344,49 @@ def write_atomic(path, data):
     os.replace(tmp, path)
 
 
+# Steam's pictures for a shortcut: the --art folder's file, and its name in config/grid
+ART = (("capsule.png", "p.png"), ("wide.png", ".png"), ("hero.png", "_hero.png"), ("icon.png", "_icon.png"))
+
+
+def clear_png(w=16, h=16):
+    """A fully transparent RGBA PNG."""
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    raw = b"".join(b"\0" + b"\0" * (w * 4) for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def art_files(art):
+    """The --art folder's pictures as (grid suffix, bytes), the clear logo last."""
+    files = []
+    for src, suffix in ART:
+        path = os.path.join(art, src)
+        if not os.path.isfile(path):
+            raise SystemExit(f"{path}: no such file (make the pictures with vf4ft --art {art})")
+        files.append((suffix, open(path, "rb").read()))
+    files.append(("_logo.png", clear_png()))
+    return files
+
+
+def put_grid(grid, appid, files, stamp, dry_run):
+    """The pictures into a user's config/grid; returns the icon's path there."""
+    icon = None
+    for suffix, data in files:
+        path = os.path.join(grid, f"{appid}{suffix}")
+        if suffix == "_icon.png":
+            icon = path
+        old = open(path, "rb").read() if os.path.isfile(path) else None
+        print(f"  picture {path}" + (" (unchanged)" if old == data else " (dry run)" if dry_run else ""))
+        if dry_run or old == data:
+            continue
+        os.makedirs(grid, exist_ok=True)
+        if old is not None:
+            print(f"  backup {backup(path, stamp)}")
+        write_atomic(path, data)
+    return icon
+
+
 def load_shortcuts(path):
     if not os.path.exists(path):
         return None, [("shortcuts", [])]
@@ -385,6 +434,7 @@ def cmd_add(a):
     appid = shortcut_appid(exe_field, a.name)
     windows_exe = exe.lower().endswith(".exe")
     stamp = time.strftime("%Y%m%d-%H%M%S")
+    art = art_files(a.art) if a.art else None
 
     users = sorted(u for u in os.listdir(os.path.join(a.steam, "userdata")) if u.isdigit() and u != "0")
     if not users:
@@ -399,22 +449,29 @@ def cmd_add(a):
             if get(e, "AppName") == a.name:
                 entry = e
                 break
+        # the icon: the picture put in config/grid (by the path the host's Steam sees), else
+        # whatever the entry had
+        icon = (get(entry, "icon") or "") if entry is not None else ""
+        if art:
+            icon = put_grid(os.path.join(a.steam, "userdata", uid, "config", "grid"), appid, art, stamp, a.dry_run)
+            if os.name == "nt" and linux:
+                icon = unix_path(icon)
         fields = [
             ("appid", appid - (1 << 32)),   # stored as a signed int32
             ("AppName", a.name), ("Exe", exe_field), ("StartDir", start_dir),
-            ("icon", ""), ("ShortcutPath", ""), ("LaunchOptions", a.launch_options),
+            ("icon", icon), ("ShortcutPath", ""), ("LaunchOptions", a.launch_options),
             ("IsHidden", 0), ("AllowDesktopConfig", 1), ("AllowOverlay", 1), ("OpenVR", 0),
             ("Devkit", 0), ("DevkitGameID", ""), ("DevkitOverrideAppID", 0), ("LastPlayTime", 0),
             ("FlatpakAppID", ""), ("sortas", ""), ("tags", []),
         ]
         if entry is None:
             shortcuts.append((str(len(shortcuts)), fields))
-            what = "added"
+            what = "would add" if a.dry_run else "added"
         else:
             keep = dict(entry)
             entry[:] = [(k, keep["LastPlayTime"] if k == "LastPlayTime" and "LastPlayTime" in keep else v)
                         for k, v in fields]
-            what = "updated"
+            what = "would update" if a.dry_run else "updated"
         new = bvdf_dump(root)
         print(f"user {uid}: {what} {a.name!r} appid {appid} -> {path}")
         if not a.dry_run and new != old:
@@ -440,7 +497,7 @@ def cmd_add(a):
         else:
             mapping.append((str(appid), tool))
         new = tvdf_dump(root)
-        print(f"compat tool {a.proton} for appid {appid} -> {path}")
+        print(f"compat tool {a.proton} for appid {appid}" + (" (dry run)" if a.dry_run else "") + f" -> {path}")
         if not a.dry_run and new != old:
             print(f"  backup {backup(path, stamp)}")
             write_atomic(path, new.encode("utf-8", "surrogateescape"))
@@ -458,6 +515,7 @@ def main():
     pa.add_argument("--proton", default="proton_experimental",
                     help="compatibility tool for a .exe on Linux ('' for none)")
     pa.add_argument("--launch-options", default="")
+    pa.add_argument("--art", default="", help="a folder of the game's pictures for Steam (vf4ft --art DIR)")
     pa.add_argument("--steam", default=default_steam)
     pa.add_argument("--dry-run", action="store_true")
     pl = sub.add_parser("list")

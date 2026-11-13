@@ -2119,3 +2119,104 @@ audio; copies of David's backup):
 
 Not done: hiding the fast-forwarded start-up itself (the log screen still
 shows for a moment).
+
+
+## 36. Steam's pictures for the entry, from the player's own build (2026-11-13)
+
+David's report: the Steam entry that Add to Steam makes has no artwork and
+no description. His choice for the pictures: made from his own build, on
+his machine, so no game pictures are in the repo or the release.
+
+**No description:** a non-Steam entry has none to set. `shortcuts.vdf`
+holds the name, the program, its folder, options, the icon, tags and a few
+switches; Steam's page for a non-Steam game shows no store text.
+
+**The pictures** (`runtime/host/art.c`, `vf4ft --art DIR`): the game runs
+with no window and draws chosen vertical blanks of its attract sequence
+with the GPU renderer at 4 x (2560 x 1920); each picture is cropped and
+scaled to Steam's sizes (each output pixel the average, in linear light,
+of the area it covers) and saved as a PNG.
+
+| File | Size | Scene (vertical blank) | Crop, in 640 x 480 units |
+|---|---|---|---|
+| `capsule.png` | 600 x 900 | 5,300: the first demo's close-up of Akira | 118, 40, 240 x 360 |
+| `icon.png` | 256 x 256 | 5,300 | 202, 32, 150 x 150 |
+| `wide.png` | 920 x 430 | 12,050: the title over its flames | 0, 80, 640 x 299.1 |
+| `hero.png` | 1920 x 620 | 12,050 | 0, 124, 640 x 206.6 |
+
+- The crops keep clear of what every frame of the attract sequence has
+  over the picture: FREE PLAY at the top left, PRESS START BUTTON (it
+  blinks) at the bottom, VER.B and the card icons in the bottom corners,
+  and the fighter's name lettering at the right of the close-up.
+- The run: default settings with sound, the cards and the network off,
+  unpaced, the backup not loaded or saved, nothing of the player's read
+  or written. Its clock is the machine's own (it starts from a fixed time
+  and runs on emulated cycles) and a blank cabinet gets no input, so the
+  vertical blanks show the same scenes on every machine. Two runs gave the
+  same pictures pixel for pixel, and so did the Linux build and the
+  Windows build under plain Wine. It takes about 25 s here.
+- No window: the GPU device is made without claiming one, so it also runs
+  with `SDL_VIDEO_DRIVER=offscreen` and under Wine with no display. Without
+  the GPU renderer (no Vulkan) it ends with code 3 and makes nothing.
+- `--art-frames LIST` (`2400,3000-6000/300`) saves whole pictures of those
+  vertical blanks instead, for choosing scenes. The attract sequence of the
+  art run: the warning screen from about 2,484, the maker's logo 3,085,
+  the first demo's close-ups 3,469 to 7,100, the ranking 7,546 to 11,000,
+  the title over its flames 11,170 to 12,100, the second demo from 12,517.
+
+**Steam's side** (`tools/steam_shortcut.py add EXE --art DIR`): the
+pictures go into each Steam user's `config/grid/`, named by the entry's
+appid as Steam names a non-Steam game's custom artwork: `<appid>p.png`
+(the library's capsule), `<appid>.png` (the wide capsule),
+`<appid>_hero.png` (the banner behind the game's page),
+`<appid>_logo.png` (a clear 16 x 16 picture: the banner already shows the
+title, and without a logo Steam writes the name over it) and
+`<appid>_icon.png`, which the entry's `icon` field names (the host's path
+under Wine). A different picture already there is backed up beside itself
+(`*.vf4ft-backup-<time>`); the same one is left ("unchanged"). `--dry-run`
+now says "would add", "would update" and "(dry run)" on what it would
+write.
+
+**The launcher's Add to Steam** is now three steps:
+1. The tool's check, `add --dry-run`: with Steam running it ends with 3
+   and the close-Steam note comes up before any pictures are made;
+   nothing is written either way.
+2. The pictures, into `game/steam-art/` beside the game: the game runs
+   with `--art` and `--log steam-art/art.log` (so `vf4ft.log`, the
+   player's last game, is kept). The Play page says "Making Steam's
+   pictures from your build (about half a minute)…". Pictures already
+   there are used when all four are newer than the game's program, so a
+   second press, or Try again, takes a second. The run is ended after
+   5 minutes. Only the game's `art:` lines (and anything it says before
+   its log opens, such as an older game's "unknown option --art") go into
+   `launcher.log`.
+3. The entry, with `--art` when the pictures were made. When they were
+   not, the entry goes in without them, and the status line and the added
+   note say so ("launcher.log says why").
+
+The native Linux launcher adds the Windows build, which it cannot run, so
+its entry gets pictures only if `steam-art/` already has fresh ones.
+
+**Checked** (never on Steam's own files: copies through `--steam` or a
+stand-in `HOME`; Steam hidden from the tool by `bwrap --unshare-pid`
+where it had to be closed; sound off and SDL's dummy audio):
+- The art run, Linux build offscreen and Windows build under plain Wine
+  11.21 with no display: Vulkan, 4 files in about 25 s, identical between
+  the two builds and between runs. The four pictures at 1:1.
+- The tool, Linux and Windows under Wine, with `--art`: the five grid
+  files in each user's folder, the `icon` field naming the picture, a
+  second run "unchanged" for all five; the two copies' grid folders the
+  same byte for byte (the `shortcuts.vdf` files differ only in the icon's
+  folder).
+- The Windows launcher under plain Wine in a headless KWin (`--do steam
+  --exit`): Steam running, the check ends with 3, the close-Steam note,
+  no pictures made; an older game without `--art`, its "unknown option"
+  line in `launcher.log` and the entry without pictures; this game, the
+  pictures made in 25 s and the entry with the five grid files; pressed
+  again, the pictures reused and Steam's all "unchanged", in a second.
+- The Play page's new lines and the added note with and without pictures,
+  offscreen at 1:1 (`--shot steam-art`, `steam-done`, `steam-done-plain`,
+  `steam-added`, `steam-added-plain`).
+
+Not tried: a real Steam showing the pictures (David's to see: Add to Steam
+with Steam closed, then start Steam), Windows itself, and the Deck.

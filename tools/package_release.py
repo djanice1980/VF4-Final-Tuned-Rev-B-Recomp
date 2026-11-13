@@ -102,8 +102,10 @@ ON WINDOWS
 5. Play. Optional: to have the game in your Steam library too, press
    Add to Steam on the Play page. Steam takes a new shortcut only while it
    is closed, so if Steam is open the launcher asks you to exit it (Steam
-   menu, Exit) and then choose Try again. Press it again any time to
-   recreate the shortcut.
+   menu, Exit) and then choose Try again. The entry gets its pictures in
+   Steam's library, made from your own build (about half a minute the
+   first time). Press it again any time to recreate the shortcut.
+   (Steam has no description for a game added this way.)
    Or turn on Start the game directly on the Play page: from then on the
    launcher opens the game straight away, and the game's menu has Open
    the launcher.
@@ -126,7 +128,7 @@ If Wine is installed (opening vf4ft-launcher.exe from your file manager
 starts it), steps 2 and 3 can be done by the launcher instead: open it with
 Steam closed and press Add to Steam on the Play page (after Game files and
 Build). It adds itself to your Linux Steam, named Virtua Fighter 4 Final
-Tuned and set to Proton Experimental.
+Tuned, set to Proton Experimental and with its pictures.
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
 Plain Wine is not supported for playing: the game runs through Proton.
 Under plain Wine, Play first says what to expect and offers Add to Steam.

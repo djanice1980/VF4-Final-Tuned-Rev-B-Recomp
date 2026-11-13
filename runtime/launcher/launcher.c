@@ -576,7 +576,7 @@ static void program_path(char *out, size_t n)
 
 /* ---- the processes: the builder, the Steam tool, the game ---- */
 
-enum { K_NONE, K_BUILD, K_UPDATE, K_STEAM, K_STEAM_PLAY };
+enum { K_NONE, K_BUILD, K_UPDATE, K_STEAM, K_STEAM_PLAY, K_STEAM_CHECK, K_ART };
 static SDL_Process *proc;
 static SDL_Process *game_proc;      /* the game, while it runs (the launcher hides meanwhile) */
 static SDL_IOStream *proc_out, *proc_in;
@@ -602,6 +602,10 @@ enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE };
 static int pop;
 static int steam_proton;            /* the tool set Proton for the entry */
 static void pop_open(int kind);
+static void steam_step(int kind);
+static int steam_next;              /* Add to Steam's next step, once the process ends */
+static int art_made;                /* Steam's pictures are there for the entry */
+static int art_killed;
 
 static int start(int kind, const char **args, int capture)
 {
@@ -660,6 +664,104 @@ static int start(int kind, const char **args, int capture)
     return 0;
 }
 
+/* ---- Add to Steam's steps (docs/design.md section 36) ----
+ * The Steam tool's check that Steam is closed (add --dry-run: exit 3 if it
+ * runs, nothing written); Steam's pictures, made by the game from the
+ * player's own build (vf4ft --art), unless the ones there are newer than the
+ * game; then the entry, with the pictures when there are some. */
+
+#ifdef _WIN32
+#define DIR_SEP "\\"
+#else
+#define DIR_SEP "/"
+#endif
+
+static const char *const art_names[] = {"capsule.png", "wide.png", "hero.png", "icon.png"};
+#define ART_WORKING "Making Steam's pictures from your build (about half a minute)\xE2\x80\xA6"
+#define ADDED_ART "Added to Steam with its pictures: start Steam again and it is in your library."
+#define ADDED_NO_ART "Added to Steam, without pictures (launcher.log says why): start Steam again and it is in your library."
+
+static const char *art_dir(void)
+{
+    static char d[1100];
+    snprintf(d, sizeof d, "%s%ssteam-art", game, DIR_SEP);
+    return d;
+}
+
+/* every picture there, and none older than the game's program */
+static int art_fresh(void)
+{
+    char prog[1100], p[1200];
+    program_path(prog, sizeof prog);
+    SDL_PathInfo exe, f;
+    if (!SDL_GetPathInfo(prog, &exe))
+        return 0;
+    for (size_t i = 0; i < SDL_arraysize(art_names); i++) {
+        snprintf(p, sizeof p, "%s%s%s", art_dir(), DIR_SEP, art_names[i]);
+        if (!SDL_GetPathInfo(p, &f) || f.type != SDL_PATHTYPE_FILE || f.modify_time < exe.modify_time)
+            return 0;
+    }
+    return 1;
+}
+
+/* the game can run here to make them: the Windows launcher runs the Windows
+ * game (natively or under the same Wine). The Linux launcher's entry is the
+ * Windows build, which it cannot run itself. */
+static int art_possible(void)
+{
+#ifdef _WIN32
+    return 1;
+#else
+    say("Steam's pictures: the Linux launcher cannot run the Windows game to make them, so the entry goes "
+        "without them");
+    return 0;
+#endif
+}
+
+static void steam_step(int kind)
+{
+    char script[1100], prog[1100], logp[1200];
+    program_path(prog, sizeof prog);
+    snprintf(script, sizeof script, "%stools/steam_shortcut.py", root);
+#ifdef _WIN32
+    const char *what = self_exe;    /* the launcher: its entry can start the game directly (section 29) */
+#else
+    const char *what = prog;        /* the Windows build that Play starts through Steam */
+#endif
+    int r;
+    status_kind = ST_WORKING;
+    if (kind == K_ART) {
+        /* the game's own log of the run goes with the pictures: vf4ft.log,
+         * the player's last game, is left as it was */
+        snprintf(logp, sizeof logp, "%s%sart.log", art_dir(), DIR_SEP);
+        SDL_CreateDirectory(art_dir());
+        const char *args[] = {prog, "--art", art_dir(), "--log", logp, NULL};
+        SDL_strlcpy(status_text, ART_WORKING, sizeof status_text);
+        say("Steam's pictures: %s --art %s", prog, art_dir());
+        if (start(K_ART, args, 1)) {     /* without them, then */
+            say("Steam's pictures: the game did not start: the entry goes without them");
+            art_made = 0;
+            steam_step(K_STEAM);
+        }
+        return;
+    }
+    SDL_strlcpy(status_text, "Adding it to Steam\xE2\x80\xA6", sizeof status_text);
+    if (kind == K_STEAM_CHECK) {
+        const char *args[] = {python, "-I", script, "add", what, "--dry-run", NULL};
+        r = start(K_STEAM_CHECK, args, 1);
+    } else if (art_made) {
+        const char *args[] = {python, "-I", script, "add", what, "--art", art_dir(), NULL};
+        r = start(K_STEAM, args, 1);
+    } else {
+        const char *args[] = {python, "-I", script, "add", what, NULL};
+        r = start(K_STEAM, args, 1);
+    }
+    if (r) {
+        status_kind = ST_BAD;
+        SDL_strlcpy(status_text, error_line, sizeof status_text);
+    }
+}
+
 static void cancel(void)
 {
     if (!proc || cancel_at)
@@ -674,6 +776,8 @@ static void cancel(void)
 /* a line from the process: the builder's progress lines are kept, not shown */
 static void take_line(const char *s)
 {
+    if (proc_kind == K_ART && s[0] == '[' && !strstr(s, "art: ") && !strstr(s, "failed"))
+        return;                     /* the picture run's whole log is steam-art/art.log */
     if ((proc_kind == K_BUILD || proc_kind == K_UPDATE) && s[0] == '@') {
         int n, of, at = 0;
         if (sscanf(s, "@stage %d %d %n", &n, &of, &at) == 2 && at) {
@@ -722,6 +826,11 @@ static int pump_process(void)
             }
         }
     }
+    if (proc_kind == K_ART && !art_killed && SDL_GetTicks() - proc_t0 > 300000) {
+        say("Steam's pictures: the game did not finish in 5 minutes: ended");
+        SDL_KillProcess(proc, true);
+        art_killed = 1;
+    }
     if (cancel_at && SDL_GetTicks() - cancel_at > 15000) {
         say("the builder did not stop in 15 seconds: ended");
         SDL_KillProcess(proc, true);
@@ -753,10 +862,34 @@ static int pump_process(void)
             go(P_FAIL);
         }
         break;
+    case K_STEAM_CHECK:             /* add --dry-run: Steam is closed (else exit 3), nothing written */
+        if (code == 0) {
+            art_made = art_fresh();
+            if (art_made)
+                say("Steam's pictures: the ones in %s are newer than the game, so they are used", art_dir());
+            steam_next = !art_made && art_possible() ? K_ART : K_STEAM;
+        } else if (code == 3) {
+            status_kind = ST_NONE;
+            pop_open(POP_CLOSE_STEAM);
+        } else {
+            status_kind = ST_BAD;
+            snprintf(status_text, sizeof status_text, "Could not add it to Steam: %.250s",
+                     error_line[0] ? error_line : "the Steam tool failed (launcher.log)");
+        }
+        break;
+    case K_ART:
+        art_made = code == 0;
+        if (art_made)
+            say("Steam's pictures are made: %s", art_dir());
+        else
+            say("Steam's pictures could not be made (the game's exit code %d; the lines above, and %s%sart.log if it is "
+                "there, say why): the entry goes without them", code, art_dir(), DIR_SEP);
+        steam_next = K_STEAM;
+        break;
     case K_STEAM:
         status_kind = code == 0 ? ST_GOOD : code == 3 ? ST_NONE : ST_BAD;
         if (code == 0) {
-            SDL_strlcpy(status_text, "Added to Steam: start Steam again and it is in your library.", sizeof status_text);
+            SDL_strlcpy(status_text, art_made ? ADDED_ART : ADDED_NO_ART, sizeof status_text);
             pop_open(POP_ADDED);
         } else if (code == 3) {     /* tools/steam_shortcut.py: Steam is running */
             pop_open(POP_CLOSE_STEAM);
@@ -771,6 +904,12 @@ static int pump_process(void)
     last_kind = proc_kind;
     proc_kind = K_NONE;
     cancel_at = 0;
+    art_killed = 0;
+    if (steam_next) {
+        int k = steam_next;
+        steam_next = 0;
+        steam_step(k);
+    }
     return code;
 }
 
@@ -1543,7 +1682,7 @@ static void press(int b)
 {
     if (!enabled(b))
         return;
-    char script[1100], prog[1100];
+    char prog[1100];
     program_path(prog, sizeof prog);
     switch (b) {
     case B_CHOOSE:
@@ -1609,6 +1748,7 @@ static void press(int b)
 #ifndef _WIN32
         if (!built_linux) {
             /* the Windows exe on Linux plays through Steam (Proton, Steam Input) */
+            char script[1100];
             snprintf(script, sizeof script, "%stools/steam_shortcut.py", root);
             const char *args[] = {python, "-I", script, "play", prog, NULL};
             status_kind = ST_WORKING;
@@ -1647,20 +1787,10 @@ static void press(int b)
             pop_open(POP_FROM_STEAM);
             break;
         }
-        snprintf(script, sizeof script, "%stools/steam_shortcut.py", root);
-#ifdef _WIN32
-        const char *what = self_exe;    /* the launcher: its entry can start the game directly (section 29) */
-#else
-        const char *what = prog;        /* the Windows build that Play starts through Steam */
-#endif
-        const char *args[] = {python, "-I", script, "add", what, NULL};
-        status_kind = ST_WORKING;
-        SDL_strlcpy(status_text, "Adding it to Steam\xE2\x80\xA6", sizeof status_text);
         steam_proton = 0;
-        if (start(K_STEAM, args, 1)) {
-            status_kind = ST_BAD;
-            SDL_strlcpy(status_text, error_line, sizeof status_text);
-        }
+        art_made = 0;
+        error_line[0] = 0;
+        steam_step(K_STEAM_CHECK);
         break;
     }
     case B_POP_RETRY:
@@ -2261,11 +2391,15 @@ static void draw_pop(void)
         text = "Steam takes a new shortcut only while it is closed. Exit Steam (in Steam's menu: Steam, Exit), "
                "then choose Try again.";
         break;
-    case POP_ADDED:
+    case POP_ADDED: {
+        static char added[300];
         t = "Added to Steam";
-        text = steam_proton ? "Start Steam: Virtua Fighter 4 Final Tuned is in your library, set to run with Proton."
-                            : "Start Steam: Virtua Fighter 4 Final Tuned is in your library.";
+        snprintf(added, sizeof added, "Start Steam: Virtua Fighter 4 Final Tuned is in your library%s%s.%s",
+                 art_made ? " with its pictures" : "", steam_proton ? ", set to run with Proton" : "",
+                 art_made ? "" : " Its pictures could not be made: launcher.log says why.");
+        text = added;
         break;
+    }
     case POP_WINE:      /* docs/design.md section 34: what was seen under plain Wine */
         t = "Playing under plain Wine";
         text = WINE_NOTE;
@@ -2641,16 +2775,30 @@ int main(int argc, char **argv)
                             sizeof upd_error);
                 focus = default_focus();
             }
-        /* the Play page under its notes: steam-started, steam-close, steam-added, wine-play */
+        /* the Play page under its notes: steam-started, steam-close, steam-added,
+         * steam-added-plain (no pictures), wine-play */
         static const struct { const char *name; int kind; } pops[] = {
             {"steam-started", POP_FROM_STEAM}, {"steam-close", POP_CLOSE_STEAM}, {"steam-added", POP_ADDED},
-            {"wine-play", POP_WINE},
+            {"steam-added-plain", POP_ADDED}, {"wine-play", POP_WINE},
         };
         for (size_t i = 0; i < SDL_arraysize(pops); i++)
             if (!strcmp(shot_page, pops[i].name)) {
                 go(P_PLAY);
                 steam_proton = 1;
+                art_made = strcmp(shot_page, "steam-added-plain") != 0;
                 pop_open(pops[i].kind);
+            }
+        /* the Play page with Add to Steam's lines: steam-art (the pictures being
+         * made), steam-done, steam-done-plain (without them) */
+        static const struct { const char *name; int kind; const char *text; } lines[] = {
+            {"steam-art", ST_WORKING, ART_WORKING}, {"steam-done", ST_GOOD, ADDED_ART},
+            {"steam-done-plain", ST_GOOD, ADDED_NO_ART},
+        };
+        for (size_t i = 0; i < SDL_arraysize(lines); i++)
+            if (!strcmp(shot_page, lines[i].name)) {
+                go(P_PLAY);
+                status_kind = lines[i].kind;
+                SDL_strlcpy(status_text, lines[i].text, sizeof status_text);
             }
         if (shot_device && ui_device_named(shot_device) >= 0)
             ui_set_device(ui_device_named(shot_device));    /* the caps' style (ui.h) */

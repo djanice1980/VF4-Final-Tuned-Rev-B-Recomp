@@ -35,7 +35,11 @@ holds the launcher and builder only, no game. You also need your MAME
    **Add to Steam** on the Play page. Steam takes a new shortcut only while
    it is closed (it rewrites its shortcuts when it exits), so if Steam is
    open the launcher asks you to exit it (Steam menu, Exit) and then
-   choose Try again. Press it again any time to recreate the shortcut.
+   choose Try again. The entry gets its pictures in Steam's library (the
+   cover, the banner and the icon), made from your own build: the first
+   time this takes about half a minute. Press it again any time to
+   recreate the shortcut. (Steam has no description for a game added this
+   way.)
    Or turn on **Start the game directly** on the Play page: from then on
    the launcher opens the game straight away, and the game's menu has
    **Open the launcher**.
@@ -61,8 +65,8 @@ If Wine is installed (opening `vf4ft-launcher.exe` from your file manager
 starts it), steps 2 and 3 can be done by the launcher instead: open it with
 Steam closed and press **Add to Steam** on the Play page (after Game files
 and Build). It adds itself to your Linux Steam, named Virtua Fighter 4
-Final Tuned and set to Proton Experimental; with Steam open it asks you to
-exit Steam first. Pressed from the Steam entry, it asks you to exit Steam
+Final Tuned, set to Proton Experimental and with its pictures; with Steam
+open it asks you to exit Steam first. Pressed from the Steam entry, it asks you to exit Steam
 and open `vf4ft-launcher.exe` again from its folder.
 
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode
@@ -506,6 +510,8 @@ after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `dimm.key` beside it), `--log FILE`, `--silent` (no sound chip: VF4debug's
 mailbox model, as in M3), `--user DIR`, and for tests `--press LIST`
 (buttons at given vertical blanks, as `6500:p1:start,6800:p1:p+g`),
+`--art DIR` (no window: Steam's pictures from the attract sequence into
+DIR, as Add to Steam makes them; [design.md s36](docs/design.md#36-steams-pictures-for-the-entry-from-the-players-own-build-2026-11-13)),
 `--shot N FILE` (the picture at vertical blank N to a BMP file) and
 `--keys LIST` (keys and virtual gamepad buttons one after another from a
 vertical blank on, as `6400:Insert,Down,shot=menu.bmp,pad:guide`, with

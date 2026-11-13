@@ -39,6 +39,11 @@
  *                     glyphs): xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck, steamvirtual
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
+ *   --art DIR         no window: Steam's pictures for the launcher's entry, made from the attract
+ *                     sequence into DIR (art.h; docs/design.md section 36). Exit 0 when all were
+ *                     made, 3 without the GPU renderer, else 1
+ *   --art-frames LIST with --art: whole pictures of those vertical blanks instead
+ *                     ("2400,3000-6000/300"), for choosing scenes
  *   --kofi-notice N   for tests: the first start's Ko-fi notice at vertical blank N, even when it
  *                     was shown before (test runs, with --frames, --shot, --press, --keys or
  *                     --unpaced, show it only so)
@@ -73,6 +78,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "art.h"
 #include "game_machine.h"
 #include "settings.h"
 #include "gpu_render.h"
@@ -125,6 +131,9 @@ static struct {
 } shared;
 
 static const char *image_path, *dimm_path, *dimm_key;
+static const char *art_dir;             /* --art: Steam's artwork, no window (art.h) */
+static const unsigned *art_list;        /* the vertical blanks it takes */
+static int art_n, art_i;
 static int unpaced, real_boot, silent;
 static settings cfg_;                   /* user/settings.txt over the defaults */
 static settings start_cfg;              /* as this run started (what applies at the next start differs) */
@@ -433,6 +442,14 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
                 SDL_Delay(5);
             due = 0;
         }
+    while (art_i < art_n && art_list[art_i] <= frame) {
+        if (art_list[art_i] == frame) {
+            SDL_SetAtomicInt(&shot_pause, art_i + 1);
+            while (SDL_GetAtomicInt(&shot_pause))
+                SDL_Delay(1);
+        }
+        art_i++;
+    }
     if (frame % BACKUP_EVERY == 0) {
         backup_save();
         cards_save();
@@ -523,6 +540,72 @@ static int SDLCALL machine_main(void *arg)
     ev.type = machine_event;
     SDL_PushEvent(&ev);
     return 0;
+}
+
+/* --art: the machine runs unpaced and waits at each vertical blank of the
+ * artwork (on_frame); its newest picture is drawn and read back, and art.c
+ * makes the files. No window: nothing is shown. Exit 0 once every picture
+ * was made, else 1 */
+static void art_say(const char *msg)
+{
+    logf_("%s", msg);
+}
+
+typedef struct { unsigned frame; int made; } art_ctx;
+
+static void art_use(void *ud, const void *px, Uint32 w, Uint32 h)
+{
+    art_ctx *c = ud;
+    c->made += art_take(art_dir, c->frame, px, w, h, art_say);
+}
+
+static int art_loop(SDL_GPUDevice *gpu, SDL_Thread *machine)
+{
+    int running = 1, turns = 0, taken = 0;
+    art_ctx ctx = { 0, 0 };
+    Uint64 t0 = SDL_GetTicksNS();
+    while (running) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev))
+            if (ev.type == machine_event || ev.type == SDL_EVENT_QUIT)
+                running = 0;
+        int sp = SDL_GetAtomicInt(&shot_pause);
+        if (!sp) {
+            SDL_Delay(1);
+            continue;
+        }
+        /* the picture of the vertical blank the machine waits at: drawn on
+         * the third turn, as a --shot's (frames still in flight come first) */
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
+        if (!cmd) {
+            logf_("art: %s", SDL_GetError());
+            break;
+        }
+        Uint32 w = 0, h = 0;
+        unsigned gf = 0;
+        SDL_GPUTexture *t = gpu_render_frame(cmd, &w, &h, &gf);
+        SDL_SubmitGPUCommandBuffer(cmd);
+        if (t && ++turns >= 3) {
+            ctx.frame = art_list[sp - 1];
+            read_back(gpu, t, w, h, art_use, &ctx);
+            taken++;
+            turns = 0;
+            SDL_SetAtomicInt(&shot_pause, 0);
+            if (sp == art_n)
+                running = 0;
+        }
+    }
+    SDL_SetAtomicInt(&shot_pause, 0);
+    game_machine_stop();
+    SDL_WaitThread(machine, NULL);
+    gpu_render_quit();
+    SDL_DestroyGPUDevice(gpu);
+    logf_("art: %d of %d scenes taken, %d files, in %.1f s", taken, art_n, ctx.made,
+          (SDL_GetTicksNS() - t0) / 1e9);
+    SDL_Quit();
+    if (log_file && log_file != stderr)
+        fclose(log_file);
+    return taken == art_n && ctx.made ? 0 : 1;
 }
 
 /* ---- controls ---- */
@@ -1264,6 +1347,10 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--keys") && v) {
             if (keys_parse(argv[++i])) { fprintf(stderr, "vf4ft: --keys: FRAME:KEY,KEY,shot=FILE,@FRAME,...\n"); return 2; }
         }
+        else if (!strcmp(a, "--art") && v) art_dir = argv[++i];
+        else if (!strcmp(a, "--art-frames") && v) {
+            if (art_frames_parse(argv[++i])) { fprintf(stderr, "vf4ft: --art-frames: N,N-M/STEP,...\n"); return 2; }
+        }
         else if (!strcmp(a, "--press") && v) {
             if (press_parse(argv[++i])) { fprintf(stderr, "vf4ft: --press: FRAME:p1|p2:BUTTON[+BUTTON],...\n"); return 2; }
         }
@@ -1311,6 +1398,22 @@ int main(int argc, char **argv)
     }
     gu_init(SDL_GetBasePath(), say_line);   /* the menu's Check for updates (updates.h) */
 
+    if (art_dir) {
+        /* Steam's artwork (art.h): a blank cabinet with the default settings,
+         * unpaced and silent, the GPU renderer at 4 x; nothing of the
+         * player's is read or written (no settings, backup or cards) */
+        art_list = art_frames(&art_n);
+        settings_defaults(&cfg_);
+        cfg_.sound = 0;
+        cfg_.cards = 0;
+        cfg_.renderer = RENDERER_GPU;
+        cfg_.scale = 4;
+        start_cfg = cfg_;
+        unpaced = 1;
+        backup_ok = 0;
+        frames_max = art_list[art_n - 1] + 1;
+        logf_("art: %d scenes into %s, the last at vertical blank %u", art_n, art_dir, art_list[art_n - 1]);
+    } else {
     /* the player's folder: settings, the backup, cards */
     if (user_arg) {
         size_t ul = strlen(user_arg);
@@ -1333,6 +1436,7 @@ int main(int argc, char **argv)
         SDL_snprintf(backup_path, sizeof backup_path, "%sbackup.bin", user_dir);
         start_cfg = cfg_;
         live_fullscreen = cfg_.fullscreen;
+    }
     }
     if (!cfg_.sound)
         silent = 1;
@@ -1376,11 +1480,14 @@ int main(int argc, char **argv)
     shared.lock = SDL_CreateMutex();
     machine_event = SDL_RegisterEvents(1);
 
-    SDL_Window *win = SDL_CreateWindow(VF4FT_TITLE, 1280, 960, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                       (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
-    if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
-    main_win = win;
-    SDL_SetWindowMinimumSize(win, MENU_MIN_W, MENU_MIN_H);      /* the menu always fits */
+    SDL_Window *win = NULL;
+    if (!art_dir) {
+        win = SDL_CreateWindow(VF4FT_TITLE, 1280, 960, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+                               (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+        if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
+        main_win = win;
+        SDL_SetWindowMinimumSize(win, MENU_MIN_W, MENU_MIN_H);  /* the menu always fits */
+    }
     /* The GPU renderer's shaders are SPIR-V: a Vulkan device (natively, or
      * Proton's winevulkan). Without one the software picture is shown, on
      * whatever device SDL picks. */
@@ -1397,7 +1504,7 @@ int main(int argc, char **argv)
         gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_name);
     if (!gpu) { logf_("SDL_CreateGPUDevice(%s) failed: %s", gpu_name ? gpu_name : "default", SDL_GetError()); return 1; }
     logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
-    if (!SDL_ClaimWindowForGPUDevice(gpu, win)) { logf_("claim window failed: %s", SDL_GetError()); return 1; }
+    if (win && !SDL_ClaimWindowForGPUDevice(gpu, win)) { logf_("claim window failed: %s", SDL_GetError()); return 1; }
     if (use_gpu && gpu_render_init(gpu, cfg_.scale)) {
         logf_("the GPU renderer cannot start (%s): the software picture instead", SDL_GetError());
         gpu_render_quit();
@@ -1408,6 +1515,10 @@ int main(int argc, char **argv)
         logf_("renderer: GPU, %d x %d", PIC_W * cfg_.scale, PIC_H * cfg_.scale);
     } else {
         logf_("renderer: software, %d x %d", PIC_W, PIC_H);
+    }
+    if (art_dir && !use_gpu) {
+        logf_("art: no GPU renderer, so no artwork");
+        return 3;
     }
 
     /* the machine's thread: the translated code nests a C call for every guest
@@ -1422,6 +1533,8 @@ int main(int argc, char **argv)
         logf_("cannot start the machine's thread: %s", SDL_GetError());
         return 1;
     }
+    if (art_dir)
+        return art_loop(gpu, machine);
 
 
     /* the picture: uploaded into a texture whenever a new one is there, then
