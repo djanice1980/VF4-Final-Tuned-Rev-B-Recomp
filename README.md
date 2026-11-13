@@ -56,8 +56,9 @@ play, the card units, a settings page with rebinding, the GPU renderer at
 up to 4 times the resolution, the Steam Deck route, and the operator's
 test mode. The game has its own menu over the picture (Insert, Esc, a
 gamepad's Guide button, or View + Menu held): it pauses the game, changes
-settings, reaches test mode from a gamepad, restarts and quits. No release
-has been published yet. The plan, with its
+settings, reaches test mode from a gamepad, restarts and quits. The first
+release, 0.5.0 (Windows, and the Steam Deck through Proton), is on the
+Releases page. The plan, with its
 milestones: [docs/design.md](docs/design.md).
 
 | Milestone | State |
@@ -122,7 +123,7 @@ new code. The set is not needed again, and `user/` is kept:
 python3 -I tools/make_game.py --update ~/Games/vf4ft
 ```
 
-**With the launcher.** A release will be a zip with `vf4ft-launcher` and
+**With the launcher.** A release is a zip with `vf4ft-launcher` and
 everything it runs (on Windows also SDL3.dll and Python's embeddable
 package, so nothing has to be installed). It walks through three steps,
 shown at its top: Game files (choose the set's folder; it looks in the
@@ -147,15 +148,16 @@ The Deck runs the Windows release under Proton, in Game Mode. This has not
 been tried on a real Deck yet; the same release was built and played under
 Proton on a desktop PC.
 
-1. **A release zip.** None has been published yet. Until one is, make it on
-   a Linux PC from this repository: steps 1 to 3 of "Development build"
-   below (step 3 makes `build/win64/vf4ft-launcher.exe`), then
+1. **A release zip.** Download the latest `vf4ft-…-windows.zip` from this
+   repository's Releases page (about 15 MB; it holds no game data). Or make
+   one on a Linux PC from this repository: steps 1 to 3 of "Development
+   build" below (step 3 makes `build/win64/vf4ft-launcher.exe`), then
 
    ```bash
    python3 -I tools/package_release.py windows build/win64/vf4ft-launcher.exe ~/vf4ft-release
    ```
 
-   That makes `~/vf4ft-release.zip` (about 15 MB; it holds no game data).
+   That makes `~/vf4ft-release.zip`.
 2. **On the Deck, in Desktop Mode** (Steam button, Power, Switch to Desktop):
    copy the zip over (USB stick, SD card or a network share), right-click
    it in Dolphin, Extract, Extract archive here. Put the folder anywhere,
