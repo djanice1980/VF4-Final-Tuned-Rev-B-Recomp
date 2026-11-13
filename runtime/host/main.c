@@ -1275,10 +1275,8 @@ int main(int argc, char **argv)
         const char *window_shot = NULL;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
-            int dev_was = ui_device();
-            ui_note_event(&ev);
-            if (ui_device() != dev_was && (menu_on || bar_on))
-                ov_dirty = 1;       /* its hints show the keys or the buttons */
+            if (ui_note_event(&ev) && (menu_on || bar_on))
+                ov_dirty = 1;       /* its hints show the keys or the buttons of the pad last used */
             if (ev.type == machine_event) {
                 running = 0;
                 continue;

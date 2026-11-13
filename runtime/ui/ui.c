@@ -708,14 +708,20 @@ static void note_pad(SDL_JoystickID id)
         last_face[b] = g ? SDL_GetGamepadButtonLabel(g, (SDL_GamepadButton)b) : SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
 }
 
-void ui_note_event(const SDL_Event *e)
+int ui_note_event(const SDL_Event *e)
 {
+    int dev_was = dev;
+    SDL_GamepadButtonLabel face_was[4];
+    SDL_memcpy(face_was, last_face, sizeof face_was);
     if (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
         dev = UI_DEV_KEYS;
     else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
         note_pad(e->gbutton.which);
     else if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e->gaxis.value > 20000 || e->gaxis.value < -20000))
         note_pad(e->gaxis.which);
+    /* two pads of one style can label their face buttons differently (an
+     * Xbox pad and an 8BitDo pad in its Switch layout) */
+    return dev != dev_was || SDL_memcmp(face_was, last_face, sizeof face_was) != 0;
 }
 
 int ui_device(void)

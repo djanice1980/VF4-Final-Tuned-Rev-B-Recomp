@@ -1259,6 +1259,13 @@ does. There are nine styles (`ui.c`, `styles[]`), and
   Deck's own controls when the environment has `SteamDeck=1`. That is a
   guess, labeled as one in the code: a DualSense on a Deck behind Steam
   Input would show the Deck's names if Steam does not say what it is.
+- *Two players, two kinds of pad.* The caps follow whoever pressed last,
+  and each pad's buttons work by its own labels whatever the caps show.
+  `ui_note_event` returns 1 when the caps' names change: another style, or
+  another pad of the same style labeled otherwise (an Xbox pad and an
+  8BitDo pad in its Switch layout). The menu redraws on that; it first
+  compared only the style. Checked headless with two Xbox One pads, one
+  mapped `face:bayx`, and a DualShock 4.
 - `--shot-device NAME` (launcher) takes `keys` or a style's name (`ps` is
   `ps5`), and the game's `--keys` takes `padtype=NAME` for its virtual pad:
 

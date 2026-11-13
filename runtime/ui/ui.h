@@ -99,8 +99,10 @@ enum {
 /* a style by its name (keys, xbox, xbox360, ps5 or ps, ps4, ps3, switch,
  * gamecube, steam, generic), or -1: for tests */
 int ui_device_named(const char *name);
-/* follows the last key or button pressed (call it with every event) */
-void ui_note_event(const SDL_Event *e);
+/* follows the last key or button pressed (call it with every event);
+ * returns 1 when the caps' names changed with it: another style, or another
+ * pad of the same style whose face buttons are labeled otherwise */
+int ui_note_event(const SDL_Event *e);
 int ui_device(void);
 void ui_set_device(int dev);
 /* the style of gamepad glyphs: the last pad used, else the first one there */
