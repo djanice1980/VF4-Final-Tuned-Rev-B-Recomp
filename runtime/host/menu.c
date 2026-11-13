@@ -3,6 +3,7 @@
 
 #include <string.h>
 
+#include "cards.h"
 #include "options.h"
 #include "ui.h"
 #include "updates.h"
@@ -303,9 +304,47 @@ static int later(int id)
     return 0;
 }
 
+/* Player 1 card or Player 2 card with a card chosen: the card's details
+ * (card_view_text, as the launcher's Cards tab shows them), read from its
+ * file again when another card is chosen or half a second has gone by (the
+ * game writes the units' cards as the menu opens) */
+static void card_about(int side, const char **title, const char **text, const char **note)
+{
+    static char name[CARD_NAME_MAX], body[600];
+    static Uint64 at;
+    Uint64 now = SDL_GetTicks();
+    if (strcmp(name, s->card[side]) || now - at >= 500 || !body[0]) {
+        char path[4300];
+        card_view v;
+        int file = 0;
+        SDL_zero(v);
+        SDL_strlcpy(name, s->card[side], sizeof name);
+        at = now;
+        cards_path(path, sizeof path, run.user_dir ? run.user_dir : "", name);
+        if (SDL_GetPathInfo(path, NULL)) {
+            size_t len = 0;
+            Uint8 *c = SDL_LoadFile(path, &len);
+            file = c && len == CARD_SIZE ? 1 : -1;
+            if (file > 0)
+                card_view_of(c, &v);
+            SDL_free(c);
+        }
+        card_view_text(&v, file, body, sizeof body);
+    }
+    *title = name;
+    *text = body;
+    *note = !s->cards ? "Card units are off (below): the game uses none."
+                      : "Left and Right choose the card; the other player's card swaps the two. Cards change as the "
+                        "menu closes.";
+}
+
 static void about_of(int id, const char **title, const char **text, const char **note)
 {
     *note = NULL;
+    if ((id == OPT_CARD1 || id == OPT_CARD2) && s->card[id - OPT_CARD1][0]) {
+        card_about(id - OPT_CARD1, title, text, note);
+        return;
+    }
     if (id < OPT_COUNT) {
         *title = options[id].label;
         *text = options[id].about;

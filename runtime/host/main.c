@@ -554,6 +554,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
     /* the menu: the machine waits while it is open; a restart from it
      * leaves this function for the power-on state (rt_native_restart) */
     if (SDL_GetAtomicInt(&menu_pause)) {
+        cards_save();       /* the units' cards in their files, for the menu's Cards tab */
         while (SDL_GetAtomicInt(&menu_pause))
             SDL_Delay(5);
         due = 0;
@@ -918,6 +919,7 @@ static void menu_show_as(int notice)
     r.start = start_cfg;
     r.sound = audio != NULL;
     r.test_program = SDL_GetAtomicInt(&program_now);
+    r.user_dir = user_dir;
     if (notice)
         menu_open_notice(&cfg_, &r);
     else

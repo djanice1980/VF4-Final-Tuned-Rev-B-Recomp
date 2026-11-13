@@ -57,6 +57,14 @@ const char *card_rank_text(int level, char *buf, size_t n);
  * is, a character outside ASCII as "?" */
 void card_name_text(const Uint8 *name20, char *out, size_t n);
 
+/* a card's details as lines of text, for the launcher's Cards tab and the
+ * game menu's: character and rank, ring name, record, games left, items;
+ * else what the card is. file: 1 its file is there (v read from it), 0 not
+ * made yet (no file), -1 the file is not a card (not 128 bytes). Returns
+ * which text it is */
+enum { CARD_TEXT_STATS, CARD_TEXT_NEW, CARD_TEXT_OLD, CARD_TEXT_BAD };
+int card_view_text(const card_view *v, int file, char *out, size_t n);
+
 /* what the launcher's card editor changes, in a Final Tuned card (format 4) */
 #define CARD_NAME_LEN 20
 #define CARD_COLORS 19          /* a part's colors: 0 its default, 1 to 19 */

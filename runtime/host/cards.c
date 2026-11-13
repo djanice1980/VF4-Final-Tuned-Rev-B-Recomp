@@ -132,6 +132,39 @@ void card_name_text(const Uint8 *name20, char *out, size_t n)
     out[k] = 0;
 }
 
+int card_view_text(const card_view *v, int file, char *out, size_t n)
+{
+    char rank[40];
+    if (file == 0) {
+        SDL_strlcpy(out, "Not made yet: the game makes it at the player's first game, for the character chosen then.", n);
+        return CARD_TEXT_NEW;
+    }
+    if (file < 0) {
+        SDL_strlcpy(out, "This file is not a card (a card is 128 bytes): the player would have none.", n);
+        return CARD_TEXT_BAD;
+    }
+    if (v->blank) {
+        SDL_strlcpy(out, "A new card, never used: at its first game the game makes it the player's, for the character "
+                         "chosen then.", n);
+        return CARD_TEXT_NEW;
+    }
+    if (v->format != 4) {
+        SDL_snprintf(out, n, "A card from an older version of the game (its format %d). The game brings it up to date.",
+                     v->format);
+        return CARD_TEXT_OLD;
+    }
+    if (!v->header_ok || !v->body_ok) {
+        SDL_strlcpy(out, "Its checks do not hold, so the game would not read it.", n);
+        return CARD_TEXT_BAD;
+    }
+    SDL_snprintf(out, n, "%s, %s\nRing name: %s\n%d %s, %d %s\n%d %s left\nItems: %s",
+                 card_chara_names[v->chara & (CARD_CHARAS - 1)], card_rank_text(v->level, rank, sizeof rank),
+                 v->name[0] ? v->name : "none", v->wins, v->wins == 1 ? "win" : "wins", v->losses,
+                 v->losses == 1 ? "loss" : "losses", v->plays_left, v->plays_left == 1 ? "game" : "games",
+                 v->items == 64 ? "all" : v->items == 0 ? "none" : "some");
+    return CARD_TEXT_STATS;
+}
+
 /* a costume's colors: four parts of five bits, the low four in the packed
  * half (card_colors_to_packed), the fifth apart: costume 0's in byte 42's
  * top four bits (card_curse_bits), costume 1's in byte 77's top three bits

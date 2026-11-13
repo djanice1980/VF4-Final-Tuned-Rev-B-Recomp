@@ -50,6 +50,7 @@ typedef struct menu_run {
     settings start;         /* the settings this run started with */
     int sound;              /* the sound chip runs: the volume applies */
     int test_program;       /* the test program runs now */
+    const char *user_dir;   /* the player's folder (ends in a separator): the Cards tab reads cards/ there */
 } menu_run;
 
 /* opens it on s (the settings in use, changed in place) */

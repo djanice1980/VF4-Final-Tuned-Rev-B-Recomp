@@ -2261,6 +2261,17 @@ cabinet's unit ejects a card when it is unlocked; the new one goes in
 then. One card is in one unit at a time: a card the other unit still holds
 (a swap) goes in once that unit has let it go (`cards_swap`).
 
+The panel on the right shows the chosen card's details, as the launcher's
+Cards tab does: character and rank, ring name, record, games left and
+items, or what the card is (not made yet, never used, an older format, a
+file that is not a card). Both draw the text with `card_view_text`
+(`cards.c`); the launcher adds its Edit hints. The menu reads the card's
+file again when the row changes and every half second. So that the file
+holds the game's latest, the machine thread writes the units' cards to their
+files (`cards_save`, tmp file and rename) as the menu pauses it, not only
+every 600 vblanks: opened mid-fight, the menu shows the game just begun
+(399 games left on a 400-game card).
+
 *Fixed after 2a54824:* the first menu left the other player's card out of
 each list, so two cards could not be swapped, and offered a card not made
 yet only while it was the player's: with player 2's `p2` (not made yet)

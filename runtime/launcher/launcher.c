@@ -2996,32 +2996,19 @@ static void draw_cards(void)
                 "No cards yet. New makes one, ready to play: then choose its character and give it to a player.");
     /* the chosen card */
     static char text[600];
-    char rank[40];
     const char *t = cp_n ? cp_names[st_row] : "Cards", *note = NULL;
     int i = st_row, side = cp_n ? cp_side(i) : -1;
-    const card_view *v = cp_n ? &cp_view[i] : NULL;
-    if (!cp_n)
+    if (!cp_n) {
         SDL_strlcpy(text, "A card keeps a player's character, rank, record, items and colors, as a cabinet's "
                           "card did. Each one is a file in the game's user/cards folder.", sizeof text);
-    else if (!cp_has[i])
-        SDL_strlcpy(text, "Not made yet: the game makes it at the player's first game, for the character "
-                          "chosen then. Or Edit makes it a ready card now.", sizeof text);
-    else if (cp_bad[i])
-        SDL_strlcpy(text, "This file is not a card (a card is 128 bytes): the player would have none.", sizeof text);
-    else if (v->blank)
-        SDL_strlcpy(text, "A new card, never used: at its first game the game makes it the player's, for the "
-                          "character chosen then. Or Edit makes it a ready card now.", sizeof text);
-    else if (v->format != 4)
-        snprintf(text, sizeof text, "A card from an older version of the game (its format %d). The game brings "
-                                    "it up to date; the launcher does not edit it.", v->format);
-    else if (!v->header_ok || !v->body_ok)
-        SDL_strlcpy(text, "Its checks do not hold, so the game would not read it.", sizeof text);
-    else
-        snprintf(text, sizeof text, "%s, %s\nRing name: %s\n%d %s, %d %s\n%d %s left\nItems: %s",
-                 card_chara_names[v->chara], card_rank_text(v->level, rank, sizeof rank),
-                 v->name[0] ? v->name : "none", v->wins, v->wins == 1 ? "win" : "wins", v->losses,
-                 v->losses == 1 ? "loss" : "losses", v->plays_left, v->plays_left == 1 ? "game" : "games",
-                 v->items == 64 ? "all" : v->items == 0 ? "none" : "some");
+    } else {
+        /* the game menu's Cards tab shows the same (card_view_text), less what the launcher adds */
+        int kind = card_view_text(&cp_view[i], !cp_has[i] ? 0 : cp_bad[i] ? -1 : 1, text, sizeof text);
+        if (kind == CARD_TEXT_NEW)
+            SDL_strlcat(text, " Or Edit makes it a ready card now.", sizeof text);
+        else if (kind == CARD_TEXT_OLD)
+            SDL_strlcat(text, " The launcher does not edit it.", sizeof text);
+    }
     if (!st.cards)
         note = "Cards are off (the Game tab): the game uses none.";
     else if (side >= 0)
