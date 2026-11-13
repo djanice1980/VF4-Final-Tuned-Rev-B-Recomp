@@ -33,6 +33,7 @@ void settings_defaults(settings *s)
     s->renderer = RENDERER_GPU;
     s->scale = 2;
     s->sound = 1;
+    s->volume = 100;
     s->cards = 1;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
@@ -196,6 +197,11 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "sound")) {
                 if ((ok = choice(v, onoff_names, 2, &x)))
                     s->sound = x;
+            } else if (!strcmp(name, "volume")) {
+                char *end;
+                long l = strtol(v, &end, 10);
+                if ((ok = end != v && !*end && l >= 0 && l <= 100))
+                    s->volume = (int)l;
             } else if (!strcmp(name, "cards")) {
                 if ((ok = choice(v, onoff_names, 2, &x)))
                     s->cards = x;
@@ -235,8 +241,9 @@ int settings_save(const settings *s, const char *path)
     static char out[16384];
     size_t at = 0;
 #define PUT(...) (at += (size_t)SDL_snprintf(out + at, at < sizeof out ? sizeof out - at : 0, __VA_ARGS__))
-    PUT("# Virtua Fighter 4 Final Tuned (recomp): settings. The launcher's Settings page writes\n"
-        "# this file; the game reads it when it starts. Lines it does not know are skipped.\n\n");
+    PUT("# Virtua Fighter 4 Final Tuned (recomp): settings. The launcher's Settings page and the\n"
+        "# game's menu write this file; the game reads it when it starts. Lines it does not know\n"
+        "# are skipped.\n\n");
     PUT("coins = %s            # free play | arcade (coins; an operator's own coin setting is kept)\n",
         coins_names[s->coins]);
     PUT("fullscreen = %s       # auto (on for the Steam Deck and Big Picture) | on | off\n",
@@ -246,6 +253,7 @@ int settings_save(const settings *s, const char *path)
     PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture)\n", renderer_names[s->renderer]);
     PUT("scale = %d               # the GPU renderer's resolution: 1 to 4 times 640 x 480\n", s->scale);
     PUT("sound = %s\n", onoff_names[s->sound]);
+    PUT("volume = %d             # 0 to 100 (%%); the game's menu changes it too\n", s->volume);
     PUT("cards = %s            # the two card units; the cards are user/cards/p1.card and p2.card\n",
         onoff_names[s->cards]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"

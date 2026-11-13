@@ -602,6 +602,7 @@ static size_t power_on_size;
 static jmp_buf rt_restart;
 static int rt_switch_to;
 static int rt_program_now;
+static int rt_restart_set;      /* rt_restart is rt_native_run's, which is running */
 unsigned rt_native_switches;
 static void rt_program(sh4 *c, int program);
 
@@ -621,6 +622,14 @@ int rt_native_power_on(void)
 int rt_native_program(void)
 {
     return rt_program_now;
+}
+
+void rt_native_restart(void)
+{
+    if (!power_on || !rt_restart_set)
+        return;
+    rt_switch_to = PROGRAM_MAIN;
+    longjmp(rt_restart, 1);
 }
 
 /* service 0x44 (hle_boot.c), deep in whatever called it: back to
@@ -719,13 +728,16 @@ static void program_switch(sh4 *c, int program)
 int rt_native_run(sh4 *c)
 {
     rt_cpu = c;
-    if (setjmp(rt_end))
+    if (setjmp(rt_end)) {
+        rt_restart_set = 0;
         return rt_end_code;
+    }
     if (!control_next(c))
         return STOP_NONE;
     c->stop = 0;
     if (setjmp(rt_restart))
-        program_switch(c, rt_switch_to);    /* test mode: the other program, from its start */
+        program_switch(c, rt_switch_to);    /* test mode: the other program, from its start (or a restart) */
+    rt_restart_set = 1;
     rt_fpscr_loaded(c);
     rt_event(c, c->pc);
     rt_drive(c);

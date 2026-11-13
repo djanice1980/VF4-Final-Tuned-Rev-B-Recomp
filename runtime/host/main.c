@@ -28,6 +28,11 @@
  *                     the cabinet's test and service with either)
  *   --shot N FILE     for tests: the machine waits at vertical blank N while the newest picture, as
  *                     shown (before scaling to the window), goes to a BMP file; up to 8 of them
+ *   --keys LIST       for tests: keys pressed one after another (every 8 turns of the window's loop)
+ *                     once the machine is at vertical blank FRAME, as "6400:Insert,Down,Right,
+ *                     shot=menu.bmp,Escape": SDL key names, "@N" waits for vertical blank N,
+ *                     "shot=FILE" saves the window as shown (the menu included) to a BMP file,
+ *                     "pad:a+x=N" holds buttons of a virtual gamepad (SDL's names) for N turns (6)
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
  *
@@ -43,7 +48,9 @@
  * Test mode: Test starts the game's test program (runtime/native/rt_native.c),
  * where Service moves the cursor and Test chooses; its EXIT starts the game
  * again. Nothing in it is changed from the board's.
- * Quit: Esc, closing the window, or holding View + Menu on a controller.
+ * The menu (menu.c): Insert or Esc, a gamepad's Guide button, or View + Menu
+ * held for a second; the game pauses. Settings, the operator's test menu,
+ * restart and quit are in it. Closing the window quits too.
  *
  * The backup is written every 10 seconds when it has changed, and when the
  * game ends; a file that is there and not a backup is left alone (the run
@@ -59,6 +66,7 @@
 #include "game_machine.h"
 #include "settings.h"
 #include "gpu_render.h"
+#include "menu.h"
 
 #define VF4FT_TITLE "Virtua Fighter 4 Final Tuned"
 #ifndef VF4FT_VERSION
@@ -116,6 +124,13 @@ static int backup_ok = 1;               /* 0: the file there is not a backup; ne
 static struct { unsigned frame; const char *path; int done; } shots[8];
 static int nshots;
 static SDL_AtomicInt shot_pause;        /* 1 + the shot the machine waits for at its vertical blank */
+
+/* the menu (menu.c): what this thread asks of the machine's */
+static SDL_AtomicInt menu_pause;        /* 1: the machine waits at its vertical blank */
+static SDL_AtomicInt test_frames;       /* vertical blanks the menu holds the Test switch for */
+static SDL_AtomicInt restart_req;       /* GAME_COINS_*: the game starts again from power on, with it */
+static SDL_AtomicInt frame_now;         /* the machine's vertical blank */
+static SDL_AtomicInt program_now;       /* 1 while the test program runs */
 
 /* the picture in tex (w x h, RGBA) to a BMP file: waits for the GPU */
 static void shot_save(SDL_GPUDevice *gpu, SDL_GPUTexture *tex, Uint32 w, Uint32 h, const char *path)
@@ -354,6 +369,12 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
     }
     *in = shared.in;
     SDL_UnlockMutex(shared.lock);
+    SDL_SetAtomicInt(&frame_now, (int)frame);
+    SDL_SetAtomicInt(&program_now, game_machine_program());
+    if (SDL_GetAtomicInt(&test_frames) > 0) {       /* the menu's Test switch */
+        SDL_AddAtomicInt(&test_frames, -1);
+        in->sys |= GAME_SYS_TEST;
+    }
     for (int i = 0; i < presses; i++)
         if (frame >= press[i].frame && frame < press[i].frame + 6) {
             in->player[press[i].side] |= press[i].bits;
@@ -382,6 +403,25 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
         logf_("vertical blank %u: %s", frame, program ? "test mode (the game's test program)" : "the game starts again");
         backup_save();
         cards_save();
+    }
+
+    /* the menu: the machine waits while it is open; a restart from it
+     * leaves this function for the power-on state (rt_native_restart) */
+    if (SDL_GetAtomicInt(&menu_pause)) {
+        while (SDL_GetAtomicInt(&menu_pause))
+            SDL_Delay(5);
+        due = 0;
+    }
+    int restart = SDL_GetAtomicInt(&restart_req);
+    if (restart) {
+        SDL_SetAtomicInt(&restart_req, 0);
+        logf_("vertical blank %u: the game starts again (the menu's Restart)", frame);
+        backup_save();
+        cards_save();
+        due = 0;
+        busy_since = 0;
+        game_machine_restart(restart);
+        logf_("restart: the machine's power-on state was not kept");
     }
 
     /* the frame is due 1/60 s after the one before; a long stall (loading)
@@ -494,7 +534,15 @@ static void bindings_compile(void)
     }
 }
 
-/* everything at once; returns the buttons of the first gamepad (for the quit chord) */
+/* inputs kept from the game: gamepad buttons (any pad) and keys, while the
+ * menu's chord or operator bar has them, or until they are let go after the
+ * menu closed (the button that closed it is not the game's) */
+static unsigned pad_ignore;
+static bool key_ignore[SDL_SCANCODE_COUNT];
+static unsigned pads_raw;               /* the buttons of every gamepad, together */
+#define CHORD ((1u << SDL_GAMEPAD_BUTTON_BACK) | (1u << SDL_GAMEPAD_BUTTON_START))     /* View + Menu: the menu */
+
+/* everything at once; returns CHORD when a player's gamepad holds View + Menu */
 static unsigned read_controls(game_input *in)
 {
     memset(in, 0, sizeof *in);
@@ -502,7 +550,7 @@ static unsigned read_controls(game_input *in)
     for (int p = 0; p < 2; p++)
         for (int a = 0; a < ACT_COUNT; a++)
             for (int i = 0; i < keys[p][a].n; i++)
-                if (k[keys[p][a].sc[i]]) {
+                if (k[keys[p][a].sc[i]] && !key_ignore[keys[p][a].sc[i]]) {
                     in->player[p] |= act_bits[a];
                     act_extra(in, p, a);
                 }
@@ -511,6 +559,7 @@ static unsigned read_controls(game_input *in)
 
     unsigned first = 0;
     int n = 0;
+    pads_raw = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     for (int i = 0; ids && i < n && i < 2; i++) {
         SDL_Gamepad *g = SDL_GetGamepadFromID(ids[i]);
@@ -525,7 +574,7 @@ static unsigned read_controls(game_input *in)
         for (int a = 0; a < ACT_COUNT; a++)
             for (int j = 0; j < pads[a].n; j++) {
                 int x = pads[a].in[j];
-                int on = x >= 0 ? (x < 32 && (raw >> x & 1))
+                int on = x >= 0 ? (x < 32 && (raw >> x & 1) && !(pad_ignore >> x & 1))
                                 : SDL_GetGamepadAxis(g, (SDL_GamepadAxis)(-1 - x)) > 16000;
                 if (on) {
                     b |= act_bits[a];
@@ -533,8 +582,9 @@ static unsigned read_controls(game_input *in)
                 }
             }
         in->player[i] |= b;
-        if (i == 0)
-            first = raw;
+        pads_raw |= raw;
+        if ((raw & CHORD) == CHORD)
+            first |= CHORD;
     }
     SDL_free(ids);
     /* a stick held between two directions that cancel gives neither */
@@ -565,6 +615,238 @@ static void log_gamepad_added(SDL_JoystickID which)
           SDL_GetGamepadName(g), SDL_GetGamepadStringForType(SDL_GetGamepadType(g)), vid, pid,
           vid == 0x28de ? " (Steam virtual)" : "", (unsigned long long)SDL_GetGamepadSteamHandle(g),
           path ? path : "-");
+}
+
+/* ---- the menu (menu.c) ---- */
+
+static SDL_Window *main_win;
+static settings start_cfg;              /* as this run started (what applies at the next start differs) */
+static char settings_path[4300];
+static int menu_on, bar_on, ov_dirty;   /* bar_on: the operator bar's buttons (A Test, X Service) */
+static Uint64 bar_until;                /* the bar is drawn until then (ms); its buttons work until it closes */
+static unsigned pad_hold;               /* buttons held as the menu closed: not the game's until let go */
+static int live_fullscreen;
+
+#define BAR_BUTTONS ((1u << SDL_GAMEPAD_BUTTON_SOUTH) | (1u << SDL_GAMEPAD_BUTTON_WEST) | \
+                     (1u << SDL_GAMEPAD_BUTTON_EAST))
+
+static int fullscreen_wanted(void)
+{
+    const char *deck = SDL_getenv("SteamDeck"), *tenfoot = SDL_getenv("SteamTenfoot");
+    return cfg_.fullscreen == FULLSCREEN_ON ||
+           (cfg_.fullscreen == FULLSCREEN_AUTO && ((deck && atoi(deck)) || (tenfoot && atoi(tenfoot))));
+}
+
+static void menu_show(void)
+{
+    menu_run r = { start_cfg.renderer, start_cfg.scale, start_cfg.cards, audio != NULL,
+                   SDL_GetAtomicInt(&program_now) };
+    menu_open(&cfg_, &r);
+    menu_on = ov_dirty = 1;
+    SDL_SetAtomicInt(&menu_pause, 1);
+    if (audio)
+        SDL_PauseAudioStreamDevice(audio);
+    logf_("menu: open at vertical blank %d", SDL_GetAtomicInt(&frame_now));
+}
+
+static void menu_hide(void)
+{
+    menu_on = 0;
+    ov_dirty = 1;
+    if (menu_changed()) {
+        if (settings_save(&cfg_, settings_path))
+            logf_("menu: cannot write %s", settings_path);
+        else
+            logf_("menu: settings saved to %s", settings_path);
+    }
+    /* what is held now (the button or key that closed it) waits to be let go */
+    pad_hold = pads_raw;
+    int nk = 0;
+    const bool *k = SDL_GetKeyboardState(&nk);
+    for (int i = 0; i < nk && i < SDL_SCANCODE_COUNT; i++)
+        if (k[i])
+            key_ignore[i] = true;
+    SDL_SetAtomicInt(&menu_pause, 0);
+    if (audio)
+        SDL_ResumeAudioStreamDevice(audio);
+}
+
+/* what the menu asked for; 0 to quit */
+static int menu_do(int a)
+{
+    switch (a) {
+    case MENU_LIVE:
+        if (cfg_.fullscreen != live_fullscreen) {
+            live_fullscreen = cfg_.fullscreen;
+            SDL_SetWindowFullscreen(main_win, fullscreen_wanted());
+        }
+        if (audio)
+            SDL_SetAudioStreamGain(audio, cfg_.volume / 100.0f);
+        ov_dirty = 1;
+        return 1;
+    case MENU_RESUME:
+        menu_hide();
+        logf_("menu: back to the game");
+        return 1;
+    case MENU_TEST:
+        menu_hide();
+        SDL_SetAtomicInt(&test_frames, 6);
+        bar_on = 1;
+        bar_until = SDL_GetTicks() + 6000;
+        logf_("menu: the Test switch (the operator's test menu); A is Test and X Service until B or EXIT");
+        return 1;
+    case MENU_OPERATOR:
+        menu_hide();
+        bar_on = 1;
+        bar_until = SDL_GetTicks() + 6000;
+        logf_("menu: the operator's buttons: A is Test and X Service until B or EXIT");
+        return 1;
+    case MENU_RESTART:
+        bar_on = 0;
+        SDL_SetAtomicInt(&restart_req, cfg_.coins == COINS_ARCADE ? GAME_COINS_ARCADE : GAME_COINS_FREE_PLAY);
+        menu_hide();
+        return 1;
+    case MENU_QUIT:
+        menu_hide();
+        logf_("quit: the menu");
+        return 0;
+    default:
+        ov_dirty = 1;
+        return 1;
+    }
+}
+
+/* the picture at 4:3 (or stretched) in the middle of a w x h target, and the
+ * menu or the operator bar over it */
+static void compose(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, Uint32 w, Uint32 h, SDL_GPUTexture *src,
+                    Uint32 src_w, Uint32 src_h, int have_picture, int ov, SDL_GPUTexture *ov_tex)
+{
+    Uint32 dw = w, dh = h;
+    if (cfg_.picture == PICTURE_STRETCH)
+        ;       /* the whole window */
+    else if ((Uint64)w * 3 > (Uint64)h * 4) dw = h * 4 / 3;
+    else dh = w * 3 / 4;
+    Uint32 x0 = (w - dw) / 2, y0 = (h - dh) / 2;
+    if (have_picture) {
+        SDL_GPUBlitInfo bl;
+        SDL_zero(bl);
+        bl.source.texture = src;
+        bl.source.w = src_w;
+        bl.source.h = src_h;
+        bl.destination.texture = target;
+        bl.destination.x = x0;
+        bl.destination.y = y0;
+        bl.destination.w = dw;
+        bl.destination.h = dh;
+        bl.load_op = SDL_GPU_LOADOP_CLEAR;
+        bl.clear_color = (SDL_FColor){ 0, 0, 0, 1 };
+        bl.filter = cfg_.filter == FILTER_SHARP ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+        SDL_BlitGPUTexture(cmd, &bl);
+    } else {
+        SDL_GPUColorTargetInfo t;
+        SDL_zero(t);
+        t.texture = target;
+        t.clear_color = (SDL_FColor){ 0, 0, 0, 1 };
+        t.load_op = SDL_GPU_LOADOP_CLEAR;
+        t.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
+    }
+    if (!ov)
+        return;
+    /* whole pixels of the panel, about 85% of the picture at most */
+    Uint32 sx = dw * 85 / 100 / MENU_W, sy = dh * 85 / 100 / MENU_H, sc = sx < sy ? sx : sy;
+    if (sc < 1)
+        sc = 1;
+    Uint32 oh = ov == 1 ? MENU_H : MENU_BAR_H, pw = MENU_W * sc, ph = oh * sc;
+    if (pw > w || ph > h)
+        return;         /* a window too small for it (the minimum size keeps it from happening) */
+    SDL_GPUBlitInfo bl;
+    SDL_zero(bl);
+    bl.source.texture = ov_tex;
+    bl.source.w = MENU_W;
+    bl.source.h = oh;
+    bl.destination.texture = target;
+    bl.destination.x = pw <= dw ? x0 + (dw - pw) / 2 : (w - pw) / 2;
+    bl.destination.y = ov == 1 ? (ph <= dh ? y0 + (dh - ph) / 2 : (h - ph) / 2) : y0;
+    bl.destination.w = pw;
+    bl.destination.h = ph;
+    bl.load_op = SDL_GPU_LOADOP_LOAD;
+    bl.filter = SDL_GPU_FILTER_NEAREST;
+    SDL_BlitGPUTexture(cmd, &bl);
+}
+
+/* --keys: keys for tests */
+#define KEY_ITEMS 64
+static char key_list[2048];
+static const char *key_item[KEY_ITEMS];
+static int key_items, key_at, key_wait;
+
+/* --keys pad:...: SDL's virtual gamepad, so the gamepad paths run as a real pad's do */
+static SDL_Joystick *vpad;
+static int vpad_turns;                  /* turns left of the buttons held */
+
+/* made at start-up, before its first press: SDL sends no press for a button
+ * already down when a gamepad is opened */
+static void vpad_attach(void)
+{
+    if (!vpad) {
+        SDL_VirtualJoystickDesc d;
+        SDL_INIT_INTERFACE(&d);
+        d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+        d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
+        d.name = "vf4ft --keys pad";
+        SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
+        vpad = id ? SDL_OpenJoystick(id) : NULL;
+        if (!vpad)
+            logf_("--keys pad: no virtual gamepad: %s", SDL_GetError());
+    }
+}
+
+static void vpad_press(const char *what)
+{
+    if (!vpad)
+        return;
+    char buf[64];
+    SDL_strlcpy(buf, what, sizeof buf);
+    char *eq = SDL_strchr(buf, '=');
+    vpad_turns = eq ? atoi(eq + 1) : 6;
+    if (eq)
+        *eq = 0;
+    char *save = NULL;
+    for (char *b = SDL_strtok_r(buf, "+", &save); b; b = SDL_strtok_r(NULL, "+", &save)) {
+        SDL_GamepadButton bt = SDL_GetGamepadButtonFromString(b);
+        if (bt == SDL_GAMEPAD_BUTTON_INVALID)
+            logf_("--keys pad: no gamepad button is called \"%s\"", b);
+        else
+            SDL_SetJoystickVirtualButton(vpad, bt, true);
+    }
+}
+
+static void vpad_turn(void)
+{
+    if (vpad && vpad_turns > 0 && --vpad_turns == 0)
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+            SDL_SetJoystickVirtualButton(vpad, b, false);
+}
+
+static int keys_parse(const char *list)
+{
+    SDL_strlcpy(key_list, list, sizeof key_list);
+    char *colon = SDL_strchr(key_list, ':');
+    if (!colon)
+        return -1;
+    *colon = 0;
+    key_wait = atoi(key_list);
+    char *save = NULL;
+    for (char *it = SDL_strtok_r(colon + 1, ",", &save); it; it = SDL_strtok_r(NULL, ",", &save)) {
+        if (key_items == KEY_ITEMS)
+            return -1;
+        key_item[key_items++] = it;
+    }
+    return 0;
 }
 
 /* ---- set-up ---- */
@@ -603,6 +885,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--shot") && v && i + 2 < argc && nshots < 8) {
             shots[nshots].frame = (unsigned)strtoul(argv[++i], NULL, 10);
             shots[nshots++].path = argv[++i];
+        }
+        else if (!strcmp(a, "--keys") && v) {
+            if (keys_parse(argv[++i])) { fprintf(stderr, "vf4ft: --keys: FRAME:KEY,KEY,shot=FILE,@FRAME,...\n"); return 2; }
         }
         else if (!strcmp(a, "--press") && v) {
             if (press_parse(argv[++i])) { fprintf(stderr, "vf4ft: --press: FRAME:p1|p2:BUTTON[+BUTTON],...\n"); return 2; }
@@ -661,27 +946,26 @@ int main(int argc, char **argv)
     if (!SDL_GetPathInfo(user_dir, NULL) && !SDL_CreateDirectory(user_dir))
         logf_("cannot make %s: %s", user_dir, SDL_GetError());
     {
-        char sp[4300];
-        SDL_snprintf(sp, sizeof sp, "%ssettings.txt", user_dir);
+        char *sp = settings_path;
+        SDL_snprintf(sp, sizeof settings_path, "%ssettings.txt", user_dir);
         settings_defaults(&cfg_);
         if (!SDL_GetPathInfo(sp, NULL))
             logf_("no %s: the defaults", sp);
         else if (!settings_load(&cfg_, sp, say_line))
             logf_("settings from %s", sp);
         SDL_snprintf(backup_path, sizeof backup_path, "%sbackup.bin", user_dir);
+        start_cfg = cfg_;
+        live_fullscreen = cfg_.fullscreen;
     }
     if (!cfg_.sound)
         silent = 1;
-    if (!fullscreen) {
-        const char *deck = SDL_getenv("SteamDeck"), *tenfoot = SDL_getenv("SteamTenfoot");
-        fullscreen = cfg_.fullscreen == FULLSCREEN_ON ||
-                     (cfg_.fullscreen == FULLSCREEN_AUTO && ((deck && atoi(deck)) || (tenfoot && atoi(tenfoot))));
-    }
-    logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s, cards %s",
+    if (!fullscreen)
+        fullscreen = fullscreen_wanted();
+    logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s (volume %d%%), cards %s",
           cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
           cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
           cfg_.picture == PICTURE_STRETCH ? "stretch" : "4:3", cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
-          silent ? "off" : "on", cfg_.cards ? "on" : "off");
+          silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off");
     logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
           dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
 
@@ -692,6 +976,11 @@ int main(int argc, char **argv)
     }
     logf_("video driver: %s", SDL_GetCurrentVideoDriver());
     bindings_compile();     /* key names need the video subsystem */
+    for (int i = 0; i < key_items; i++)
+        if (!strncmp(key_item[i], "pad:", 4)) {
+            vpad_attach();
+            break;
+        }
     if (!silent) {
         SDL_AudioSpec as = { SDL_AUDIO_S16, 2, 44100 };
         audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &as, NULL, NULL);
@@ -700,6 +989,7 @@ int main(int argc, char **argv)
         else {
             static short quiet[2 * AUDIO_TARGET];
             SDL_PutAudioStreamData(audio, quiet, sizeof quiet);
+            SDL_SetAudioStreamGain(audio, cfg_.volume / 100.0f);
             SDL_ResumeAudioStreamDevice(audio);
             logf_("audio driver: %s", SDL_GetCurrentAudioDriver());
         }
@@ -710,6 +1000,8 @@ int main(int argc, char **argv)
     SDL_Window *win = SDL_CreateWindow(VF4FT_TITLE, 1280, 960, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
                                        (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
     if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
+    main_win = win;
+    SDL_SetWindowMinimumSize(win, MENU_W, MENU_H);      /* the menu always fits */
     /* The GPU renderer's shaders are SPIR-V: a Vulkan device (natively, or
      * Proton's winevulkan). Without one the software picture is shown, on
      * whatever device SDL picks. */
@@ -773,10 +1065,25 @@ int main(int argc, char **argv)
     if (!pic_tex || !upload) { logf_("picture texture: %s", SDL_GetError()); return 1; }
     static unsigned char rgb[PIC_W * PIC_H * 3];
 
-    Uint64 t0 = SDL_GetTicksNS(), quit_held_since = 0;
-    unsigned shown_frame = 0, pictures = 0, presents = 0, last_pad = 0;
+    /* the menu's drawing: SDL's software renderer into a surface, uploaded
+     * into a texture and blitted over the picture (no shaders: any device) */
+    SDL_Surface *ov_surf = SDL_CreateSurface(MENU_W, MENU_H, SDL_PIXELFORMAT_ABGR8888);
+    SDL_Renderer *ov_ren = ov_surf ? SDL_CreateSoftwareRenderer(ov_surf) : NULL;
+    ti.width = MENU_W;
+    ti.height = MENU_H;
+    SDL_GPUTexture *ov_tex = SDL_CreateGPUTexture(gpu, &ti);
+    bi.size = MENU_W * MENU_H * 4;
+    SDL_GPUTransferBuffer *ov_upload = SDL_CreateGPUTransferBuffer(gpu, &bi);
+    if (!ov_ren || !ov_tex || !ov_upload) { logf_("the menu's texture: %s", SDL_GetError()); return 1; }
+    SDL_GPUTexture *shot_tex = NULL;    /* --keys shot=: the window as shown */
+    Uint32 shot_w = 0, shot_h = 0;
+
+    Uint64 t0 = SDL_GetTicksNS(), chord_since = 0, dir_next = 0;
+    unsigned shown_frame = 0, pictures = 0, presents = 0;
     int have_picture = 0, running = 1, stopping = 0, reported_start = 0;
+    int chord_used = 0, last_dir = -1, last_program = 0, ov_shown = 0, key_turns = 0;
     while (running) {
+        const char *window_shot = NULL;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == machine_event) {
@@ -787,12 +1094,49 @@ int main(int argc, char **argv)
             case SDL_EVENT_QUIT:
                 running = 0;
                 break;
-            case SDL_EVENT_KEY_DOWN:
-                if (ev.key.key == SDLK_ESCAPE)
-                    running = 0;
-                else if (!ev.key.repeat && (ev.key.key == SDLK_F11 || (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
+            case SDL_EVENT_KEY_DOWN: {
+                SDL_Keycode key = ev.key.key;
+                int cmd = -1;
+                if (!ev.key.repeat && (key == SDLK_F11 || (key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
                     SDL_SetWindowFullscreen(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
+                else if (!ev.key.repeat && (key == SDLK_INSERT || key == SDLK_ESCAPE)) {
+                    if (menu_on)
+                        menu_do(MENU_RESUME);
+                    else
+                        menu_show();
+                } else if (menu_on) {
+                    if (key == SDLK_UP) cmd = MENU_UP;
+                    else if (key == SDLK_DOWN) cmd = MENU_DOWN;
+                    else if (key == SDLK_LEFT) cmd = MENU_LEFT;
+                    else if (key == SDLK_RIGHT) cmd = MENU_RIGHT;
+                    else if (!ev.key.repeat && (key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE))
+                        cmd = MENU_OK;
+                    else if (!ev.key.repeat && key == SDLK_BACKSPACE)
+                        cmd = MENU_BACK;
+                }
+                if (cmd >= 0 && !menu_do(menu_command(cmd)))
+                    running = 0;
                 break;
+            }
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
+                int b = ev.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_GUIDE) {
+                    if (menu_on)
+                        menu_do(MENU_RESUME);
+                    else
+                        menu_show();
+                } else if (menu_on && b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                    if (!menu_do(menu_command(MENU_OK)))
+                        running = 0;
+                } else if (menu_on && (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START)) {
+                    menu_do(menu_command(MENU_BACK));
+                } else if (!menu_on && bar_on && b == SDL_GAMEPAD_BUTTON_EAST) {
+                    bar_on = 0;
+                    pad_hold |= 1u << b;
+                    logf_("menu: the operator's buttons are the game's again");
+                }
+                break;
+            }
             case SDL_EVENT_GAMEPAD_ADDED:
                 log_gamepad_added(ev.gdevice.which);
                 break;
@@ -808,20 +1152,111 @@ int main(int argc, char **argv)
             logf_("machine running");
             reported_start = 1;
         }
+        Uint64 now_ms = SDL_GetTicks();
 
+        /* the controls: the menu's chord and the operator bar's buttons are
+         * kept from the game, as is what was held when the menu closed */
+        static unsigned last_pad;
+        pad_ignore = pad_hold | ((last_pad & CHORD) == CHORD ? CHORD : 0) | (bar_on ? BAR_BUTTONS : 0);
         game_input in;
         unsigned pad = read_controls(&in);
-        if (pad != last_pad) {
-            const unsigned chord = (1u << SDL_GAMEPAD_BUTTON_BACK) | (1u << SDL_GAMEPAD_BUTTON_START);
-            if ((pad & chord) == chord)
-                quit_held_since = SDL_GetTicks();
-            else
-                quit_held_since = 0;
-            last_pad = pad;
+        last_pad = pad;
+        pad_hold &= pads_raw;
+        {
+            int nk = 0;
+            const bool *k = SDL_GetKeyboardState(&nk);
+            for (int i = 0; i < nk && i < SDL_SCANCODE_COUNT; i++)
+                if (key_ignore[i] && !k[i])
+                    key_ignore[i] = false;
         }
-        if (quit_held_since && SDL_GetTicks() - quit_held_since >= 1000) {
-            logf_("quit: View + Menu held");
-            running = 0;
+        /* View + Menu held for a second opens the menu (once a hold) */
+        if ((pad & CHORD) == CHORD) {
+            if (!chord_since)
+                chord_since = now_ms;
+            if (!chord_used && now_ms - chord_since >= 1000) {
+                chord_used = 1;
+                if (!menu_on) {
+                    logf_("menu: View + Menu held");
+                    menu_show();
+                }
+            }
+        } else {
+            chord_since = 0;
+            chord_used = 0;
+        }
+        /* the operator bar: A the Test switch, X Service; it ends with B or
+         * when the test program's EXIT starts the game again */
+        int program = SDL_GetAtomicInt(&program_now);
+        if (program != last_program) {
+            if (!program && bar_on) {
+                bar_on = 0;
+                logf_("menu: the game again: the operator's buttons are the game's again");
+            }
+            last_program = program;
+        }
+        if (bar_on && !menu_on) {
+            unsigned b = pads_raw & ~pad_hold;
+            if (b & (1u << SDL_GAMEPAD_BUTTON_SOUTH))
+                in.sys |= GAME_SYS_TEST;
+            if (b & (1u << SDL_GAMEPAD_BUTTON_WEST))
+                in.sys |= GAME_SYS_SERVICE;
+        }
+        /* in the menu: the D-pad or left stick of any pad moves, held it repeats */
+        if (menu_on) {
+            memset(&in, 0, sizeof in);
+            int dir = -1, n = 0;
+            SDL_JoystickID *ids = SDL_GetGamepads(&n);
+            for (int i = 0; ids && i < n && dir < 0; i++) {
+                SDL_Gamepad *g = SDL_GetGamepadFromID(ids[i]);
+                if (!g)
+                    continue;
+                float x = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
+                float y = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
+                if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_UP) || y < -0.6f) dir = MENU_UP;
+                else if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_DOWN) || y > 0.6f) dir = MENU_DOWN;
+                else if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_LEFT) || x < -0.6f) dir = MENU_LEFT;
+                else if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) || x > 0.6f) dir = MENU_RIGHT;
+            }
+            SDL_free(ids);
+            int fire = 0;
+            if (dir != last_dir) {
+                fire = dir >= 0;
+                dir_next = now_ms + 350;
+            } else if (dir >= 0 && now_ms >= dir_next) {
+                fire = 1;
+                dir_next = now_ms + 110;
+            }
+            last_dir = dir;
+            if (fire && !menu_do(menu_command(dir)))
+                running = 0;
+        } else {
+            last_dir = -1;
+        }
+
+        /* --keys */
+        vpad_turn();
+        if (key_at < key_items && !vpad_turns && SDL_GetAtomicInt(&frame_now) >= key_wait && ++key_turns >= 8) {
+            const char *it = key_item[key_at++];
+            key_turns = 0;
+            if (it[0] == '@')
+                key_wait = atoi(it + 1);
+            else if (!strncmp(it, "shot=", 5))
+                window_shot = it + 5;
+            else if (!strncmp(it, "pad:", 4))
+                vpad_press(it + 4);
+            else {
+                SDL_Event k;
+                SDL_zero(k);
+                k.type = SDL_EVENT_KEY_DOWN;
+                k.key.windowID = SDL_GetWindowID(win);
+                k.key.key = SDL_GetKeyFromName(it);
+                k.key.scancode = SDL_GetScancodeFromName(it);
+                k.key.down = true;
+                if (k.key.key == SDLK_UNKNOWN)
+                    logf_("--keys: no key is called \"%s\"", it);
+                else
+                    SDL_PushEvent(&k);
+            }
         }
 
         unsigned frame;
@@ -854,6 +1289,34 @@ int main(int argc, char **argv)
             }
             shown_frame = frame;
         }
+        /* the menu (1) or the operator bar (2), drawn again when it changed */
+        int ov = menu_on ? 1 : bar_on && now_ms < bar_until ? 2 : 0;
+        if (ov && (ov_dirty || ov != ov_shown)) {
+            SDL_SetRenderDrawColor(ov_ren, 0, 0, 0, 255);
+            SDL_RenderClear(ov_ren);
+            if (ov == 1)
+                menu_draw(ov_ren);
+            else
+                menu_draw_bar(ov_ren);
+            SDL_FlushRenderer(ov_ren);
+            unsigned char *dst = SDL_MapGPUTransferBuffer(gpu, ov_upload, true);
+            if (dst && SDL_LockSurface(ov_surf)) {
+                for (int y = 0; y < MENU_H; y++)
+                    memcpy(dst + (size_t)y * MENU_W * 4, (unsigned char *)ov_surf->pixels + (size_t)y * ov_surf->pitch,
+                           MENU_W * 4);
+                SDL_UnlockSurface(ov_surf);
+            }
+            if (dst) {
+                SDL_UnmapGPUTransferBuffer(gpu, ov_upload);
+                SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureTransferInfo src = { .transfer_buffer = ov_upload, .offset = 0 };
+                SDL_GPUTextureRegion reg = { .texture = ov_tex, .w = MENU_W, .h = MENU_H, .d = 1 };
+                SDL_UploadToGPUTexture(cp, &src, &reg, true);
+                SDL_EndGPUCopyPass(cp);
+            }
+            ov_dirty = 0;
+        }
+        ov_shown = ov;
         SDL_GPUTexture *sc = NULL;
         Uint32 w = 0, h = 0;
         if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &sc, &w, &h)) {
@@ -875,40 +1338,30 @@ int main(int argc, char **argv)
             }
         }
         if (sc) {
-            /* 4:3, as large as fits, black bars on the other sides (or stretched) */
-            Uint32 dw = w, dh = h;
-            if (cfg_.picture == PICTURE_STRETCH)
-                ;       /* the whole window */
-            else if ((Uint64)w * 3 > (Uint64)h * 4) dw = h * 4 / 3;
-            else dh = w * 3 / 4;
-            if (have_picture) {
-                SDL_GPUBlitInfo bl;
-                SDL_zero(bl);
-                bl.source.texture = src_tex;
-                bl.source.w = src_w;
-                bl.source.h = src_h;
-                bl.destination.texture = sc;
-                bl.destination.x = (w - dw) / 2;
-                bl.destination.y = (h - dh) / 2;
-                bl.destination.w = dw;
-                bl.destination.h = dh;
-                bl.load_op = SDL_GPU_LOADOP_CLEAR;
-                bl.clear_color = (SDL_FColor){ 0, 0, 0, 1 };
-                bl.filter = cfg_.filter == FILTER_SHARP ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-                SDL_BlitGPUTexture(cmd, &bl);
-            } else {
-                SDL_GPUColorTargetInfo target;
-                SDL_zero(target);
-                target.texture = sc;
-                target.clear_color = (SDL_FColor){ 0, 0, 0, 1 };
-                target.load_op = SDL_GPU_LOADOP_CLEAR;
-                target.store_op = SDL_GPU_STOREOP_STORE;
-                SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &target, 1, NULL));
-            }
+            compose(cmd, sc, w, h, src_tex, src_w, src_h, have_picture, ov, ov_tex);
             if (presents++ == 0)
                 logf_("first present: swapchain %ux%u", w, h);
+            if (window_shot) {
+                if (!shot_tex || shot_w != w || shot_h != h) {
+                    if (shot_tex)
+                        SDL_ReleaseGPUTexture(gpu, shot_tex);
+                    SDL_GPUTextureCreateInfo si = ti;
+                    si.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                    si.width = shot_w = w;
+                    si.height = shot_h = h;
+                    shot_tex = SDL_CreateGPUTexture(gpu, &si);
+                }
+                if (shot_tex)
+                    compose(cmd, shot_tex, w, h, src_tex, src_w, src_h, have_picture, ov, ov_tex);
+            }
         }
         SDL_SubmitGPUCommandBuffer(cmd);
+        if (window_shot) {
+            if (sc && shot_tex)
+                shot_save(gpu, shot_tex, w, h, window_shot);
+            else
+                logf_("--keys shot=%s: no window to take", window_shot);
+        }
         /* a shot: two turns of this loop after the machine stopped for it, the newest picture is shown */
         static int shot_turns;
         int sp = SDL_GetAtomicInt(&shot_pause);
@@ -925,6 +1378,7 @@ int main(int argc, char **argv)
     }
 
     SDL_SetAtomicInt(&shot_pause, 0);
+    SDL_SetAtomicInt(&menu_pause, 0);       /* a machine waiting for the menu goes on to its stop */
     /* the machine ends at its next vertical blank (at once if it is not running) */
     stopping = SDL_GetAtomicInt(&machine_state) < 2;
     game_machine_stop();
@@ -952,6 +1406,17 @@ int main(int argc, char **argv)
     }
     SDL_ReleaseGPUTransferBuffer(gpu, upload);
     SDL_ReleaseGPUTexture(gpu, pic_tex);
+    SDL_ReleaseGPUTransferBuffer(gpu, ov_upload);
+    SDL_ReleaseGPUTexture(gpu, ov_tex);
+    if (shot_tex)
+        SDL_ReleaseGPUTexture(gpu, shot_tex);
+    SDL_DestroyRenderer(ov_ren);
+    SDL_DestroySurface(ov_surf);
+    if (vpad) {
+        SDL_JoystickID id = SDL_GetJoystickID(vpad);
+        SDL_CloseJoystick(vpad);
+        SDL_DetachVirtualJoystick(id);
+    }
     SDL_ReleaseWindowFromGPUDevice(gpu, win);
     SDL_DestroyGPUDevice(gpu);
     SDL_DestroyWindow(win);

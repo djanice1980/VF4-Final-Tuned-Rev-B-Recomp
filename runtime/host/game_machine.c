@@ -144,6 +144,14 @@ int game_machine_program(void)
     return rt_native_program() == PROGRAM_TEST;
 }
 
+static const char *eeprom_coins(u8 *e, int coins);
+
+void game_machine_restart(int coins)
+{
+    eeprom_coins(hw_maple_eeprom(), coins);     /* the game reads it as it starts */
+    rt_native_restart();
+}
+
 int game_machine_run(void)
 {
     int code = rt_native_run(&cpu);

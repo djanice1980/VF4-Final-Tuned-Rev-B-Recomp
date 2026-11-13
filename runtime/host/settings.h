@@ -48,6 +48,7 @@ typedef struct settings {
     int renderer;           /* RENDERER_*: the GPU (Vulkan) by default, the software picture when it cannot */
     int scale;              /* the GPU renderer's resolution: 1..4 times 640 x 480 */
     int sound;              /* 1 on */
+    int volume;             /* 0..100 (%), the game's menu changes it while it plays */
     int cards;              /* 1: the cabinet has its two card units; the cards are user/cards/p1.card, p2.card */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[ACT_COUNT];         /* every gamepad (the first is player 1, the second player 2) */

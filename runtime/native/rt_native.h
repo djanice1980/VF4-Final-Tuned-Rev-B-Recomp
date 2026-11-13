@@ -24,6 +24,13 @@ int rt_native_power_on(void);
 int rt_native_program(void);
 extern unsigned rt_native_switches;     /* how many times the BIOS stand-in started the other program */
 
+/* the game window's Restart (its menu, runtime/host/menu.c): from the frame
+ * hook (machine_host_frame) only, the machine starts the game again from its
+ * power-on state, the way the test program's EXIT does, keeping what the
+ * cabinet keeps. Does not return; nothing happens when no power-on state was
+ * kept or the run is not on */
+void rt_native_restart(void);
+
 /* the names of the decompilation the machine looks up (tables.c): 0 when all
  * are there, else says which are gone */
 int rt_native_names_check(void);

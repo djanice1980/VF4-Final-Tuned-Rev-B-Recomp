@@ -109,4 +109,11 @@ const char *game_machine_why(void);
  * it, its EXIT starts the game again), else 0; from the frame function */
 int game_machine_program(void);
 
+/* from the frame function only: the game starts again from power on, as the
+ * test program's EXIT starts it, keeping what the cabinet keeps; coins
+ * (GAME_COINS_*) is put in the settings EEPROM first, which the game reads as
+ * it starts. Does not return (the frame function is left, as the run goes
+ * on from the power-on state) */
+void game_machine_restart(int coins);
+
 #endif
