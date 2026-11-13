@@ -27,6 +27,10 @@ const option_info options[OPT_COUNT] = {
                     "The sound processor and its effects. Off saves processor time, and the game is "
                     "silent.", 1 },
     [OPT_VOLUME] = { "Volume", "The game's volume.", 0 },
+    [OPT_NETWORK] = { "Network",
+                      "The game's own network setting (its test menu's Game Assignments). Off, it skips "
+                      "its network check as it starts. There is no network service yet: On only waits at "
+                      "the start and reports a time-out.", 1 },
 };
 
 static int wrap(int v, int d, int n)
@@ -45,6 +49,7 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
     switch (o) {
     case OPT_CREDITS: SDL_strlcpy(buf, s->coins == COINS_ARCADE ? "Arcade coins" : "Free play", n); break;
     case OPT_CARDS: row->kind = UI_ROW_TOGGLE; row->on = s->cards; break;
+    case OPT_NETWORK: row->kind = UI_ROW_TOGGLE; row->on = s->network; break;
     case OPT_FULLSCREEN: SDL_strlcpy(buf, fs[s->fullscreen + 1], n); break;
     case OPT_PICTURE: SDL_strlcpy(buf, s->picture == PICTURE_STRETCH ? "Stretch" : "4:3", n); break;
     case OPT_FILTER: SDL_strlcpy(buf, s->filter == FILTER_SHARP ? "Sharp" : "Smooth", n); break;
@@ -67,6 +72,7 @@ void option_change(settings *s, int o, int d)
     switch (o) {
     case OPT_CREDITS: s->coins = wrap(s->coins, d, 2); break;
     case OPT_CARDS: s->cards = !s->cards; break;
+    case OPT_NETWORK: s->network = !s->network; break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;
     case OPT_PICTURE: s->picture = wrap(s->picture, d, 2); break;
     case OPT_FILTER: s->filter = wrap(s->filter, d, 2); break;

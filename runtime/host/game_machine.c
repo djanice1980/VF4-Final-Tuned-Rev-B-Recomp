@@ -146,9 +146,10 @@ int game_machine_program(void)
 
 static const char *eeprom_coins(u8 *e, int coins);
 
-void game_machine_restart(int coins)
+void game_machine_restart(int coins, int net)
 {
-    eeprom_coins(hw_maple_eeprom(), coins);     /* the game reads it as it starts */
+    eeprom_coins(hw_maple_eeprom(), coins);     /* the game reads them as it starts */
+    game_machine_network(net);
     rt_native_restart();
 }
 
@@ -254,6 +255,76 @@ static const char *eeprom_coins(u8 *e, int coins)
     eeprom_copy_seal(e, EEP_COPY_A);
     memcpy(e + EEP_COPY_B, e + EEP_COPY_A, EEP_COPY_LEN);
     return want == COIN_SETTING_FREE_PLAY ? "free play" : "arcade coins";
+}
+
+/* The game's settings record (vf4lib user_back.c's user_back_data: 13,012
+ * bytes), as sdk/libam/userbkup.c keeps it in the battery-backed RAM: two
+ * headers of four words (the check, the size, the size padded to words, 0)
+ * at 0x1f8 and 0x208, then copy A at 0x218 and copy B right after it. A
+ * copy's check is the EEPROM's, over its padded size. sram_save_load wants
+ * the size in both headers, then takes copy A when its check holds, else B,
+ * else the defaults (a blank part: the game writes them as it starts, with
+ * the network on). sram_save_store writes both headers and both copies. */
+#define SAVE_HEADER_A 0x1f8u
+#define SAVE_HEADER_B 0x208u
+#define SAVE_COPIES 0x218u
+#define SAVE_SIZE 13012u            /* sizeof (user_back_data_rec): whole words, so padded the same */
+#define SAVE_NET_CONNECT 0x162au    /* user_back_data.net_connect: Game Assignments, NETWORK (0 off, 1 on) */
+
+static u8 save_rec[SAVE_SIZE];
+
+static u32 le32(const u8 *p)
+{
+    return p[0] | p[1] << 8 | p[2] << 16 | (u32)p[3] << 24;
+}
+
+/* the copy the game would take into save_rec: 1, or 0 when it would start
+ * from its defaults */
+static int save_read(void)
+{
+    u8 h[2][16];
+    g_read(BACKUP_RAM + SAVE_HEADER_A, h[0], 16);
+    g_read(BACKUP_RAM + SAVE_HEADER_B, h[1], 16);
+    for (int c = 0; c < 2; c++)
+        if (le32(h[c] + 4) != SAVE_SIZE || le32(h[c] + 8) != SAVE_SIZE)
+            return 0;
+    for (int c = 0; c < 2; c++) {
+        g_read(BACKUP_RAM + SAVE_COPIES + c * SAVE_SIZE, save_rec, SAVE_SIZE);
+        if ((le32(h[c]) & 0xffffu) == eeprom_check(save_rec, SAVE_SIZE))
+            return 1;
+    }
+    return 0;
+}
+
+/* save_rec as both copies, each with its header, as sram_save_store leaves them */
+static void save_write(void)
+{
+    u32 c = eeprom_check(save_rec, SAVE_SIZE);
+    u8 h[16] = { (u8)c, (u8)(c >> 8), 0, 0 };
+    for (int i = 0; i < 4; i++) {
+        h[4 + i] = (u8)(SAVE_SIZE >> 8 * i);
+        h[8 + i] = (u8)(SAVE_SIZE >> 8 * i);
+    }
+    g_write(BACKUP_RAM + SAVE_HEADER_A, h, 16);
+    g_write(BACKUP_RAM + SAVE_COPIES, save_rec, SAVE_SIZE);
+    g_write(BACKUP_RAM + SAVE_HEADER_B, h, 16);
+    g_write(BACKUP_RAM + SAVE_COPIES + SAVE_SIZE, save_rec, SAVE_SIZE);
+}
+
+int game_machine_net_ready(void)
+{
+    return save_read();
+}
+
+int game_machine_network(int net)
+{
+    if (!save_read())
+        return -1;
+    if (net != GAME_NET_KEEP) {
+        save_rec[SAVE_NET_CONNECT] = net == GAME_NET_ON;
+        save_write();
+    }
+    return save_rec[SAVE_NET_CONNECT] != 0;
 }
 
 static u8 backup_last[GAME_BACKUP_SIZE];        /* what was last put or got */

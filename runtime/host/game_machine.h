@@ -72,6 +72,22 @@ enum { GAME_COINS_KEEP, GAME_COINS_FREE_PLAY, GAME_COINS_ARCADE };
  * GAME_COINS_KEEP */
 const char *game_machine_backup_put(const unsigned char *b, int coins);
 
+/* The game's own NETWORK setting (its test menu, Game Assignments), in its
+ * settings record in the battery-backed RAM (docs/design.md section 35):
+ * off, the game skips its network check as it starts. */
+enum { GAME_NET_KEEP, GAME_NET_OFF, GAME_NET_ON };
+
+/* after game_machine_backup_put (and before game_machine_run), or from the
+ * frame function: the setting put in the record. Returns what it is now (0
+ * off, 1 on), or -1 when the backup has no settings record yet: the game
+ * makes one with its defaults (the network on) as it starts, and the
+ * setting can go in once it has (game_machine_net_ready) */
+int game_machine_network(int net);
+
+/* from the frame function: 1 when the battery-backed RAM holds the game's
+ * settings record */
+int game_machine_net_ready(void);
+
 /* on the machine's thread (the frame function, or after game_machine_run):
  * the backup as it is now into b (GAME_BACKUP_SIZE bytes); 1 when it
  * differs from what was last put or got, else 0 */
@@ -111,9 +127,10 @@ int game_machine_program(void);
 
 /* from the frame function only: the game starts again from power on, as the
  * test program's EXIT starts it, keeping what the cabinet keeps; coins
- * (GAME_COINS_*) is put in the settings EEPROM first, which the game reads as
- * it starts. Does not return (the frame function is left, as the run goes
- * on from the power-on state) */
-void game_machine_restart(int coins);
+ * (GAME_COINS_*) is put in the settings EEPROM and net (GAME_NET_*) in the
+ * game's settings record first, which the game reads as it starts. Does not
+ * return (the frame function is left, as the run goes on from the power-on
+ * state) */
+void game_machine_restart(int coins, int net);
 
 #endif

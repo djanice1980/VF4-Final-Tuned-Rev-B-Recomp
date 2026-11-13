@@ -13,9 +13,9 @@ static const char *const tab_names[TABS] = { "Game", "Picture", "Sound", "Contro
 /* a row: an option (options.h), one of these actions, or a control */
 enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_CONTROL };
 
-#define ROWS 10
+#define ROWS 11
 static const int tab_rows[TABS][ROWS] = {
-    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, -1 },
+    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, OPT_NETWORK, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
@@ -294,6 +294,7 @@ static int later(int id)
     switch (id) {
     case OPT_CREDITS: return s->coins != run.start.coins;
     case OPT_CARDS: return s->cards != run.start.cards;
+    case OPT_NETWORK: return s->network != run.start.network;
     case OPT_RENDERER: return s->renderer != run.start.renderer;
     case OPT_SCALE: return s->scale != run.start.scale;
     case OPT_SOUND: return s->sound != run.start.sound;
@@ -307,7 +308,7 @@ static void about_of(int id, const char **title, const char **text, const char *
     if (id < OPT_COUNT) {
         *title = options[id].label;
         *text = options[id].about;
-        if (id == OPT_CREDITS)
+        if (id == OPT_CREDITS || id == OPT_NETWORK)
             *note = "Applies when the game restarts (Restart the game).";
         else if (id == OPT_VOLUME && !run.sound)
             *note = "Sound is off: turn it on below, for the next start.";
@@ -429,7 +430,7 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         if (id < OPT_COUNT) {
             option_row(s, id, w, vals[i], sizeof vals[i]);
             w->later = options[id].at_start && later(id);
-            if (id == OPT_CREDITS)
+            if (id == OPT_CREDITS || id == OPT_NETWORK)
                 w->later = later(id);
             if (id == OPT_VOLUME && !run.sound)
                 w->off = 1;
@@ -470,12 +471,13 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         }
         w->warn = armed >= 0 && armed == id;
     }
-    /* 43 units a row: a release's Game tab (nine rows, with Check for updates
-     * and Open the launcher) fits in rh = 394 without scrolling; at 46 Quit
-     * was below the fold. A tenth row there needs this looked at again. The
-     * Controls tab scrolls. */
+    /* 39 units a row: a release's Game tab (ten rows, with Network, Check for
+     * updates and Open the launcher) fits in rh = 394 without scrolling; at 46
+     * Quit was below the fold (nine rows then), at 43 the tenth was. An
+     * eleventh row there needs this looked at again. The Controls tab
+     * scrolls. */
     float ry = Y + 150, rh = H - 150 - 76;
-    ui_rows(X + 30, ry, 640, rh, 43, rows, n, row, &top);
+    ui_rows(X + 30, ry, 640, rh, 39, rows, n, row, &top);
 
     const char *title, *text, *note;
     about_of(row_id(row), &title, &text, &note);

@@ -17,8 +17,8 @@
  *                     it is there, else data/vf41_s.dec
  *   --frames N        quit after N vertical blanks (0 = until the window closes)
  *   --unpaced         no waiting: the machine runs as fast as it can (for measuring)
- *   --real-boot       the game's first start-up step (WARNING.INIT, about 97 s) at its real pace too;
- *                     by default it runs as fast as it can
+ *   --real-boot       the game's first start-up step (WARNING.INIT, about 97 s, or 35 s with the
+ *                     network off) at its real pace too; by default it runs as fast as it can
  *   --fullscreen      start in fullscreen (F11 or Alt+Enter toggles)
  *   --silent          no sound chip: VF4debug's mailbox model in its place (as M3)
  *   --gpu NAME        SDL_GPU driver: direct3d12 (or d3d12) or vulkan (default: SDL's choice)
@@ -127,6 +127,7 @@ static struct {
 static const char *image_path, *dimm_path, *dimm_key;
 static int unpaced, real_boot, silent;
 static settings cfg_;                   /* user/settings.txt over the defaults */
+static settings start_cfg;              /* as this run started (what applies at the next start differs) */
 static char user_dir[4096];             /* ends in a separator */
 static char backup_path[4200];
 static int backup_ok = 1;               /* 0: the file there is not a backup; never written over */
@@ -140,7 +141,10 @@ static SDL_AtomicInt shot_pause;        /* 1 + the shot the machine waits for at
 /* the menu (menu.c): what this thread asks of the machine's */
 static SDL_AtomicInt menu_pause;        /* 1: the machine waits at its vertical blank */
 static SDL_AtomicInt test_frames;       /* vertical blanks the menu holds the Test switch for */
-static SDL_AtomicInt restart_req;       /* GAME_COINS_*: the game starts again from power on, with it */
+static SDL_AtomicInt restart_req;       /* GAME_COINS_*: the game starts again from power on, with it (and
+                                         * start_cfg's network) */
+static int net_first;                   /* a blank backup with the network wanted off: it goes in once the
+                                         * game has made its settings record (on_frame) */
 static SDL_AtomicInt frame_now;         /* the machine's vertical blank */
 static SDL_AtomicInt program_now;       /* 1 while the test program runs */
 
@@ -330,6 +334,17 @@ static void backup_load(void)
     if (how)
         logf_("coins: %s", how);
     SDL_free(b);
+    /* the game's NETWORK setting (docs/design.md section 35) */
+    int net = game_machine_network(cfg_.network ? GAME_NET_ON : GAME_NET_OFF);
+    if (net >= 0) {
+        logf_("network: %s (the game's own NETWORK setting)", net ? "on" : "off");
+    } else if (cfg_.network) {
+        logf_("network: on (a blank backup: the game's default as it makes its settings record)");
+    } else {
+        net_first = 1;
+        logf_("network: off once the game has made its settings record (a blank backup: it makes it as it "
+              "starts, with the network on; then it starts again)");
+    }
 }
 static SDL_AudioStream *audio;          /* NULL: no sound */
 
@@ -447,7 +462,25 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
         cards_save();
         due = 0;
         busy_since = 0;
-        game_machine_restart(restart);
+        game_machine_restart(restart, start_cfg.network ? GAME_NET_ON : GAME_NET_OFF);
+        logf_("restart: the machine's power-on state was not kept");
+    }
+    /* a blank backup: the game has just made its settings record, with its
+     * default (the network on), early in its first start-up step. The
+     * setting goes in, and the board starts again, once, as an operator's
+     * would after changing it in the test menu */
+    if (net_first && !booting) {
+        net_first = 0;
+        logf_("vertical blank %u: no settings record by the end of the game's start-up: the network stays on "
+              "this time", frame);
+    }
+    if (net_first && !game_machine_program() && game_machine_net_ready()) {
+        net_first = 0;
+        logf_("vertical blank %u: the game made its settings record; the network goes off in it, and the game "
+              "starts again", frame);
+        due = 0;
+        busy_since = 0;
+        game_machine_restart(start_cfg.coins == COINS_ARCADE ? GAME_COINS_ARCADE : GAME_COINS_FREE_PLAY, GAME_NET_OFF);
         logf_("restart: the machine's power-on state was not kept");
     }
 
@@ -686,7 +719,6 @@ static struct {
 /* ---- the menu (menu.c) ---- */
 
 static SDL_Window *main_win;
-static settings start_cfg;              /* as this run started (what applies at the next start differs) */
 static char settings_path[4300];
 static int menu_on, bar_on, ov_dirty;   /* bar_on: the operator bar's buttons (A Test, X Service, by label) */
 static Uint64 bar_until;                /* the bar is drawn until then (ms); its buttons work until it closes */
@@ -846,8 +878,9 @@ static int menu_do(int a)
         return 1;
     case MENU_RESTART:
         bar_on = 0;
+        start_cfg.coins = cfg_.coins;           /* the restart takes them (set before the request: the */
+        start_cfg.network = cfg_.network;       /* game's thread reads them as it sees it) */
         SDL_SetAtomicInt(&restart_req, cfg_.coins == COINS_ARCADE ? GAME_COINS_ARCADE : GAME_COINS_FREE_PLAY);
-        start_cfg.coins = cfg_.coins;           /* the restart takes it */
         menu_hide();
         return 1;
     case MENU_QUIT:
@@ -1305,11 +1338,12 @@ int main(int argc, char **argv)
         silent = 1;
     if (!fullscreen)
         fullscreen = fullscreen_wanted();
-    logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s (volume %d%%), cards %s",
+    logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s (volume %d%%), cards %s, "
+          "network %s",
           cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
           cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
           cfg_.picture == PICTURE_STRETCH ? "stretch" : "4:3", cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
-          silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off");
+          silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off");
     logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
           dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
 

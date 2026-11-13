@@ -1377,7 +1377,7 @@ static int default_focus(void)
 enum { T_GAME, T_PICTURE, T_SOUND, T_PAD, T_KEY1, T_KEY2, T_COUNT };
 static const char *const tab_names[T_COUNT] = { "Game", "Picture", "Sound", "Gamepad", "Keyboard 1", "Keyboard 2" };
 static const int tab_rows[3][6] = {
-    { OPT_CREDITS, OPT_CARDS, -1 },
+    { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, -1 },
     { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     { OPT_SOUND, OPT_VOLUME, -1 },
 };

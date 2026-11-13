@@ -448,7 +448,10 @@ at its foot, as the keyboard or the gamepad last used names them, and the
 panel on the right says what the chosen row does. Picture,
 scaling, fullscreen and volume change at once; renderer, resolution and
 the card units are kept for the next start (marked with a dot until then),
-and credits (free play or arcade coins) apply at the next restart. Operator
+and credits (free play or arcade coins) and Network apply at the next
+restart. Network is the game's own network setting, off by default: off,
+the game skips its network check as it starts (there is no network
+service yet, so on only waits and reports a time-out). Operator
 test menu presses the cabinet's Test switch and shows the operator bar,
 where A is Test and X is Service until B or the test menu's EXIT. Restart
 the game turns the cabinet off and on (records, settings and cards are
@@ -462,7 +465,10 @@ own test program, `test.bin`, as the cabinet's BIOS starts it). Service
 end with Service and Test together. EXIT starts the game again, from power
 on, keeping what the cabinet keeps: the game assignments and book keeping
 (`backup.bin`) and the cards. Free play and coins are not in the game's
-test menu (they are the BIOS's): they are the `coins` setting below. Test
+test menu (they are the BIOS's): they are the `coins` setting below.
+The test menu's NETWORK row (Game Assignments) holds through EXIT, until
+the game is next opened or restarted from its menu: those put the
+`network` setting back in. Test
 and Service can be moved to other keys or pad buttons like any control;
 with only a gamepad, the menu's Operator test menu does the same.
 
@@ -474,7 +480,9 @@ with only a gamepad, the menu's Operator test menu does the same.
   Big Picture), `picture` (4:3 | stretch), `filter` (smooth | sharp),
   `renderer` (gpu | software), `scale` (1 to 4 times 640 x 480; default 2),
   `sound` (on | off), `volume` (0 to 100; default 100), `cards` (on |
-  off), then the controls: `key1.punch =
+  off), `network` (off | on; default off: the game's own NETWORK setting,
+  written into its settings record as it starts, so it skips its network
+  check), then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad.*` for gamepads, with SDL's key
   and button names, several separated by commas, `-` for none. The file

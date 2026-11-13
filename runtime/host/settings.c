@@ -36,6 +36,7 @@ void settings_defaults(settings *s)
     s->sound = 1;
     s->volume = 100;
     s->cards = 1;
+    s->network = 0;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -211,6 +212,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "cards")) {
                 if ((ok = choice(v, onoff_names, 2, &x)))
                     s->cards = x;
+            } else if (!strcmp(name, "network")) {
+                if ((ok = choice(v, onoff_names, 2, &x)))
+                    s->network = x;
             } else {
                 /* key1.punch, key2.punch, pad.punch */
                 char *dot = strchr(name, '.');
@@ -262,6 +266,8 @@ int settings_save(const settings *s, const char *path)
     PUT("volume = %d             # 0 to 100 (%%); the game's menu changes it too\n", s->volume);
     PUT("cards = %s            # the two card units; the cards are user/cards/p1.card and p2.card\n",
         onoff_names[s->cards]);
+    PUT("network = %s          # the game's own NETWORK setting (test menu, Game Assignments); off skips\n"
+        "                       # its network check as it starts\n", onoff_names[s->network]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

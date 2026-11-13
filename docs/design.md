@@ -2038,3 +2038,84 @@ picture at 1:1 (`--shot wine-play`).
 Not tried: sound under plain Wine (the runs had it off), other Wine
 versions, and other GPUs (where SDL_GPU might take Direct3D 12 as the
 launcher does).
+
+## 35. The network setting, off by default (2026-11-13)
+
+David asked whether networking could be turned off so the start-up's
+network screen is skipped, then: "lets turn networking off by default".
+
+**What the game does** (the decomp's `source/vf4lib/libbase/src/system.c`,
+`game_boot`): `net_init` with `user_back_data.net_connect`, then it waits
+`user_back_data.net_timeout` frames on "NOW NETWORK CHECKING" (2 when the
+network is off, 3,600 when it is on), writes its network log, and shows the
+log screen ("PLEASE WAIT 30 SECONDS OR START BUTTON TO EXIT") for 1,800
+frames. All of it is inside WARNING.INIT, which runs unpaced (section 14).
+With the network on there is no service to answer (`hw_dimm_net.c`), so the
+log says "(GAME) getIPbyDNS TIME OUT", MODE 3. With it off it says
+"(GAME) NETWORK OFF", MODE 2, after 2 frames. `net_connect` is the test
+menu's Game Assignments, NETWORK (`source_test/testmode/testmode.c`), and
+`user_back_defaults_once` makes it 1.
+
+**Where it is kept:** the game's settings record (`user_back_data`, 13,012
+bytes) in the battery-backed RAM, as `sdk/libam/userbkup.c` keeps it: two
+headers of four little-endian words (the check, the size, the size padded
+to words, 0) at 0x1F8 and 0x208, copy A at 0x218 and copy B right after it.
+`sram_save_load` wants the size in both headers, then takes copy A when its
+check holds, else B, else starts from the defaults. The check is the
+EEPROM's (`eeprom_check`: the data and a zero byte). `net_connect` is at
+0x162A in the record. David's backup: both checks hold, both copies equal,
+`net_connect` 1.
+
+**The setting:** `network = off | on` in `settings.txt` (default off), on
+the launcher's Settings page (Game tab) and in the game's menu (Game tab,
+marked with a dot until the next start, like Credits). The game's menu now
+has ten rows on the Game tab, so its row height went from 43 to 39
+(`menu.c`).
+
+**How it goes in** (`game_machine_network` in `game_machine.c`): after the
+backup is loaded, before the machine runs, the record's `net_connect` is
+set in both copies, with both headers and checks, as `sram_save_store`
+leaves them. The menu's Restart does the same with the setting as the menu
+left it. A blank backup has no record yet: the game makes it with its
+defaults early in its first start-up step (vertical blank 226 here). The
+frame function waits for a record with good checks, puts the network off in
+it, and restarts the machine once, as an operator would after changing it in
+the test menu. If no record shows before the end of WARNING.INIT, the
+network stays on for that run (logged).
+
+The test menu's NETWORK row still works: it holds through EXIT (the game's
+own restart) until the game is next opened or restarted from the menu,
+which put the setting back in. Reading it back into `settings.txt` was not
+done: the menu's thread owns the settings.
+
+**What changes:** with the network off, WARNING.INIT ends around vertical
+blank 2,113 instead of 5,711 (about 3,600 fewer; at the real pace about
+35 s instead of 97 s). Those frames run unpaced, so the warning screen comes
+only a fraction of a second sooner: the log screen still flashes by, now
+saying NETWORK OFF. Scripted runs (`--press`, `--keys`, `--shot`) with
+frame numbers from before now land about 3,600 vertical blanks later in
+the game than they did. The headless runner and the VF4debug comparisons
+are not affected: they never load a backup, so the game makes its record
+with the network on as before.
+
+**Checked** (the native game in a headless KWin, sound off and SDL's dummy
+audio; copies of David's backup):
+- David's backup, default settings: "network: off", the log screen at
+  vertical blank 1,200 says "(GAME) NETWORK OFF", MODE 2; the saved backup
+  has `net_connect` 0 in both copies and both checks hold.
+- A blank backup: the record appears at vertical blank 226, the network
+  goes off in it and the machine restarts once; the same log screen; the
+  saved backup has 0 in both copies, checks good; the game reached the
+  attract sequence (ADVERTISE) by vertical blank 3,200.
+- `network = on`: the log screen at 4,600 says "(GAME) getIPbyDNS TIME
+  OUT", MODE 3, as before; the record keeps 1.
+- The menu: Network switched on at vertical blank 2,400 (the dot and "Applies
+  when the game restarts" shown), then Restart: `settings.txt` says
+  `network = on`, the game restarts with the long network wait, and the
+  record has 1 in both copies.
+- The pictures at 1:1: the game's menu (ten rows) and the launcher's Settings
+  page. The launcher's `--shot` inside the nested Wayland KWin read back
+  empty (OpenGL renderer); with `SDL_VIDEO_DRIVER=offscreen` it is right.
+
+Not done: hiding the fast-forwarded start-up itself (the log screen still
+shows for a moment).
