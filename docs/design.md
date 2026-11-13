@@ -1814,8 +1814,18 @@ file at its Linux path):
 The game itself, offscreen with a stand-in Steam pad (`--keys
 padtype=steamvirtual`) and the file, logs the list and its slot.
 
-Not tried: a real DualSense under Steam (David's next run will say: the
-log's "left out" line).
+**On David's machine (2026-11-13),** a 0.5.2-dev test copy added to Steam
+with Steam closed (`tools/steam_shortcut.py add`, named), Steam Input on,
+Proton Experimental. This time SDL had given Steam's pad the real pad's
+ids from the file (`XInput#0`, 054c:0ce6, type ps5, Steam handle set,
+player 0; with 0.5.1 it had been 28de:11ff, xboxone, no handle), so the
+pad was found as Steam's by its Steam handle; the HID DualSense (player 1)
+was left out, in the game and in the launcher:
+
+    gamepad added: id 2 "DualSense Wireless Controller" type ps5 vid 054c pid 0ce6 steam-handle 0 player 1 path \\?\HID#VID_054C&PID_0CE6...
+    gamepad added: id 3 "DualSense Wireless Controller" type ps5 vid 054c pid 0ce6 steam-handle dd42f4b857317 player 0 path XInput#0
+    Steam's pad list: slot 0 "DualSense Wireless Controller" 054c:0ce6 ps5
+    gamepad 2 "DualSense Wireless Controller" 054c:0ce6 left out: Steam Input gives it as its pad 3 (slot 0)
 
 ## 31. The mouse in the game's menu (2026-11-13)
 
