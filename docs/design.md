@@ -1067,8 +1067,8 @@ device the window has, the software picture's included.
 the machine reaches vertical blank FRAME: SDL key names, `@N` (wait for
 vertical blank N), `shot=FILE` (the window as shown, the menu included),
 and `pad:a+x=N`, buttons of a virtual gamepad (SDL's virtual joystick)
-held for N turns of the window's loop. `padtype=ps5` anywhere in the
-list gives that pad a DualSense's ids (section 22). The virtual pad is attached at
+held for N turns of the window's loop. `padtype=NAME` anywhere in the
+list gives that pad a real pad's ids, so its glyphs show (section 23). The virtual pad is attached at
 start-up: SDL sends no press for a button already down when a pad is
 opened, so a pad made at its first press missed it.
 
@@ -1111,11 +1111,11 @@ renderer that draws the overlay (section 21).
   game's folder as `Font license.txt`.
 - *Shapes.* Rounded rectangles come from quarter-disc textures plus fills.
   Icons are made from signed distance functions at their size: arrows,
-  check, chevron, play, and the PlayStation shapes.
+  check, chevron, play, and the pads' shapes (section 23).
 - *Input.* `ui_note_event` keeps the device last used: the keyboard, or a
-  pad in Xbox, PlayStation or Nintendo style (from SDL's gamepad type). The
-  key caps and footer hints use that device's names, such as Enter and Esc,
-  A and B, or ✕ and ○, and they change as soon as another device is used.
+  pad in its own style (section 23). The key caps and footer hints use
+  that device's names, such as Enter and Esc, A and B, or ✕ and ○, and
+  they change as soon as another device is used.
 - *Widgets.* Tabs with their previous and next caps; rows (action, choice,
   Off/On, slider, a control's binding, with a dot for "applies at the next
   start"); the about panel; a progress bar (indeterminate when the stage
@@ -1141,8 +1141,8 @@ renderer that draws the overlay (section 21).
 The stepper at the top lights the page's step and checks the steps that are
 done. The mouse, the keyboard and a gamepad all work every page.
 `--shot PAGE FILE` draws a page offscreen for tests, and `--cancel-after S`
-presses Cancel. For the README's pictures, `--shot-device keys|xbox|ps|switch`
-picks the style of the caps, and `--shot-scale K` makes the window K times
+presses Cancel. For the README's pictures, `--shot-device NAME` picks the
+style of the caps (`keys` or a style's name, section 23), and `--shot-scale K` makes the window K times
 as big from the start. The offscreen driver keeps its first framebuffer
 when a window is resized later, so a later resize drew only a corner. On
 Linux a path under the home folder shows as `~/…`.
@@ -1220,5 +1220,70 @@ about a fifth of the picture's brightness. The fill is gone.
     with 1, and its log says "cancelled".
 
 **Not done:** a real gamepad and the Steam Deck (the glyphs follow SDL's
-pad type, and only the virtual DualSense has shown them), and a window resized by dragging while
+pad type, and only virtual pads have shown them: section 23), and a window resized by dragging while
 the menu is open (each new size takes the picture again).
+
+## 23. Glyphs for each kind of gamepad (2026-11-12)
+
+The caps and hints of section 22 name a pad's buttons the way that pad
+does. There are nine styles (`ui.c`, `styles[]`), and
+`docs/images/glyphs.png` shows every input in each:
+
+| Style | Face buttons | Shoulders, triggers | Back, Start | Guide | Other |
+|---|---|---|---|---|---|
+| `xbox` (One, Series) | A B X Y, colored | LB RB, LT RT | View and Menu icons | Guide | Share |
+| `xbox360` | A B X Y, colored | LB RB, LT RT | Back, Start | Guide | |
+| `ps5` (DualSense) | ✕ ○ □ △, white as on the pad | L1 R1, L2 R2 | Create, Options | PS | Mute, Touchpad; the Edge's back buttons |
+| `ps4` (DualShock 4) | ✕ ○ □ △, colored | L1 R1, L2 R2 | Share, Options | PS | Touchpad |
+| `ps3` (DualShock 3) | ✕ ○ □ △, colored | L1 R1, L2 R2 | Select, Start | PS | |
+| `switch` (Pro, Joy-Con) | B A Y X by position | L R, ZL ZR | − and + icons | Home icon | Capture icon; SL SR |
+| `gamecube` | A X B Y by position, A green and B red | ZL Z, L R | Back, Start | Home icon | Capture icon |
+| `steam` (Deck, Steam Controller) | A B X Y | L1 R1, L2 R2 | View and Menu icons | Steam | the quick access (···) icon; L4 R4 L5 R5 |
+| `generic` | A B X Y | LB RB, LT RT | Back, Start | Guide | |
+
+- *Face buttons* are named by position, as SDL maps them: the bottom
+  button is A on an Xbox pad, ✕ on a PlayStation one, B on a Switch pad.
+  The label comes from the pad itself (`SDL_GetGamepadButtonLabel`), so a
+  pad mapped unlike its type (an 8BitDo pad in its Switch layout, say)
+  still shows its own letters, and otherwise from the style's type
+  (`SDL_GetGamepadButtonLabelForType`).
+- *Icons* are drawn from distance functions like section 22's: View (two
+  windows), Menu (three lines), +, −, Home (a house), Capture (a square
+  with a dot) and the quick access dots. No logo is drawn; Guide is a word
+  (Guide, PS, Steam) or the Home icon.
+- *Which style.* The pad last pressed, by SDL's gamepad type (`style_of`).
+  Under Steam Input, SDL asks Steam which pad is behind Steam's virtual
+  one (`SteamVirtualGamepadInfo`) and reports that pad's type. When it
+  cannot, the pad is Valve's 28de:11ff, an Xbox 360 lookalike (what M0
+  saw under Proton). Such a pad is shown as an Xbox One pad, or as the
+  Deck's own controls when the environment has `SteamDeck=1`. That is a
+  guess, labeled as one in the code: a DualSense on a Deck behind Steam
+  Input would show the Deck's names if Steam does not say what it is.
+- `--shot-device NAME` (launcher) takes `keys` or a style's name (`ps` is
+  `ps5`), and the game's `--keys` takes `padtype=NAME` for its virtual pad:
+
+  | `padtype=` | Ids | SDL's type |
+  |---|---|---|
+  | `xbox` | 045e:0b12 (Series X\|S) | xboxone |
+  | `xbox360` | 045e:028e | xbox360 |
+  | `ps5` | 054c:0ce6 (DualSense) | ps5 |
+  | `ps4` | 054c:09cc (DualShock 4) | ps4 |
+  | `ps3` | 054c:0268 (DualShock 3) | ps3 |
+  | `switch` | 057e:2009 (Pro) | switchpro |
+  | `gamecube` | 057e:2073 (Switch 2 GameCube) | gamecube |
+  | `deck` | 28de:1205 (Steam Deck) | steam |
+  | `steamvirtual` | 28de:11ff (Steam Input's pad) | standard |
+
+**Fixed on the way.** The game's log tagged any Valve pad "(Steam
+virtual)", the Deck's own controls included. Only 28de:11ff is tagged now.
+
+**Checked:** each `padtype` in the game on Linux, the Controls tab and its
+footer looked at 1:1. Each style showed its own names, `steamvirtual` as
+Xbox, and `steamvirtual` with `SteamDeck=1` as the Deck. Linux and Windows
+build without warnings.
+
+**Not done:** real pads other than a DualSense, and Steam Input on a Deck
+or under Proton with a real pad (whether Steam tells SDL which pad is
+behind its own). The menu selects with the bottom button and goes back
+with the right one on every pad, so on a Nintendo pad B selects and A goes
+back, the reverse of Nintendo's own habit; the caps show it as it is.

@@ -35,7 +35,8 @@
  * the action started nothing), --cancel-after S (presses Cancel S seconds
  * after it started); --shot PAGE FILE draws one page (files,
  * build, work, fail, play, settings, picture, pad, key1, key2) to a BMP file and quits,
- * its caps as --shot-device keys|xbox|ps|switch names them, --shot-scale K times as big
+ * its caps in the style --shot-device names (keys, xbox, ps5, switch, steam...:
+ * ui_device_named), --shot-scale K times as big
  * (with SDL_VIDEO_DRIVER=offscreen no window shows).
  */
 #include <SDL3/SDL.h>
@@ -1385,12 +1386,8 @@ int main(int argc, char **argv)
             }
         if (page == P_WORK || page == P_FAIL)
             shot_fake();
-        if (shot_device) {      /* the caps' style: keys, xbox, ps or switch */
-            static const char *const devs[] = { "keys", "xbox", "ps", "switch" };
-            for (int i = 0; i < 4; i++)
-                if (!strcmp(shot_device, devs[i]))
-                    ui_set_device(i);       /* UI_DEV_KEYS, _XBOX, _PS, _NINTENDO */
-        }
+        if (shot_device && ui_device_named(shot_device) >= 0)
+            ui_set_device(ui_device_named(shot_device));    /* the caps' style (ui.h) */
         draw();
         draw();         /* the second time with the hits of the first (focus rings) */
         SDL_Surface *sf = SDL_RenderReadPixels(ren, NULL);

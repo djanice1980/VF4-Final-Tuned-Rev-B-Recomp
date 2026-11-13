@@ -453,6 +453,13 @@ static float poly(v2 p, const v2 *v, int n)
     return s * SDL_sqrtf(d);
 }
 
+/* a box's signed distance: center c, half sizes hx hy, corners rounded by r */
+static float box(v2 p, v2 c, float hx, float hy, float r)
+{
+    float qx = SDL_fabsf(p.x - c.x) - hx + r, qy = SDL_fabsf(p.y - c.y) - hy + r;
+    return len2(SDL_max(qx, 0), SDL_max(qy, 0)) + SDL_min(SDL_max(qx, qy), 0) - r;
+}
+
 static float icon_dist(int icon, v2 p)
 {
     switch (icon) {
@@ -484,6 +491,29 @@ static float icon_dist(int icon, v2 p)
         v2 v[] = { { 0.50f, 0.20f }, { 0.81f, 0.73f }, { 0.19f, 0.73f } };
         return SDL_fabsf(poly(p, v, 3)) - 0.045f;
     }
+    case UI_I_VIEW: {               /* two windows, the back one behind the front one */
+        float f = box(p, (v2){ 0.585f, 0.585f }, 0.195f, 0.155f, 0.04f), k = box(p, (v2){ 0.415f, 0.415f }, 0.195f, 0.155f, 0.04f);
+        return SDL_min(SDL_fabsf(f) - 0.04f, SDL_max(SDL_fabsf(k) - 0.04f, -(f + 0.08f)));
+    }
+    case UI_I_MENU:
+        return SDL_min(SDL_min(seg(p, (v2){ 0.27f, 0.32f }, (v2){ 0.73f, 0.32f }),
+                               seg(p, (v2){ 0.27f, 0.50f }, (v2){ 0.73f, 0.50f })),
+                       seg(p, (v2){ 0.27f, 0.68f }, (v2){ 0.73f, 0.68f })) - 0.045f;
+    case UI_I_PLUS:
+        return SDL_min(seg(p, (v2){ 0.26f, 0.50f }, (v2){ 0.74f, 0.50f }),
+                       seg(p, (v2){ 0.50f, 0.26f }, (v2){ 0.50f, 0.74f })) - 0.05f;
+    case UI_I_MINUS: return seg(p, (v2){ 0.26f, 0.50f }, (v2){ 0.74f, 0.50f }) - 0.05f;
+    case UI_I_HOME: {
+        v2 v[] = { { 0.50f, 0.17f }, { 0.83f, 0.48f }, { 0.735f, 0.48f }, { 0.735f, 0.80f },
+                   { 0.265f, 0.80f }, { 0.265f, 0.48f }, { 0.17f, 0.48f } };
+        return poly(p, v, 7);
+    }
+    case UI_I_CAPTURE:
+        return SDL_min(SDL_fabsf(box(p, (v2){ 0.5f, 0.5f }, 0.32f, 0.32f, 0.08f)) - 0.05f,
+                       len2(p.x - 0.5f, p.y - 0.5f) - 0.14f);
+    case UI_I_DOTS:
+        return SDL_min(SDL_min(len2(p.x - 0.22f, p.y - 0.5f), len2(p.x - 0.5f, p.y - 0.5f)),
+                       len2(p.x - 0.78f, p.y - 0.5f)) - 0.09f;
     }
     return 1;
 }
@@ -498,7 +528,7 @@ static float icon_cov(int i, int j, const void *ctx)
     return 0.5f - icon_dist(c->icon, p) * s;
 }
 
-#define ICONS 48
+#define ICONS 64
 static struct { int icon, size; SDL_Texture *t; } icons[ICONS];
 static int nicons;
 
@@ -589,33 +619,103 @@ void ui_to_logical(float x, float y, float *lx, float *ly)
 
 /* ---- input glyphs ---- */
 
-static int dev = UI_DEV_KEYS, last_pad_style = -1;
+/* how each style names a gamepad's inputs (UI_DEV_*): an icon (UI_I_*) or
+ * a label; the face buttons take their labels from SDL by the style's type */
+typedef struct pad_style {
+    const char *name;
+    SDL_GamepadType type;       /* for SDL_GetGamepadButtonLabelForType */
+    int colors;                 /* face buttons: 0 plain, 1 Xbox letters, 2 PlayStation shapes, 3 GameCube */
+    const char *shoulder[2], *trigger[2], *stick[2];
+    const char *back, *start, *guide, *misc1, *touchpad;
+    int back_icon, start_icon, guide_icon, misc1_icon;
+    const char *paddle[4];      /* SDL's paddle1..4: right upper, left upper, right lower, left lower */
+} pad_style;
 
-static int style_of(SDL_GamepadType t)
+#define NO -1
+static const pad_style styles[UI_DEVS] = {
+    [UI_DEV_XBOX] = { "xbox", SDL_GAMEPAD_TYPE_XBOXONE, 1, { "LB", "RB" }, { "LT", "RT" }, { "LS", "RS" },
+                      NULL, NULL, "Guide", "Share", NULL, UI_I_VIEW, UI_I_MENU, NO, NO, { "P1", "P3", "P2", "P4" } },
+    [UI_DEV_XBOX360] = { "xbox360", SDL_GAMEPAD_TYPE_XBOX360, 1, { "LB", "RB" }, { "LT", "RT" }, { "LS", "RS" },
+                         "Back", "Start", "Guide", "Misc", NULL, NO, NO, NO, NO, { "P1", "P3", "P2", "P4" } },
+    [UI_DEV_PS] = { "ps5", SDL_GAMEPAD_TYPE_PS5, 0, { "L1", "R1" }, { "L2", "R2" }, { "L3", "R3" },
+                    "Create", "Options", "PS", "Mute", "Touchpad", NO, NO, NO, NO, { "RB", "LB", "R Fn", "L Fn" } },
+    [UI_DEV_PS4] = { "ps4", SDL_GAMEPAD_TYPE_PS4, 2, { "L1", "R1" }, { "L2", "R2" }, { "L3", "R3" },
+                     "Share", "Options", "PS", "Misc", "Touchpad", NO, NO, NO, NO, { "P1", "P3", "P2", "P4" } },
+    [UI_DEV_PS3] = { "ps3", SDL_GAMEPAD_TYPE_PS3, 2, { "L1", "R1" }, { "L2", "R2" }, { "L3", "R3" },
+                     "Select", "Start", "PS", "Misc", NULL, NO, NO, NO, NO, { "P1", "P3", "P2", "P4" } },
+    [UI_DEV_NINTENDO] = { "switch", SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, 0, { "L", "R" }, { "ZL", "ZR" },
+                          { "LS", "RS" }, NULL, NULL, NULL, NULL, NULL, UI_I_MINUS, UI_I_PLUS, UI_I_HOME,
+                          UI_I_CAPTURE, { "SR", "SL", "SL", "SR" } },
+    [UI_DEV_GAMECUBE] = { "gamecube", SDL_GAMEPAD_TYPE_GAMECUBE, 3, { "ZL", "Z" }, { "L", "R" }, { "LS", "RS" },
+                          "Back", "Start", NULL, NULL, NULL, NO, NO, UI_I_HOME, UI_I_CAPTURE,
+                          { "P1", "P3", "P2", "P4" } },
+    [UI_DEV_STEAM] = { "steam", SDL_GAMEPAD_TYPE_STEAM, 0, { "L1", "R1" }, { "L2", "R2" }, { "L3", "R3" },
+                       NULL, NULL, "Steam", NULL, NULL, UI_I_VIEW, UI_I_MENU, NO, UI_I_DOTS,
+                       { "R4", "L4", "R5", "L5" } },
+    [UI_DEV_GENERIC] = { "generic", SDL_GAMEPAD_TYPE_STANDARD, 0, { "LB", "RB" }, { "LT", "RT" }, { "LS", "RS" },
+                         "Back", "Start", "Guide", "Misc", "Pad", NO, NO, NO, NO, { "P1", "P3", "P2", "P4" } },
+};
+
+int ui_device_named(const char *name)
 {
-    switch (t) {
-    case SDL_GAMEPAD_TYPE_PS3:
-    case SDL_GAMEPAD_TYPE_PS4:
+    if (!SDL_strcasecmp(name, "keys"))
+        return UI_DEV_KEYS;
+    if (!SDL_strcasecmp(name, "ps"))
+        return UI_DEV_PS;
+    for (int i = 1; i < UI_DEVS; i++)
+        if (!SDL_strcasecmp(name, styles[i].name))
+            return i;
+    return -1;
+}
+
+static int dev = UI_DEV_KEYS, last_pad_style = -1;
+/* the last pad's own face labels (its mapping can differ from its type's,
+ * as an 8BitDo pad in its Switch layout); 0 when not known */
+static SDL_GamepadButtonLabel last_face[4];
+
+/* the style of a gamepad SDL has */
+static int style_of(SDL_JoystickID id)
+{
+    Uint16 vendor = SDL_GetGamepadVendorForID(id), product = SDL_GetGamepadProductForID(id);
+    if (vendor == 0x28DE && product == 0x11FF) {
+        /* Steam Input's own pad, when SDL could not learn from Steam which
+         * pad is behind it (SteamVirtualGamepadInfo): on a Steam Deck it is
+         * most likely the Deck's own controls; elsewhere it is an Xbox pad */
+        const char *deck = SDL_getenv("SteamDeck");
+        return deck && !SDL_strcmp(deck, "1") ? UI_DEV_STEAM : UI_DEV_XBOX;
+    }
+    switch (SDL_GetGamepadTypeForID(id)) {
+    case SDL_GAMEPAD_TYPE_XBOX360: return UI_DEV_XBOX360;
+    case SDL_GAMEPAD_TYPE_XBOXONE: return UI_DEV_XBOX;
+    case SDL_GAMEPAD_TYPE_PS3: return UI_DEV_PS3;
+    case SDL_GAMEPAD_TYPE_PS4: return UI_DEV_PS4;
     case SDL_GAMEPAD_TYPE_PS5: return UI_DEV_PS;
     case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
     case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
     case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
     case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return UI_DEV_NINTENDO;
-    default: return UI_DEV_XBOX;
+    case SDL_GAMEPAD_TYPE_GAMECUBE: return UI_DEV_GAMECUBE;
+    case SDL_GAMEPAD_TYPE_STEAM: return UI_DEV_STEAM;
+    default: return UI_DEV_GENERIC;
     }
+}
+
+static void note_pad(SDL_JoystickID id)
+{
+    dev = last_pad_style = style_of(id);
+    SDL_Gamepad *g = SDL_GetGamepadFromID(id);     /* opened by the program already */
+    for (int b = 0; b < 4; b++)
+        last_face[b] = g ? SDL_GetGamepadButtonLabel(g, (SDL_GamepadButton)b) : SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
 }
 
 void ui_note_event(const SDL_Event *e)
 {
-    SDL_JoystickID which = 0;
     if (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
         dev = UI_DEV_KEYS;
     else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
-        which = e->gbutton.which;
+        note_pad(e->gbutton.which);
     else if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e->gaxis.value > 20000 || e->gaxis.value < -20000))
-        which = e->gaxis.which;
-    if (which)
-        dev = last_pad_style = style_of(SDL_GetGamepadTypeForID(which));
+        note_pad(e->gaxis.which);
 }
 
 int ui_device(void)
@@ -625,9 +725,13 @@ int ui_device(void)
 
 void ui_set_device(int d)
 {
+    if (d < 0 || d >= UI_DEVS)
+        return;
     dev = d;
-    if (d != UI_DEV_KEYS)
+    if (d != UI_DEV_KEYS) {
         last_pad_style = d;
+        SDL_zeroa(last_face);
+    }
 }
 
 int ui_pad_style(void)
@@ -637,13 +741,13 @@ int ui_pad_style(void)
     int n = 0, s = UI_DEV_XBOX;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     if (ids && n > 0)
-        s = style_of(SDL_GetGamepadTypeForID(ids[0]));
+        s = style_of(ids[0]);
     SDL_free(ids);
     return s;
 }
 
 /* a cap: draw 0 measures it */
-static float cap_box(float x, float y, float h, const char *label, int icon, int round, int draw)
+static float cap_box(float x, float y, float h, const char *label, int icon, int round, SDL_Color c, int draw)
 {
     float size = h * 0.5f, tw = label ? ui_text_w(UI_MEDIUM, size, label) : 0;
     float w = round || icon >= 0 ? h : SDL_max(h, tw + h * 0.62f);
@@ -651,28 +755,52 @@ static float cap_box(float x, float y, float h, const char *label, int icon, int
         return w;
     ui_round_line(x, y - h / 2, w, h, round ? h / 2 : h * 0.24f, 1, UI_LINE, UI_HOVER);
     if (icon >= 0)
-        ui_icon(icon, x + w / 2, y, h * (round ? 0.78f : 0.62f), UI_TEXT);
+        ui_icon(icon, x + w / 2, y, h * (round ? 0.78f : 0.62f), c);
     else if (label)
-        ui_text(UI_MEDIUM, size, x + (w - tw) / 2, y, UI_TEXT, label);
+        ui_text(UI_MEDIUM, size, x + (w - tw) / 2, y, c, label);
     return w;
 }
 
 float ui_cap(float x, float y, float h, const char *label)
 {
-    return cap_box(x, y, h, label, -1, 0, 1);
+    return cap_box(x, y, h, label, -1, 0, UI_TEXT, 1);
 }
 
 float ui_cap_icon(float x, float y, float h, int icon)
 {
-    return cap_box(x, y, h, NULL, icon, 0, 1);
+    return cap_box(x, y, h, NULL, icon, 0, UI_TEXT, 1);
 }
 
-/* how a key or a gamepad input looks: a label or an icon, round or not */
-static void input_look(const char *name, int pad, const char **label, int *icon, int *round)
+/* a face button's look by its printed label */
+static void face_look(int st, SDL_GamepadButtonLabel l, const char **label, int *icon, SDL_Color *c)
+{
+    static const struct { const char *text; int icon; SDL_Color xbox, ps, cube; } faces[] = {
+        [SDL_GAMEPAD_BUTTON_LABEL_A] = { "A", NO, { 104, 200, 96, 255 }, { 0 }, { 92, 204, 156, 255 } },
+        [SDL_GAMEPAD_BUTTON_LABEL_B] = { "B", NO, { 240, 98, 92, 255 }, { 0 }, { 240, 98, 92, 255 } },
+        [SDL_GAMEPAD_BUTTON_LABEL_X] = { "X", NO, { 92, 158, 242, 255 }, { 0 }, { 0 } },
+        [SDL_GAMEPAD_BUTTON_LABEL_Y] = { "Y", NO, { 244, 200, 74, 255 }, { 0 }, { 0 } },
+        [SDL_GAMEPAD_BUTTON_LABEL_CROSS] = { NULL, UI_I_PS_CROSS, { 0 }, { 132, 166, 242, 255 }, { 0 } },
+        [SDL_GAMEPAD_BUTTON_LABEL_CIRCLE] = { NULL, UI_I_PS_CIRCLE, { 0 }, { 242, 106, 112, 255 }, { 0 } },
+        [SDL_GAMEPAD_BUTTON_LABEL_SQUARE] = { NULL, UI_I_PS_SQUARE, { 0 }, { 230, 136, 206, 255 }, { 0 } },
+        [SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE] = { NULL, UI_I_PS_TRIANGLE, { 0 }, { 94, 206, 174, 255 }, { 0 } },
+    };
+    if (l <= SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN || l >= (int)SDL_arraysize(faces))
+        return;
+    *label = faces[l].text;
+    *icon = faces[l].icon;
+    SDL_Color k = styles[st].colors == 1 ? faces[l].xbox : styles[st].colors == 2 ? faces[l].ps
+                : styles[st].colors == 3 ? faces[l].cube : (SDL_Color){ 0 };
+    if (k.a)
+        *c = k;
+}
+
+/* how a key or a gamepad input looks: a label or an icon, round or not, its color */
+static void input_look(const char *name, int pad, const char **label, int *icon, int *round, SDL_Color *c)
 {
     *label = name;
     *icon = -1;
     *round = 0;
+    *c = UI_TEXT;
     if (!pad) {
         static const struct { const char *name, *label; int icon; } keys[] = {
             { "Up", NULL, UI_I_UP }, { "Down", NULL, UI_I_DOWN }, { "Left", NULL, UI_I_LEFT },
@@ -686,51 +814,77 @@ static void input_look(const char *name, int pad, const char **label, int *icon,
             }
         return;
     }
-    static const struct { const char *name, *xbox, *ps, *nin; int psicon; } pads[] = {
-        { "a", "A", NULL, "B", UI_I_PS_CROSS }, { "b", "B", NULL, "A", UI_I_PS_CIRCLE },
-        { "x", "X", NULL, "Y", UI_I_PS_SQUARE }, { "y", "Y", NULL, "X", UI_I_PS_TRIANGLE },
-        { "leftshoulder", "LB", "L1", "L", -1 }, { "rightshoulder", "RB", "R1", "R", -1 },
-        { "lefttrigger", "LT", "L2", "ZL", -1 }, { "righttrigger", "RT", "R2", "ZR", -1 },
-        { "back", "View", "Share", "\xE2\x80\x93", -1 }, { "start", "Menu", "Options", "+", -1 },
-        { "guide", "Guide", "PS", "Home", -1 }, { "leftstick", "LS", "L3", "LS", -1 },
-        { "rightstick", "RS", "R3", "RS", -1 }, { "misc1", "Share", "Mute", "Capture", -1 },
-        { "touchpad", "Pad", "Touchpad", "Pad", -1 },
-    };
-    if (!SDL_strcmp(name, "dpup")) *icon = UI_I_UP;
-    else if (!SDL_strcmp(name, "dpdown")) *icon = UI_I_DOWN;
-    else if (!SDL_strcmp(name, "dpleft")) *icon = UI_I_LEFT;
-    else if (!SDL_strcmp(name, "dpright")) *icon = UI_I_RIGHT;
+    SDL_GamepadButton b = SDL_GetGamepadButtonFromString(name);
+    switch (b) {
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: *icon = UI_I_UP; break;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: *icon = UI_I_DOWN; break;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: *icon = UI_I_LEFT; break;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: *icon = UI_I_RIGHT; break;
+    default: break;
+    }
     if (*icon >= 0) {
         *label = NULL;
         return;
     }
     int st = ui_pad_style();
-    for (size_t i = 0; i < SDL_arraysize(pads); i++)
-        if (!SDL_strcmp(name, pads[i].name)) {
-            *round = i < 4;
-            if (st == UI_DEV_PS && pads[i].psicon >= 0) {
-                *icon = pads[i].psicon;
-                *label = NULL;
-            } else {
-                *label = st == UI_DEV_PS ? pads[i].ps : st == UI_DEV_NINTENDO ? pads[i].nin : pads[i].xbox;
-            }
-        }
+    const pad_style *ps = &styles[st];
+    if (b >= SDL_GAMEPAD_BUTTON_SOUTH && b <= SDL_GAMEPAD_BUTTON_NORTH) {
+        SDL_GamepadButtonLabel l = last_face[b] ? last_face[b] : SDL_GetGamepadButtonLabelForType(ps->type, b);
+        *round = 1;
+        face_look(st, l, label, icon, c);
+        if (*icon >= 0)
+            *label = NULL;
+        return;
+    }
+    const char *t = NULL;
+    int i = NO, rnd = 0;
+    switch (b) {
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: t = ps->shoulder[0]; break;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: t = ps->shoulder[1]; break;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: t = ps->stick[0]; break;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: t = ps->stick[1]; break;
+    case SDL_GAMEPAD_BUTTON_BACK: t = ps->back, i = ps->back_icon, rnd = 1; break;
+    case SDL_GAMEPAD_BUTTON_START: t = ps->start, i = ps->start_icon, rnd = 1; break;
+    case SDL_GAMEPAD_BUTTON_GUIDE: t = ps->guide, i = ps->guide_icon, rnd = 1; break;
+    case SDL_GAMEPAD_BUTTON_MISC1: t = ps->misc1, i = ps->misc1_icon; break;
+    case SDL_GAMEPAD_BUTTON_TOUCHPAD: t = ps->touchpad ? ps->touchpad : "Pad"; break;
+    case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1: t = ps->paddle[0]; break;
+    case SDL_GAMEPAD_BUTTON_LEFT_PADDLE1: t = ps->paddle[1]; break;
+    case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2: t = ps->paddle[2]; break;
+    case SDL_GAMEPAD_BUTTON_LEFT_PADDLE2: t = ps->paddle[3]; break;
+    default:
+        /* the triggers are axes in SDL: their names are not buttons */
+        if (!SDL_strcmp(name, "lefttrigger"))
+            t = ps->trigger[0];
+        else if (!SDL_strcmp(name, "righttrigger"))
+            t = ps->trigger[1];
+        break;
+    }
+    if (i >= 0) {
+        *icon = i;
+        *label = NULL;
+        *round = rnd;
+    } else if (t) {
+        *label = t;
+    }
 }
 
 float ui_cap_input(float x, float y, float h, const char *name, int pad)
 {
     const char *label;
     int icon, round;
-    input_look(name, pad, &label, &icon, &round);
-    return cap_box(x, y, h, label, icon, round, 1);
+    SDL_Color c;
+    input_look(name, pad, &label, &icon, &round, &c);
+    return cap_box(x, y, h, label, icon, round, c, 1);
 }
 
 float ui_cap_input_w(float h, const char *name, int pad)
 {
     const char *label;
     int icon, round;
-    input_look(name, pad, &label, &icon, &round);
-    return cap_box(0, 0, h, label, icon, round, 0);
+    SDL_Color c;
+    input_look(name, pad, &label, &icon, &round, &c);
+    return cap_box(0, 0, h, label, icon, round, c, 0);
 }
 
 /* a hint's inputs as names: keyboard (pad 0) or gamepad */

@@ -33,7 +33,8 @@
  *                     shot=menu.bmp,Escape": SDL key names, "@N" waits for vertical blank N,
  *                     "shot=FILE" saves the window as shown (the menu included) to a BMP file,
  *                     "pad:a+x=N" holds buttons of a virtual gamepad (SDL's names) for N turns (6),
- *                     "padtype=ps5" anywhere in the list makes that gamepad a DualSense (its glyphs)
+ *                     "padtype=NAME" anywhere in the list gives that gamepad a real pad's ids (its
+ *                     glyphs): xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck, steamvirtual
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
  *
@@ -622,7 +623,8 @@ static void log_gamepad_added(SDL_JoystickID which)
      * one (Valve vendor 28de; on Windows and under Proton it looks like an
      * Xbox 360 pad, product 11ff), and the physical device is hidden from
      * SDL through SDL_GAMECONTROLLER_IGNORE_DEVICES. Logged so a run can show
-     * which it was. */
+     * which it was. Valve's own pads (Steam Controller, the Deck's 1205) share
+     * the vendor, so only 11ff is tagged virtual. */
     SDL_Gamepad *g = SDL_OpenGamepad(which);
     if (!g) {
         logf_("gamepad %u: open failed: %s", (unsigned)which, SDL_GetError());
@@ -632,7 +634,7 @@ static void log_gamepad_added(SDL_JoystickID which)
     const char *path = SDL_GetGamepadPath(g);
     logf_("gamepad added: id %u \"%s\" type %s vid %04x pid %04x%s steam-handle %llx path %s", (unsigned)which,
           SDL_GetGamepadName(g), SDL_GetGamepadStringForType(SDL_GetGamepadType(g)), vid, pid,
-          vid == 0x28de ? " (Steam virtual)" : "", (unsigned long long)SDL_GetGamepadSteamHandle(g),
+          vid == 0x28de && pid == 0x11ff ? " (Steam virtual)" : "", (unsigned long long)SDL_GetGamepadSteamHandle(g),
           path ? path : "-");
 }
 
@@ -972,9 +974,23 @@ static void vpad_attach(void)
         d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
         d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
         d.name = "vf4ft --keys pad";
-        for (int i = 0; i < key_items; i++)     /* "padtype=ps5": a DualSense's ids, so its glyphs show */
-            if (!strcmp(key_item[i], "padtype=ps5"))
-                d.vendor_id = 0x054C, d.product_id = 0x0CE6;
+        /* "padtype=NAME": a real pad's vendor and product ids, so that SDL
+         * takes it for one and its glyphs show */
+        static const struct { const char *name; Uint16 vendor, product; } types[] = {
+            { "xbox", 0x045E, 0x0B12 },         /* Xbox Series X|S */
+            { "xbox360", 0x045E, 0x028E },
+            { "ps5", 0x054C, 0x0CE6 },          /* DualSense */
+            { "ps4", 0x054C, 0x09CC },          /* DualShock 4 */
+            { "ps3", 0x054C, 0x0268 },          /* DualShock 3 */
+            { "switch", 0x057E, 0x2009 },       /* Switch Pro */
+            { "gamecube", 0x057E, 0x2073 },     /* Switch 2 GameCube controller */
+            { "deck", 0x28DE, 0x1205 },         /* Steam Deck */
+            { "steamvirtual", 0x28DE, 0x11FF }, /* Steam Input's own pad */
+        };
+        for (int i = 0; i < key_items; i++)
+            for (size_t k = 0; k < SDL_arraysize(types); k++)
+                if (!strncmp(key_item[i], "padtype=", 8) && !strcmp(key_item[i] + 8, types[k].name))
+                    d.vendor_id = types[k].vendor, d.product_id = types[k].product;
         SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
         vpad = id ? SDL_OpenJoystick(id) : NULL;
         if (!vpad)

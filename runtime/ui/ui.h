@@ -36,6 +36,9 @@ enum {
     UI_I_CHECK, UI_I_CHEVRON, UI_I_FAIL, UI_I_DOT,
     UI_I_PS_CROSS, UI_I_PS_CIRCLE, UI_I_PS_SQUARE, UI_I_PS_TRIANGLE,
     UI_I_PLAY,
+    UI_I_VIEW, UI_I_MENU,                           /* Xbox and Steam: two windows, three lines */
+    UI_I_PLUS, UI_I_MINUS, UI_I_HOME, UI_I_CAPTURE, /* Nintendo */
+    UI_I_DOTS,                                      /* Steam's quick access button */
     UI_ICONS
 };
 
@@ -77,8 +80,25 @@ void ui_icon(int icon, float cx, float cy, float size, SDL_Color c);
 void ui_image(SDL_Texture *t, float x, float y, float w, float h);
 
 /* ---- input glyphs ---- */
-/* what the hints show: the keyboard's keys or a gamepad's buttons */
-enum { UI_DEV_KEYS, UI_DEV_XBOX, UI_DEV_PS, UI_DEV_NINTENDO };
+/* what the hints show: the keyboard's keys or a gamepad's buttons, in the
+ * style of its maker (SDL's gamepad type; Steam Input's own pad on a Steam
+ * Deck is the Deck) */
+enum {
+    UI_DEV_KEYS,
+    UI_DEV_XBOX,            /* Xbox One and Series: View, Menu */
+    UI_DEV_PS,              /* PS5: Create, Options */
+    UI_DEV_NINTENDO,        /* Switch, Joy-Con: B A Y X by position, -, + */
+    UI_DEV_XBOX360,         /* Back, Start */
+    UI_DEV_PS4,             /* Share, Options; shapes in color */
+    UI_DEV_PS3,             /* Select, Start; shapes in color */
+    UI_DEV_GAMECUBE,        /* A X B Y by position, Z, L, R */
+    UI_DEV_STEAM,           /* Steam Deck and Steam Controller: L1 R1 L2 R2, L4 L5 R4 R5 */
+    UI_DEV_GENERIC,         /* any other: A B X Y, LB RB LT RT, Back, Start */
+    UI_DEVS
+};
+/* a style by its name (keys, xbox, xbox360, ps5 or ps, ps4, ps3, switch,
+ * gamecube, steam, generic), or -1: for tests */
+int ui_device_named(const char *name);
 /* follows the last key or button pressed (call it with every event) */
 void ui_note_event(const SDL_Event *e);
 int ui_device(void);

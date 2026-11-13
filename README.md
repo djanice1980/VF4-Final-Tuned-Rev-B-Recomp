@@ -34,6 +34,12 @@ button, or View + Menu held for a second. The keys and buttons at its foot
 are the ones you last used, here a DualSense's. Settings that apply at the
 next start keep a dot until then.
 
+Each kind of gamepad has its own names for the buttons: Xbox One and
+Series, Xbox 360, DualSense, DualShock 4 and 3, Switch, GameCube, the
+Steam Deck and Steam Controller, and any other pad.
+
+<img src="docs/images/glyphs.png" alt="Every gamepad input as each kind of pad names it: Xbox, Xbox 360, PS5, PS4, PS3, Switch, GameCube, Steam and generic">
+
 <img src="docs/images/menu-picture.png" alt="The game's menu, Picture tab: the renderer changed to Software, marked to apply at the next start, with DualSense button glyphs">
 
 | Game (keyboard) | Controls (DualSense) |
@@ -318,7 +324,7 @@ puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 | Coin | 5 (slot 1), 6 (slot 2) | View |
 | Test / Service (the operator's) | F2 / F3 | A / X on the operator bar (the menu's Operator test menu) |
 | Fullscreen | F11 or Alt+Enter | |
-| The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox or PS button), or hold View + Menu for a second |
+| The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox, PS, Home or Steam button), or hold View + Menu for a second |
 
 **The game's menu** pauses the game until it closes, over a blurred copy of
 the picture. Its tabs are Game, Picture, Sound and Controls: Q and E (or
