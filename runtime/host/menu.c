@@ -7,15 +7,16 @@
 #include "ui.h"
 #include "updates.h"
 
-enum { TAB_GAME, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
-static const char *const tab_names[TABS] = { "Game", "Picture", "Sound", "Controls" };
+enum { TAB_GAME, TAB_CARDS, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
+static const char *const tab_names[TABS] = { "Game", "Cards", "Picture", "Sound", "Controls" };
 
 /* a row: an option (options.h), one of these actions, or a control */
 enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_CONTROL };
 
 #define ROWS 11
 static const int tab_rows[TABS][ROWS] = {
-    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_CARDS, OPT_NETWORK, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, -1 },
+    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_NETWORK, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, -1 },
+    [TAB_CARDS] = { OPT_CARD1, OPT_CARD2, OPT_CARDS, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
@@ -101,6 +102,8 @@ static int change(int d)
     if (id == OPT_VOLUME && !run.sound)
         return MENU_STAY;
     if (id == OPT_SCALE && s->renderer != RENDERER_GPU)
+        return MENU_STAY;
+    if ((id == OPT_CARD1 || id == OPT_CARD2) && !s->cards)
         return MENU_STAY;
     option_change(s, id, d);
     return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_VOLUME ? MENU_LIVE

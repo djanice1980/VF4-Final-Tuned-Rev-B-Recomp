@@ -133,6 +133,12 @@ On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
 Plain Wine is not supported for playing: the game runs through Proton.
 Under plain Wine, Play first says what to expect and offers Add to Steam.
 
+Cards: Settings, Cards tab. Each player can have a card, as on a cabinet:
+it keeps the character, rank, record, items and colors. New makes a ready
+card with every item and opens the card editor (ring name, character,
+rank, costume colors and worn items); Player 1 and Player 2 give the
+chosen card to a player. The game's menu swaps cards between games.
+
 Updates: the launcher checks for a newer release when it starts and
 offers Update now. Your saves and settings stay.
 
@@ -153,6 +159,12 @@ vf4tuned/gds-0036f.chd.
 4. Build: the game goes into game/ beside the launcher, or elsewhere with
    Change.... Press Build.
 5. Play.
+
+Cards: Settings, Cards tab. Each player can have a card, as on a cabinet:
+it keeps the character, rank, record, items and colors. New makes a ready
+card with every item and opens the card editor (ring name, character,
+rank, costume colors and worn items); Player 1 and Player 2 give the
+chosen card to a player. The game's menu swaps cards between games.
 
 More: builder/README.md. The launcher's fonts are Noto Sans and Noto Sans
 Mono, under the SIL Open Font License 1.1: builder/runtime/ui/OFL.txt.

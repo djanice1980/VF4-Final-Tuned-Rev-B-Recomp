@@ -15,7 +15,8 @@ find_package(SDL3 3.4 REQUIRED CONFIG COMPONENTS SDL3-shared)
 # Steam. It holds no game code, so it builds without the translation.
 # The drawing kit it shares with the game's menu (runtime/ui).
 set(VF4FT_UI runtime/ui/ui.c runtime/ui/fonts.c runtime/ui/options.c runtime/ui/kofi_badge.c)
-add_executable(vf4ft-launcher runtime/launcher/launcher.c runtime/host/settings.c ${VF4FT_UI})
+add_executable(vf4ft-launcher runtime/launcher/launcher.c runtime/host/settings.c runtime/host/cards.c
+               ${VF4FT_UI})
 target_include_directories(vf4ft-launcher PRIVATE runtime/host runtime/ui)
 target_link_libraries(vf4ft-launcher PRIVATE SDL3::SDL3)
 target_compile_options(vf4ft-launcher PRIVATE -Wall -Wextra)
@@ -105,7 +106,7 @@ if(TARGET vf4ft_gen_main AND TARGET vf4ft_gen_test)
     # files.
     add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c runtime/host/dimm_image.c
                          runtime/host/settings.c runtime/host/gpu_render.c runtime/host/menu.c runtime/host/updates.c
-                         runtime/host/art.c ${VF4FT_UI})
+                         runtime/host/art.c runtime/host/cards.c ${VF4FT_UI})
     target_include_directories(vf4ft PRIVATE runtime/host runtime/ui)
     target_link_libraries(vf4ft PRIVATE SDL3::SDL3 vf4ft_machine)
     target_compile_options(vf4ft PRIVATE -Wall -Wextra ${VF4FT_FP_FLAGS})

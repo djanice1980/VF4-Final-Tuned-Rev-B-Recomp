@@ -78,6 +78,7 @@ int hw_card_command(char **tok, int n, char *msg, size_t msg_len);
 void hw_card_stats(FILE *f);
 int hw_card_put(int unit, const u8 *card);     /* recomp (M6): a card goes in (NULL: never used); 0 or -1 */
 int hw_card_get(int unit, u8 *card);           /* recomp (M6): the card in the unit, 128 bytes; 0 or -1 */
+int hw_card_take(int unit);                     /* recomp (profiles): the card out; 1 while the lock holds it */
 
 /* the cartridge port and the DIMM image behind it (hw_cart.c) */
 int hw_cart_init(const char *dimm_image_path);

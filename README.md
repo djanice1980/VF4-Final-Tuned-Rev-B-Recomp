@@ -90,6 +90,11 @@ the Linux launcher's pages; the Windows release is the same program.
 | <img src="docs/images/launcher-play.png" alt="The launcher's Play page: Play, Settings, Add to Steam, Build again, Game files"> | <img src="docs/images/launcher-settings-gamepad.png" alt="The launcher's Settings, Gamepad tab, with PlayStation button glyphs"> |
 | Play, add the game to Steam, or build it again. | The game's settings and controls in tabs. The defaults are the PlayStation 2 version's layout. |
 
+| Cards | Card editor |
+|---|---|
+| <img src="docs/images/launcher-cards.png" alt="The launcher's Settings, Cards tab: three cards, Kage given to player 1 and Lau to player 2, with Kage's character, rank, ring name, record, games left and items"> | <img src="docs/images/launcher-card-editor.png" alt="The card editor's Costume 1 tab: four color parts, hair and eye color, and the item slots"> |
+| Each player's card, as on a cabinet. New makes a ready card with every item. | Ring name, character, rank, and each costume's colors and worn items. |
+
 **The game's menu**, over the paused game: Insert or Esc, a gamepad's Guide
 button, or View + Menu held for a second. The keys and buttons at its foot
 are the ones you last used, here a DualSense's. Settings that apply at the
@@ -440,7 +445,7 @@ s30](docs/design.md#30-steam-inputs-twin-pads-2026-11-13)). The buttons
 shown are the real pad's (a DualSense's shapes, not Xbox letters).
 
 **The game's menu** pauses the game until it closes, over a blurred copy of
-the picture. Its tabs are Game, Picture, Sound and Controls: Q and E (or
+the picture. Its tabs are Game, Cards, Picture, Sound and Controls: Q and E (or
 LB and RB) switch them. Up and Down choose, Left and Right change, A or
 Enter selects, B or Esc goes back (A and B by their labels, so on a Switch
 pad A is the right button). The mouse works too: the row under it is
@@ -462,6 +467,27 @@ the game turns the cabinet off and on (records, settings and cards are
 kept); it and Quit ask for a second A. Changes are saved to
 `settings.txt` when the menu closes. The Controls tab shows the controls;
 they are changed in the launcher's Settings, not here.
+
+**Cards** keep a player's character, rank, record, items and colors, as a
+cabinet's card did; the game picks the card's character at the select
+screen. The launcher's Settings has a **Cards** tab: the cards in
+`user/cards`, with each one's character, rank, record and games left.
+Player 1 and Player 2 give the chosen card to a player (pressed again:
+no card), Edit opens the card editor, New makes a ready card (Akira,
+10th kyu, the ring name PLAYER, every item, 500 games) and opens it in
+the editor, and Copy, Rename and Delete do what they say (Delete asks
+first and moves the file to `cards/Deleted`). The **card editor** has a
+Card tab (ring name, character, rank from 10th kyu to 10th dan, games
+left, items owned) and a tab for each of the character's two costumes
+(four color parts with 19 colors each, hair and eye color, and the four
+item slots by item number, 1 to 199). Save writes the card as the game's
+own changes do, with its checks; Backspace or Y undoes the changes. A
+card never used (the game's new card) becomes a ready card when it is
+edited. The game's menu has a Cards tab too: each player's card, chosen
+from the same list, swapped in between games (a card the game is using
+leaves once the game has written it). On a cabinet the ring name was set
+on VF.NET and ranks above 10th dan came from it; here the editor sets the
+name, and a card goes as far as 10th dan.
 
 **Test mode,** the operator's: Test (F2) opens the game's test menu (its
 own test program, `test.bin`, as the cabinet's BIOS starts it). Service
@@ -495,8 +521,11 @@ with only a gamepad, the menu's Operator test menu does the same.
 - `backup.bin`: the cabinet's battery-backed RAM and settings EEPROM,
   everything the board keeps with the power off, written every 10 seconds
   when it has changed and when the game ends.
-- `cards/p1.card` and `p2.card`: the two card units' cards, made the first
-  time a player saves to a card.
+- `cards/`: the card profiles, one file each (`NAME.card`, 128 bytes, the
+  card as the cabinet's card unit holds it). `card1` and `card2` in
+  `settings.txt` say which is each player's (`p1` and `p2` by default,
+  made the first time a player saves to a card). Cards the launcher
+  deletes go to `cards/Deleted/`.
 
 **The GPU renderer** (`renderer = gpu`, the default) needs Vulkan: it is
 used natively, and under Proton through Proton's own Vulkan. Without

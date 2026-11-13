@@ -79,10 +79,12 @@
 #include <string.h>
 
 #include "art.h"
+#include "cards.h"
 #include "game_machine.h"
 #include "settings.h"
 #include "gpu_render.h"
 #include "menu.h"
+#include "options.h"
 #include "ui.h"
 #include "updates.h"
 
@@ -263,14 +265,20 @@ static void backup_save(void)
     }
 }
 
-/* the players' cards: user/cards/p1.card and p2.card, 128 bytes each. A
- * player without one gets a card never used, which is written to the file
- * once the game has made it theirs. */
+/* the players' cards: card profiles, user/cards/NAME.card, 128 bytes each
+ * (cards.h; settings card1 and card2 say whose card is in each unit). A
+ * profile without a file yet gets a card never used, which is written under
+ * its name once the game has made it the player's. The menu's Cards tab
+ * swaps them between games (cards_swap). */
 static int card_ok[2];                  /* 1: the file is ours to write */
+static char card_in[2][CARD_NAME_MAX];  /* machine thread: the profile in each unit ("" none) */
+static char card_want[2][CARD_NAME_MAX];        /* the menu's choice (under shared.lock) */
+static SDL_AtomicInt card_swap[2];      /* 1: card_want is to go in */
+static char card_chosen[2][CARD_NAME_MAX];      /* main thread: what was last asked for */
 
 static void card_path(char *buf, size_t n, int side)
 {
-    SDL_snprintf(buf, n, "%scards/p%d.card", user_dir, side + 1);
+    cards_path(buf, n, user_dir, card_in[side]);
 }
 
 static void cards_save(void)
@@ -289,6 +297,35 @@ static void cards_save(void)
     }
 }
 
+/* card_in[side]'s card into player side's unit (it is empty) */
+static void card_insert(int side)
+{
+    char path[4300];
+    size_t n = 0;
+    unsigned char *c = NULL;
+    card_ok[side] = 0;
+    if (!card_in[side][0]) {
+        logf_("player %d: no card (the unit stays empty)", side + 1);
+        return;
+    }
+    card_path(path, sizeof path, side);
+    if (SDL_GetPathInfo(path, NULL)) {
+        c = SDL_LoadFile(path, &n);
+        if (!c || n != GAME_CARD_SIZE) {
+            logf_("%s is not a card (%d bytes): it is left alone, and player %d's unit stays empty", path,
+                  GAME_CARD_SIZE, side + 1);
+            SDL_free(c);
+            return;
+        }
+    }
+    if (!game_machine_card_put(side, c)) {
+        card_ok[side] = 1;
+        logf_("player %d: %s (%s)", side + 1, card_in[side],
+              c ? path : "a card never used, kept under that name once the game has written it");
+    }
+    SDL_free(c);
+}
+
 static void cards_load(void)
 {
     if (!cfg_.cards)
@@ -298,26 +335,57 @@ static void cards_load(void)
     if (!SDL_GetPathInfo(dir, NULL) && !SDL_CreateDirectory(dir))
         logf_("cannot make %s: %s", dir, SDL_GetError());
     for (int side = 0; side < 2; side++) {
-        char path[4300];
-        size_t n = 0;
-        unsigned char *c = NULL;
-        card_path(path, sizeof path, side);
-        card_ok[side] = 1;
-        if (SDL_GetPathInfo(path, NULL)) {
-            c = SDL_LoadFile(path, &n);
-            if (!c || n != GAME_CARD_SIZE) {
-                logf_("%s is not a card (%d bytes): it is left alone, and player %d's unit stays empty", path,
-                      GAME_CARD_SIZE, side + 1);
-                SDL_free(c);
-                card_ok[side] = 0;
-                continue;
-            }
+        SDL_strlcpy(card_in[side], cfg_.card[side], sizeof card_in[side]);
+        if (side == 1 && card_in[1][0] && !SDL_strcasecmp(card_in[0], card_in[1])) {
+            logf_("player 2's card is player 1's (%s): one card can be in only one unit, so player 2 has none",
+                  card_in[1]);
+            card_in[1][0] = 0;
         }
-        if (game_machine_card_put(side, c))
-            card_ok[side] = 0;
-        else
-            logf_("player %d: %s", side + 1, c ? path : "a new card (kept once the game has written it)");
-        SDL_free(c);
+        card_insert(side);
+    }
+}
+
+/* on the machine's thread, every vertical blank: the menu's new cards go
+ * in. The card in the unit is written to its file first, and a card the
+ * game is using stays (and is kept written) until the game lets go of it */
+static void cards_swap(void)
+{
+    static int waiting[2];
+    for (int side = 0; side < 2; side++) {
+        if (!SDL_GetAtomicInt(&card_swap[side]))
+            continue;
+        cards_save();
+        if (game_machine_card_take(side)) {
+            if (!waiting[side]++)
+                logf_("player %d: the card (%s) leaves once the game has written it", side + 1, card_in[side]);
+            continue;
+        }
+        if (waiting[side])
+            logf_("player %d: the game let go of the card (%s) after %d vertical blanks", side + 1, card_in[side],
+                  waiting[side]);
+        waiting[side] = 0;
+        SDL_LockMutex(shared.lock);
+        SDL_strlcpy(card_in[side], card_want[side], sizeof card_in[side]);
+        SDL_SetAtomicInt(&card_swap[side], 0);
+        SDL_UnlockMutex(shared.lock);
+        card_insert(side);
+    }
+}
+
+/* on the main thread, as the menu closes: the units' cards as chosen */
+static void cards_choose(void)
+{
+    if (!start_cfg.cards)
+        return;             /* no units this run: the choice is for the next start */
+    for (int side = 0; side < 2; side++) {
+        if (!strcmp(card_chosen[side], cfg_.card[side]))
+            continue;
+        SDL_strlcpy(card_chosen[side], cfg_.card[side], sizeof card_chosen[side]);
+        logf_("menu: player %d's card: %s", side + 1, card_chosen[side][0] ? card_chosen[side] : "none");
+        SDL_LockMutex(shared.lock);
+        SDL_strlcpy(card_want[side], card_chosen[side], sizeof card_want[side]);
+        SDL_SetAtomicInt(&card_swap[side], 1);
+        SDL_UnlockMutex(shared.lock);
     }
 }
 
@@ -471,6 +539,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
             SDL_Delay(5);
         due = 0;
     }
+    cards_swap();
     int restart = SDL_GetAtomicInt(&restart_req);
     if (restart) {
         SDL_SetAtomicInt(&restart_req, 0);
@@ -819,6 +888,13 @@ static int fullscreen_wanted(void)
 /* the menu, or (notice) the first start's Ko-fi notice in its place */
 static void menu_show_as(int notice)
 {
+    /* the card profiles there now, for Player 1 card and Player 2 card */
+    static char names[CARDS_MAX][CARD_NAME_MAX];
+    static const char *list[CARDS_MAX];
+    int n = cards_list(user_dir, names, CARDS_MAX);
+    for (int i = 0; i < n; i++)
+        list[i] = names[i];
+    options_card_names(list, n);
     menu_run r;
     r.start = start_cfg;
     r.sound = audio != NULL;
@@ -917,6 +993,7 @@ static void menu_hide(void)
         else
             logf_("menu: settings saved to %s", settings_path);
     }
+    cards_choose();
     /* what is held now (the button or key that closed it) waits to be let go */
     pad_hold = pads_raw;
     int nk = 0;
@@ -1436,6 +1513,7 @@ int main(int argc, char **argv)
         SDL_snprintf(backup_path, sizeof backup_path, "%sbackup.bin", user_dir);
         start_cfg = cfg_;
         live_fullscreen = cfg_.fullscreen;
+        SDL_memcpy(card_chosen, cfg_.card, sizeof card_chosen);
     }
     }
     if (!cfg_.sound)

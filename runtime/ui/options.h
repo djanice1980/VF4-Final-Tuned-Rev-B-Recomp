@@ -11,7 +11,7 @@
 
 enum {
     OPT_CREDITS, OPT_CARDS, OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, OPT_SOUND,
-    OPT_VOLUME, OPT_NETWORK, OPT_COUNT
+    OPT_VOLUME, OPT_NETWORK, OPT_CARD1, OPT_CARD2, OPT_COUNT
 };
 
 typedef struct option_info {
@@ -27,5 +27,9 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n);
 
 /* Left (d -1) or Right (+1) on option o */
 void option_change(settings *s, int o, int d);
+
+/* the card profiles Player 1 card and Player 2 card go through (None, then
+ * these, less the other player's); the names stay the caller's */
+void options_card_names(const char *const *names, int n);
 
 #endif

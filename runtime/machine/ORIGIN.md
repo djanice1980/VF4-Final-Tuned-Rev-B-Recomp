@@ -63,6 +63,10 @@ What the recomp changed:
   from bytes and the card in a unit out as bytes, for the game window's
   card files (`runtime/host/game_machine.c`). The same as the controller's
   `card pN insert` and `card pN save`, without files.
+- `hw.h`, `hw_card.c` (card profiles): `hw_card_take`, the player takes the
+  card out, as the controller's `card pN eject` (a unit whose lock is on
+  holds the card until the game opens it), for the game menu's Player 1
+  card and Player 2 card.
 - `view.h`, `view.c` (M6): the GPU path, `view_host_gpu`. A pass to the
   screen is handed to the host after transform, lighting and the
   translucent sort (`gpu_export`: the triangles in raster()'s order with

@@ -2220,3 +2220,135 @@ where it had to be closed; sound off and SDL's dummy audio):
 
 Not tried: a real Steam showing the pictures (David's to see: Add to Steam
 with Steam closed, then start Steam), Windows itself, and the Deck.
+
+## 37. Card profiles, the launcher's Cards tab and the card editor (2026-11-13)
+
+David's request: a "character profile" per player, as the cabinet's card
+was; a default profile to start from, new ones made from it, and each
+assigned to a player. His choices: the editor in the launcher first, a
+ready card with every item as the default, and assigning from both the
+launcher and the game's menu.
+
+**A card** is a 128-byte file in `user/cards/NAME.card` (`runtime/host/
+cards.h`): the card unit's 32 words, words 0 to 4 the card's own (word 1
+its number), then the 108 bytes the game packs its record into (vf4lib's
+libcard, `card_pack` and `card_unpack` in the decompilation). Final
+Tuned's record is its format 4: CRC-16 (polynomial 0x8005, from 0, high
+bit first) over the header (bytes 2 to 23, stored little-endian at 0 and
+1), over the body (26 to 83, at 24 and 25), and the header again as bytes
+84 to 107. `card1` and `card2` in `settings.txt` name each player's card
+(`p1` and `p2` by default, or `none`); a name is 1 to 31 characters,
+without `/ \ : * ? " < > | #`, a space or dot at either end, or a Windows
+device name.
+
+**A card is one character's:** with a registered card in (flags 0x11),
+the select screen puts the cursor on the card's character and the player
+cannot move it (`select.c`). So a profile is a character: the editor's
+Character row is what David's "character profile" is.
+
+**The game's menu** has a Cards tab (Player 1 card, Player 2 card, and the
+card units' switch, moved from the Game tab). Left and Right go through
+None and the profiles in `user/cards` (not the other player's). As the
+menu closes, a changed card is swapped in on the machine's thread: the
+card in the unit is written to its file, then taken out (`hw_card_take`,
+a `recomp` addition to VF4debug's card unit model). A card the game holds
+(its lock, while a game uses it) leaves once the game lets it go, as the
+cabinet's unit ejects a card when it is unlocked; the new one goes in
+then.
+
+**The launcher's Cards tab** (Settings): the list of cards, a player's
+card with no file yet among them ("not made yet": the game makes it at
+the first game), and the chosen card's character, rank, ring name,
+record, games left and items. Its bar:
+- **Player 1, Player 2:** the card becomes that player's (lit when it is);
+  pressed on the player's own card, the player has none. Giving a player
+  the other player's card swaps the two. Saved with the settings (Done).
+- **Edit:** the card editor, for a format 4 card whose checks hold. A card
+  never used, or one not made yet, opens as a ready card (below) and is
+  written as one on Save; a card never used keeps its number.
+- **New:** a ready card named Card (Card 2, ...), then its editor.
+- **Copy:** the card under "NAME copy", with a new card number.
+- **Rename:** a note with a text field (31 bytes of UTF-8 at most, the
+  name rules above); the file is renamed and the settings follow it.
+- **Delete:** a note that asks first (Cancel is chosen); the file moves to
+  `user/cards/Deleted/NAME YYYY-MM-DD HHMMSS.card`, and a player whose card
+  it was has none.
+
+Up and Down choose the card, Left and Right the button, A or Enter
+presses it; Delete or X is Delete, Q and E the tabs, B or Esc Done. The
+mouse chooses a card by its row (only chooses: the bar acts).
+
+**The ready card** (`card_starter`): words 0 to 4 as a new card's, a card
+number 0x2005xxxx (random; the unit model's own cards are 0x2004xxxx),
+flags 0x33 (a card made at a cabinet: the game adds 0x80 at its first
+game), Akira, 10th kyu, every item (`item_have` all 64 bits), 500 games
+(`use_count`), `ftf` 0x02 (format 4), a random 15-bit `play_id`, the ring
+name PLAYER, the rest 0, then the CRCs.
+
+**The card editor** (its own page, `P_EDIT`; tabs Card, Costume 1,
+Costume 2). It reads and writes the record's fields as `card_unpack` and
+`card_pack` place them (`card_fields_get`, `card_fields_put`):
+
+| Row | Where | Values |
+|---|---|---|
+| Ring name | bytes 44 to 63 | ASCII 0x20 to 0x7E, up to 20 (the card's own is EUC-JP: a name outside ASCII shows as "?" and is kept unless typed anew) |
+| Character | byte 3, low four bits | the 16 but Dural (13, which the game refuses on a card) |
+| Rank | byte 4 | 0 to 19: 10th kyu to 10th dan; a VF.NET title rank above is shown and only left downward. A new rank zeroes exp and point (28, 29) |
+| Games left | byte 17, byte 18 bit 0 | 1, 10, 50, 100 to 500 by 100 (Left and Right go to the next of these) |
+| Items owned | bytes 9 to 16 | all, none, or the card's own |
+| Color, parts 1 to 4 | per costume: four bits each in bytes 30 and 31 (32, 33); the fifth in byte 42 bits 4 to 7 (costume 2: byte 77 bits 5 to 7 and byte 78 bit 2) | 0 its own, 1 to 19 |
+| Hair color, Eye color | byte 64: costume 1 the high four bits, costume 2 the low, each hair << 2 \| eyes | hair 0 to 2, eyes 0 to 3 |
+| Item slots 1 to 4 | bytes 34 to 37 (38 to 41) | 0 empty, 1 to 199 |
+
+Changed colors or item slots clear the costume's `color_flag` or
+`equip_flag` (byte 77 bits 0 to 3), as the game's own `costume_colors_set`
+and `item_equip` do; VF.NET's mode sets them. Nothing checks a slot's item
+against the items owned or the character: the renderer (`rob_item.c`)
+skips a number past the character's list or one with nothing for that
+costume, and the slot locks (byte 42's low bits, cursed items) are left
+as they are. Save writes the card only when something changed (or it is
+a new ready card); Cancel leaves it; Backspace or Y undoes all changes.
+
+The notes that take a name (Rename, Ring name) open with the old name
+chosen (shaded): the first key typed replaces it, the first Backspace
+clears it. Enter is OK, Esc Cancel; on a gamepad X is Backspace, and on a
+Steam Deck Steam + X shows the keyboard (the note says so).
+
+`--shot-keys LIST` (the launcher's `--shot`, for tests): SDL key names,
+`text:WORDS` typed (`_` a space) and `click:X,Y` in the page's units, one
+after another before the picture. The pages `--shot cards` and, with
+keys, the notes and the editor.
+
+**Checked** (sound off and SDL's dummy audio; the game in a headless
+KWin; the launcher offscreen, and the Windows launcher under plain Wine in
+a headless KWin with its own Xwayland; test folders only):
+- The launcher, driven by `--shot-keys`: New (a ready card written, its
+  editor opened), the editor's every row, Save (only what changed is
+  written; the CRCs and the header copy hold, by an independent Python
+  reader), Cancel, Copy (a new number), Rename (the file and the settings
+  follow), Delete (asks; the file in `Deleted/`; a not-made card only
+  unassigned), Player 1 and Player 2 (assign, unassign, swap), Done
+  saving `card1` and `card2`, a click on a row and on the bar. The pages
+  at 1:1: the tab with cards, a non-card file (red, Edit and Copy off),
+  a not-made card, the notes and both editor tabs.
+- The Windows launcher under Wine: New, the ring name, Save, Rename and
+  Delete with Windows paths. (Its pictures there come back black through
+  Wine's Direct3D read-back; with SDL's software renderer they match the
+  Linux build's.)
+- The game with launcher-made cards as player 1's, a game started from
+  the attract screen: the ready card (Akira, PLAYER, 10th kyu, 499 games
+  after it) and an edited one (Kage-Maru picked by the card at the select
+  screen, its typed ring name, 9th kyu, 399 games); the game wrote both back with its
+  own changes (flags 0x80, exp, play_id) and kept the name, items, colors
+  and worn item. The same run with that card's costume fields cleared:
+  the select screens identical; in the fight Kage's hood is blue instead
+  of green, and the worn item's strap is gone.
+- The menu's swap (earlier in this section's work): a card swapped while
+  no game holds it goes in at once; one held by a game (`--unpaced`, a
+  game started) leaves once the game lets it go, 4,714 vertical blanks
+  later, written with the game's changes.
+
+Not tried: Windows itself, Proton and the Deck (its keyboard in the
+notes), a cabinet card from VF.NET with a Japanese ring name, and which
+item numbers each character has (the editor goes by number; David's
+earlier choice).

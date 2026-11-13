@@ -24,6 +24,29 @@ static void set(binding *b, const char *a, const char *c)
         settings_binding_add(b, c);
 }
 
+int settings_card_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    if (n == 0 || n >= CARD_NAME_MAX || !SDL_strcasecmp(name, "none"))
+        return 0;
+    if (name[0] == ' ' || name[0] == '.' || name[n - 1] == ' ' || name[n - 1] == '.')
+        return 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20 || c == 0x7f || strchr("/\\:*?\"<>|#", c))
+            return 0;
+    }
+    /* Windows' device names, which no file can have */
+    static const char *const dev[] = { "con", "prn", "aux", "nul" };
+    for (size_t i = 0; i < SDL_arraysize(dev); i++)
+        if (!SDL_strcasecmp(name, dev[i]))
+            return 0;
+    if (n == 4 && (!SDL_strncasecmp(name, "com", 3) || !SDL_strncasecmp(name, "lpt", 3)) && name[3] >= '0' &&
+        name[3] <= '9')
+        return 0;
+    return 1;
+}
+
 void settings_defaults(settings *s)
 {
     memset(s, 0, sizeof *s);
@@ -36,6 +59,8 @@ void settings_defaults(settings *s)
     s->sound = 1;
     s->volume = 100;
     s->cards = 1;
+    SDL_strlcpy(s->card[0], "p1", sizeof s->card[0]);      /* the cards' files before profiles */
+    SDL_strlcpy(s->card[1], "p2", sizeof s->card[1]);
     s->network = 0;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
@@ -212,6 +237,12 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "cards")) {
                 if ((ok = choice(v, onoff_names, 2, &x)))
                     s->cards = x;
+            } else if (!strcmp(name, "card1") || !strcmp(name, "card2")) {
+                int side = name[4] - '1';
+                if (!SDL_strcasecmp(v, "none"))
+                    ok = 1, s->card[side][0] = 0;
+                else if ((ok = settings_card_name_ok(v)))
+                    SDL_strlcpy(s->card[side], v, sizeof s->card[side]);
             } else if (!strcmp(name, "network")) {
                 if ((ok = choice(v, onoff_names, 2, &x)))
                     s->network = x;
@@ -264,8 +295,10 @@ int settings_save(const settings *s, const char *path)
     PUT("scale = %d               # the GPU renderer's resolution: 1 to 4 times 640 x 480\n", s->scale);
     PUT("sound = %s\n", onoff_names[s->sound]);
     PUT("volume = %d             # 0 to 100 (%%); the game's menu changes it too\n", s->volume);
-    PUT("cards = %s            # the two card units; the cards are user/cards/p1.card and p2.card\n",
-        onoff_names[s->cards]);
+    PUT("cards = %s            # the two card units\n", onoff_names[s->cards]);
+    PUT("card1 = %s            # player 1's card: a profile in user/cards (NAME.card), or none\n",
+        s->card[0][0] ? s->card[0] : "none");
+    PUT("card2 = %s            # player 2's\n", s->card[1][0] ? s->card[1] : "none");
     PUT("network = %s          # the game's own NETWORK setting (test menu, Game Assignments); off skips\n"
         "                       # its network check as it starts\n", onoff_names[s->network]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"

@@ -49,6 +49,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cards.h"
 #include "options.h"
 #include "settings.h"
 #include "ui.h"
@@ -586,6 +587,7 @@ static int stage_n, stage_of, stage_pct = -1;
 static char stage_text[96];
 static double shot_elapsed = -1;    /* --shot work: the time shown */
 static int shot_working;            /* --shot work: drawn as during a build (Cancel can be pressed) */
+static int shot_mode;               /* a --shot picture: the text field's caret shows */
 static int cancelled;
 static char error_line[300];
 /* the Play page's line: what the last action came to */
@@ -593,12 +595,13 @@ enum { ST_NONE, ST_WORKING, ST_GOOD, ST_BAD };
 static int status_kind;
 static char status_text[300];
 
-enum { P_FILES, P_BUILD, P_WORK, P_FAIL, P_PLAY, P_SETTINGS };
+enum { P_FILES, P_BUILD, P_WORK, P_FAIL, P_PLAY, P_SETTINGS, P_EDIT };
 static int page;
 static void go(int p);
+static void press(int b);
 
 /* a note over the Play page (Add to Steam's, and Play's under plain Wine): only its buttons answer */
-enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE };
+enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE, POP_RENAME, POP_DELETE, POP_RINGNAME };
 static int pop;
 static int steam_proton;            /* the tool set Proton for the entry */
 static void pop_open(int kind);
@@ -1379,7 +1382,8 @@ static int found_offered(void)
 enum {
     B_CHOOSE, B_CONTINUE, B_BACK, B_TARGET, B_BUILD, B_CANCEL, B_RETRY, B_PLAY, B_SETTINGS, B_STEAM,
     B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_USE_FOUND, B_GAME_DIR,
-    B_DIRECT, B_POP_OK, B_POP_RETRY, B_POP_PLAY, B_POP_STEAM, B_COUNT
+    B_DIRECT, B_POP_OK, B_POP_RETRY, B_POP_PLAY, B_POP_STEAM, B_POP_YES,
+    B_CP_P1, B_CP_P2, B_CP_EDIT, B_CP_NEW, B_CP_COPY, B_CP_RENAME, B_CP_DELETE, B_ED_SAVE, B_ED_CANCEL, B_COUNT
 };
 static int focus = -1;
 #define HITS 24
@@ -1411,6 +1415,7 @@ static int direct_ok(void)
 }
 
 static int update_ready(void);
+static int cp_enabled(int b);
 
 /* the Play page shows the switch; not beside an update's or a new
  * builder's card, which the launcher is needed for anyway */
@@ -1439,6 +1444,10 @@ static int enabled(int b)
     case B_CHECK: return upd == U_IDLE || upd == U_NONE || upd == U_CHECK_FAILED;
     case B_USE_FOUND: return found_offered() && !proc;
     case B_DIRECT: return built && !proc;
+    case B_CP_P1: case B_CP_P2: case B_CP_EDIT: case B_CP_NEW: case B_CP_COPY: case B_CP_RENAME:
+    case B_CP_DELETE: case B_POP_YES:
+        return cp_enabled(b);
+    case B_ED_SAVE: case B_ED_CANCEL: return 1;
 #ifdef _WIN32
     case B_TARGET: return 0;
 #endif
@@ -1457,6 +1466,8 @@ static int page_buttons(int *ids)
         }
         if (pop == POP_CLOSE_STEAM)
             ids[n++] = B_POP_RETRY;
+        if (pop == POP_RENAME || pop == POP_DELETE || pop == POP_RINGNAME)
+            ids[n++] = B_POP_YES;
         ids[n++] = B_POP_OK;
         return n;
     }
@@ -1495,6 +1506,7 @@ static int page_buttons(int *ids)
             ids[n++] = B_CHECK;
         break;
     case P_SETTINGS: ids[n++] = B_DONE; break;
+    case P_EDIT: ids[n++] = B_ED_CANCEL; ids[n++] = B_ED_SAVE; break;
     }
     return n;
 }
@@ -1513,18 +1525,680 @@ static int default_focus(void)
 
 /* ---- the settings page ---- */
 
-enum { T_GAME, T_PICTURE, T_SOUND, T_PAD, T_KEY1, T_KEY2, T_COUNT };
-static const char *const tab_names[T_COUNT] = { "Game", "Picture", "Sound", "Gamepad", "Keyboard 1", "Keyboard 2" };
-static const int tab_rows[3][6] = {
-    { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, -1 },
-    { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
-    { OPT_SOUND, OPT_VOLUME, -1 },
+enum { T_GAME, T_CARDS, T_PICTURE, T_SOUND, T_PAD, T_KEY1, T_KEY2, T_COUNT };
+static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard 1",
+                                                 "Keyboard 2" };
+/* the option tabs' rows (the Cards tab lists the card profiles, the
+ * controls tabs the actions) */
+static const int tab_rows[T_COUNT][6] = {
+    [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, -1 },
+    [T_CARDS] = { -1 },
+    [T_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
+    [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
+    [T_PAD] = { -1 }, [T_KEY1] = { -1 }, [T_KEY2] = { -1 },
 };
 static settings st;
 static char settings_path[1100];
 static int st_tab, st_row, st_top;
 static int capturing;               /* a controls row waits for its key or button */
 static int settings_from = P_PLAY;
+
+/* ---- the Cards tab: the card profiles (cards.h; docs/design.md section 37) ----
+ * Each profile is a card in the game's user/cards folder. The list has every
+ * card there, and a player's card the game has not made yet; the bar under
+ * it gives the chosen one to player 1 or 2 (saved with the settings), makes a
+ * new card, copies, renames or deletes one (a deleted card goes to
+ * user/cards/Deleted, from where it can be moved back). */
+#define CP_MAX (CARDS_MAX + 2)
+static char cp_names[CP_MAX][CARD_NAME_MAX];
+static int cp_n;
+static int cp_has[CP_MAX];          /* 1: its file is there */
+static card_view cp_view[CP_MAX];
+static int cp_bad[CP_MAX];          /* the file is not a card */
+static char cp_text[CARD_NAME_MAX]; /* the name being typed (Rename) */
+static char cp_error[200];          /* why it cannot be that name */
+static int cp_fresh;                /* the name as it was, chosen: the first key typed replaces it */
+
+static int cards_tab(void)
+{
+    return st_tab == T_CARDS;
+}
+
+static void cp_file(char *out, size_t n, const char *name)
+{
+    char u[1100];
+    snprintf(u, sizeof u, "%s" DIR_SEP "user" DIR_SEP, game);
+    cards_path(out, n, u, name);
+}
+
+/* the player whose card the row is: 0, 1, or -1 */
+static int cp_side(int i)
+{
+    for (int side = 0; side < 2; side++)
+        if (i < cp_n && st.card[side][0] && !SDL_strcasecmp(cp_names[i], st.card[side]))
+            return side;
+    return -1;
+}
+
+static int cp_index(const char *name)
+{
+    for (int i = 0; i < cp_n; i++)
+        if (!SDL_strcasecmp(cp_names[i], name))
+            return i;
+    return -1;
+}
+
+/* the list again; the chosen row on name when it is there */
+static void cp_refresh(const char *name)
+{
+    char u[1100];
+    snprintf(u, sizeof u, "%s" DIR_SEP "user" DIR_SEP, game);
+    static char found[CARDS_MAX][CARD_NAME_MAX];
+    int nf = cards_list(u, found, CARDS_MAX);
+    cp_n = 0;
+    for (int i = 0; i < nf; i++) {
+        SDL_strlcpy(cp_names[cp_n], found[i], CARD_NAME_MAX);
+        cp_has[cp_n++] = 1;
+    }
+    for (int side = 0; side < 2; side++)    /* a player's card the game has not made yet */
+        if (st.card[side][0] && cp_index(st.card[side]) < 0 && cp_n < CP_MAX) {
+            SDL_strlcpy(cp_names[cp_n], st.card[side], CARD_NAME_MAX);
+            cp_has[cp_n++] = 0;
+        }
+    for (int i = 0; i < cp_n; i++) {
+        SDL_zero(cp_view[i]);
+        cp_bad[i] = 0;
+        if (!cp_has[i])
+            continue;
+        char path[1300];
+        size_t len = 0;
+        cp_file(path, sizeof path, cp_names[i]);
+        Uint8 *c = SDL_LoadFile(path, &len);
+        if (c && len == CARD_SIZE)
+            card_view_of(c, &cp_view[i]);
+        else
+            cp_bad[i] = 1;
+        SDL_free(c);
+    }
+    int at = name ? cp_index(name) : -1;
+    if (at >= 0)
+        st_row = at;
+    if (st_row >= cp_n)
+        st_row = cp_n ? cp_n - 1 : 0;
+}
+
+/* name, else name 2, name 3 ... (cut to fit) that no card has */
+static void cp_unique(char *out, const char *name)
+{
+    for (int k = 1; k < 1000; k++) {
+        char tail[16] = "";
+        if (k > 1)
+            snprintf(tail, sizeof tail, " %d", k);
+        size_t room = CARD_NAME_MAX - 1 - strlen(tail);
+        char base[CARD_NAME_MAX];
+        SDL_strlcpy(base, name, room + 1 < sizeof base ? room + 1 : sizeof base);
+        size_t bl = strlen(base);
+        while (bl && (base[bl - 1] == ' ' || base[bl - 1] == '.'))
+            base[--bl] = 0;
+        snprintf(out, CARD_NAME_MAX, "%s%s", base, tail);
+        if (cp_index(out) < 0)
+            return;
+    }
+}
+
+static int cp_write(const char *name, const Uint8 *card)
+{
+    char dir[1200], path[1300];
+    snprintf(dir, sizeof dir, "%s" DIR_SEP "user", game);
+    if (!exists(dir))
+        SDL_CreateDirectory(dir);
+    snprintf(dir, sizeof dir, "%s" DIR_SEP "user" DIR_SEP "cards", game);
+    if (!exists(dir))
+        SDL_CreateDirectory(dir);
+    cp_file(path, sizeof path, name);
+    if (!SDL_SaveFile(path, card, CARD_SIZE)) {
+        say("cards: cannot write %s: %s", path, SDL_GetError());
+        return -1;
+    }
+    say("cards: %s", path);
+    return 0;
+}
+
+/* Player 1 or Player 2: the chosen card becomes that player's; pressed on
+ * the player's own, the player has none. The other player's card swaps */
+static void cp_assign(int side)
+{
+    if (st_row >= cp_n)
+        return;
+    char name[CARD_NAME_MAX], old[CARD_NAME_MAX];
+    SDL_strlcpy(name, cp_names[st_row], sizeof name);
+    SDL_strlcpy(old, st.card[side], sizeof old);
+    if (!SDL_strcasecmp(old, name)) {
+        st.card[side][0] = 0;
+    } else {
+        if (!SDL_strcasecmp(st.card[!side], name))
+            SDL_strlcpy(st.card[!side], old, sizeof st.card[!side]);
+        SDL_strlcpy(st.card[side], name, sizeof st.card[side]);
+    }
+    say("cards: player 1 %s, player 2 %s", st.card[0][0] ? st.card[0] : "none", st.card[1][0] ? st.card[1] : "none");
+    cp_refresh(name);
+}
+
+static void ed_open(void);
+
+/* New: a ready card (card_starter: Akira, every item), then its editor */
+static void cp_new(void)
+{
+    Uint8 c[CARD_SIZE];
+    char name[CARD_NAME_MAX];
+    cp_unique(name, "Card");
+    card_starter(c, card_new_number());
+    if (!cp_write(name, c)) {
+        cp_refresh(name);
+        ed_open();
+    }
+}
+
+/* Copy: the chosen card under a new name, with a card number of its own */
+static void cp_copy(void)
+{
+    char path[1300], name[CARD_NAME_MAX], base[CARD_NAME_MAX + 8];
+    size_t len = 0;
+    cp_file(path, sizeof path, cp_names[st_row]);
+    Uint8 *c = SDL_LoadFile(path, &len);
+    if (c && len == CARD_SIZE) {
+        Uint32 number = card_new_number();
+        c[4] = (Uint8)(number >> 24);
+        c[5] = (Uint8)(number >> 16);
+        c[6] = (Uint8)(number >> 8);
+        c[7] = (Uint8)number;
+        snprintf(base, sizeof base, "%s copy", cp_names[st_row]);
+        cp_unique(name, base);
+        if (!cp_write(name, c))
+            cp_refresh(name);
+    }
+    SDL_free(c);
+}
+
+/* whether cp_text can be the chosen card's new name (cp_error says why not) */
+static int cp_text_ok(void)
+{
+    cp_error[0] = 0;
+    int at = cp_index(cp_text);
+    if (!settings_card_name_ok(cp_text))
+        SDL_strlcpy(cp_error, cp_text[0] ? "A name has up to 31 letters, numbers, spaces and marks, but none of "
+                                           "/ \\ : * ? \" < > | #, and no space or dot at either end."
+                                         : "Type a name.", sizeof cp_error);
+    else if (at >= 0 && at != st_row)
+        SDL_strlcpy(cp_error, "Another card has that name.", sizeof cp_error);
+    return !cp_error[0];
+}
+
+static void cp_rename(void)
+{
+    if (st_row >= cp_n || !cp_text_ok())
+        return;
+    char old[CARD_NAME_MAX], from[1300], to[1300];
+    SDL_strlcpy(old, cp_names[st_row], sizeof old);
+    if (cp_has[st_row]) {
+        cp_file(from, sizeof from, old);
+        cp_file(to, sizeof to, cp_text);
+        if (!SDL_RenamePath(from, to)) {
+            snprintf(cp_error, sizeof cp_error, "It cannot be renamed: %s", SDL_GetError());
+            return;
+        }
+        say("cards: %s is now %s", from, to);
+    }
+    for (int side = 0; side < 2; side++)
+        if (!SDL_strcasecmp(st.card[side], old))
+            SDL_strlcpy(st.card[side], cp_text, sizeof st.card[side]);
+    SDL_StopTextInput(win);
+    pop = POP_NONE;
+    focus = B_CP_RENAME;
+    cp_refresh(cp_text);
+}
+
+/* Delete: the card moves to user/cards/Deleted (with the time in its name) */
+static void cp_delete(void)
+{
+    if (st_row >= cp_n)
+        return;
+    char name[CARD_NAME_MAX], from[1300], dir[1200], to[1400];
+    SDL_strlcpy(name, cp_names[st_row], sizeof name);
+    if (cp_has[st_row]) {
+        cp_file(from, sizeof from, name);
+        snprintf(dir, sizeof dir, "%s" DIR_SEP "user" DIR_SEP "cards" DIR_SEP "Deleted", game);
+        if (!exists(dir))
+            SDL_CreateDirectory(dir);
+        SDL_Time now = 0;
+        SDL_DateTime dt;
+        SDL_zero(dt);
+        if (SDL_GetCurrentTime(&now))
+            SDL_TimeToDateTime(now, &dt, true);
+        snprintf(to, sizeof to, "%s" DIR_SEP "%s %04d-%02d-%02d %02d%02d%02d.card", dir, name, dt.year, dt.month, dt.day,
+                 dt.hour, dt.minute, dt.second);
+        if (!SDL_RenamePath(from, to)) {
+            say("cards: cannot move %s to %s: %s", from, to, SDL_GetError());
+            return;
+        }
+        say("cards: %s moved to %s", from, to);
+    }
+    for (int side = 0; side < 2; side++)
+        if (!SDL_strcasecmp(st.card[side], name))
+            st.card[side][0] = 0;
+    pop = POP_NONE;
+    focus = B_CP_DELETE;
+    cp_refresh(NULL);
+}
+
+/* the bar's buttons, in the order Left and Right go through them */
+static const int cp_bar[] = { B_CP_P1, B_CP_P2, B_CP_EDIT, B_CP_NEW, B_CP_COPY, B_CP_RENAME, B_CP_DELETE, B_DONE };
+
+static void cp_bar_move(int d)
+{
+    int n = (int)SDL_arraysize(cp_bar), at = 0;
+    for (int i = 0; i < n; i++)
+        if (cp_bar[i] == focus)
+            at = i;
+    for (int k = 0; k < n; k++) {
+        at = (at + d + n) % n;
+        if (enabled(cp_bar[at])) {
+            focus = cp_bar[at];
+            return;
+        }
+    }
+}
+
+/* the bar's focus on a button that works for the chosen card */
+static void cp_focus_fix(void)
+{
+    int on_bar = 0;
+    for (size_t i = 0; i < SDL_arraysize(cp_bar); i++)
+        on_bar |= cp_bar[i] == focus;
+    if (!on_bar)
+        focus = B_CP_P1;
+    if (!enabled(focus))
+        cp_bar_move(1);
+}
+
+/* Edit takes a Final Tuned card whose checks hold; a card never used, or a
+ * player's card not made yet, becomes a ready card (card_starter) on Save */
+static int cp_editable(int i)
+{
+    const card_view *v = &cp_view[i];
+    return !cp_has[i] || (!cp_bad[i] && (v->blank || (v->format == 4 && v->header_ok && v->body_ok &&
+                                                       v->chara != CARD_NOT_A_PLAYER)));
+}
+
+static int cp_enabled(int b)
+{
+    int any = st_row < cp_n;
+    switch (b) {
+    case B_CP_P1: case B_CP_P2: case B_CP_RENAME: case B_CP_DELETE: return any;
+    case B_CP_EDIT: return any && cp_editable(st_row);
+    case B_CP_COPY: return any && cp_has[st_row] && !cp_bad[st_row];
+    case B_CP_NEW: return cp_n < CARDS_MAX;
+    case B_POP_YES: return pop != POP_RENAME || cp_text_ok();
+    }
+    return 1;
+}
+
+/* ---- the card editor (a page of its own): ring name, character, rank,
+ * games, items, and each costume's colors and worn items, written as the
+ * game's own changes write them (cards.h, card_fields_put) ---- */
+enum { ED_NAME, ED_CHARA, ED_RANK, ED_PLAYS, ED_ITEMS, ED_CARD_ROWS };
+enum { ED_COLOR = 0, ED_HAIR = 4, ED_EYES = 5, ED_SLOT = 6, ED_COSTUME_ROWS = 10 };
+static const char *const ed_tab_names[3] = { "Card", "Costume 1", "Costume 2" };
+static char ed_name[CARD_NAME_MAX];     /* the profile */
+static Uint8 ed_card[CARD_SIZE];
+static card_fields ed_f, ed_f0;         /* as edited, as it was */
+static int ed_new;                      /* a ready card made on Save (the file has none yet) */
+static int ed_tab, ed_row, ed_top;
+
+static int ed_rows(void)
+{
+    return ed_tab == 0 ? ED_CARD_ROWS : ED_COSTUME_ROWS;
+}
+
+static void ed_open(void)
+{
+    if (st_row >= cp_n)
+        return;
+    SDL_strlcpy(ed_name, cp_names[st_row], sizeof ed_name);
+    Uint8 *c = NULL;
+    size_t len = 0;
+    if (cp_has[st_row]) {
+        char path[1300];
+        cp_file(path, sizeof path, ed_name);
+        c = SDL_LoadFile(path, &len);
+    }
+    ed_new = !(c && len == CARD_SIZE) || cp_view[st_row].blank;
+    if (!ed_new) {
+        memcpy(ed_card, c, CARD_SIZE);
+    } else {
+        /* a card never used keeps its number */
+        Uint32 number = c && len == CARD_SIZE ? (Uint32)c[4] << 24 | (Uint32)c[5] << 16 | (Uint32)c[6] << 8 | c[7]
+                                              : card_new_number();
+        card_starter(ed_card, number);
+    }
+    SDL_free(c);
+    card_fields_get(ed_card, &ed_f);
+    ed_f0 = ed_f;
+    ed_tab = ed_row = ed_top = 0;
+    page = P_EDIT;
+    focus = -1;
+    say("card editor: %s%s", ed_name, ed_new ? " (made a ready card on Save)" : "");
+}
+
+/* Save (or Cancel): back to the Cards tab */
+static void ed_close(int save)
+{
+    if (save && (ed_new || memcmp(&ed_f, &ed_f0, sizeof ed_f))) {
+        card_fields_put(ed_card, &ed_f);
+        cp_write(ed_name, ed_card);
+    } else {
+        say("card editor: %s %s", ed_name, save ? "unchanged" : "left as it was (Cancel)");
+    }
+    page = P_SETTINGS;
+    st_tab = T_CARDS;
+    cp_refresh(ed_name);
+    focus = B_CP_EDIT;
+    cp_focus_fix();
+}
+
+/* the games a card can be given: Left and Right go to the next of these */
+static const int ed_plays[] = { 1, 10, 50, 100, 200, 300, 400, CARD_PLAYS };
+
+static void ed_change(int d)
+{
+    card_fields *f = &ed_f;
+    if (ed_tab == 0) {
+        switch (ed_row) {
+        case ED_CHARA:
+            do
+                f->chara = (f->chara + d + CARD_CHARAS) % CARD_CHARAS;
+            while (f->chara == CARD_NOT_A_PLAYER);
+            break;
+        case ED_RANK:
+            /* a title rank (VF.NET's) is left only by going down */
+            if (f->level > CARD_TOP_RANK)
+                f->level = d < 0 ? CARD_TOP_RANK : f->level;
+            else
+                f->level = (f->level + d + CARD_TOP_RANK + 1) % (CARD_TOP_RANK + 1);
+            break;
+        case ED_PLAYS: {
+            int n = (int)SDL_arraysize(ed_plays), v = f->plays_left, to = -1;
+            for (int i = 0; i < n && to < 0; i++)
+                if (d > 0 && ed_plays[i] > v)
+                    to = ed_plays[i];
+            for (int i = n - 1; i >= 0 && to < 0; i--)
+                if (d < 0 && ed_plays[i] < v)
+                    to = ed_plays[i];
+            f->plays_left = to >= 0 ? to : d > 0 ? ed_plays[0] : ed_plays[n - 1];
+            break;
+        }
+        case ED_ITEMS: {
+            /* every item, none, as the card had them (when that is neither) */
+            static const Uint8 all[8] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, none[8] = { 0 };
+            const Uint8 *ways[3] = { all, none, ed_f0.items };
+            int n = memcmp(ed_f0.items, all, 8) && memcmp(ed_f0.items, none, 8) ? 3 : 2, at = 0;
+            for (int i = 0; i < n; i++)
+                if (!memcmp(f->items, ways[i], 8))
+                    at = i;
+            memcpy(f->items, ways[(at + d + n) % n], 8);
+            break;
+        }
+        }
+        return;
+    }
+    int c = ed_tab - 1;
+    if (ed_row < ED_HAIR)
+        f->color[c][ed_row] = (f->color[c][ed_row] + d + CARD_COLORS + 1) % (CARD_COLORS + 1);
+    else if (ed_row == ED_HAIR)
+        f->hair[c] = (f->hair[c] + d + CARD_HAIRS + 1) % (CARD_HAIRS + 1);
+    else if (ed_row == ED_EYES)
+        f->eye[c] = (f->eye[c] + d + CARD_EYES + 1) % (CARD_EYES + 1);
+    else
+        f->equip[c][ed_row - ED_SLOT] = (f->equip[c][ed_row - ED_SLOT] + d + CARD_ITEMS + 1) % (CARD_ITEMS + 1);
+}
+
+/* A, Enter or a click on a row: the ring name asks for the name */
+static void ed_press(void)
+{
+    if (ed_tab == 0 && ed_row == ED_NAME) {
+        char t[44];
+        card_name_text(ed_f.name, t, sizeof t);
+        SDL_strlcpy(cp_text, SDL_strchr(t, '?') ? "" : t, sizeof cp_text);    /* a name not in ASCII: anew */
+        cp_error[0] = 0;
+        pop_open(POP_RINGNAME);
+    } else {
+        ed_change(1);
+    }
+}
+
+/* the ring name typed (POP_RINGNAME's OK): ASCII, spaces at its ends left out */
+static void ed_name_set(void)
+{
+    const char *t = cp_text;
+    while (*t == ' ')
+        t++;
+    size_t n = strlen(t);
+    while (n && t[n - 1] == ' ')
+        n--;
+    memset(ed_f.name, 0, sizeof ed_f.name);
+    memcpy(ed_f.name, t, SDL_min(n, sizeof ed_f.name));
+    SDL_StopTextInput(win);
+    pop = POP_NONE;
+    focus = -1;
+}
+
+/* a row of the editor, its value written to v; its description in *about */
+static void ed_row_of(int i, ui_row *r, char *v, size_t n, const char **about)
+{
+    SDL_zerop(r);
+    r->kind = UI_ROW_CHOICE;
+    r->value = v;
+    const card_fields *f = &ed_f;
+    if (ed_tab == 0) {
+        switch (i) {
+        case ED_NAME:
+            r->label = "Ring name";
+            r->kind = UI_ROW_TEXT;
+            card_name_text(f->name, v, n);
+            if (!v[0])
+                SDL_strlcpy(v, "None", n);
+            *about = "The name the game shows for the player, up to 20 letters, numbers and marks. A cabinet's "
+                     "cards had it set on VF.NET; a card with none shows the game's own text instead. Press A or "
+                     "Enter to type it.";
+            break;
+        case ED_CHARA:
+            r->label = "Character";
+            SDL_strlcpy(v, card_chara_names[f->chara], n);
+            *about = "A card is one character's: with it in, the game picks that character at the select "
+                     "screen. Items are numbered per character, so the worn items mean other items for another "
+                     "one.";
+            break;
+        case ED_RANK:
+            r->label = "Rank";
+            card_rank_text(f->level, v, n);
+            *about = "From 10th kyu to 10th dan, the ranks a card reaches without VF.NET. A new rank starts with "
+                     "no progress toward the next.";
+            break;
+        case ED_PLAYS:
+            r->label = "Games left";
+            SDL_snprintf(v, n, f->plays_left ? "%d" : "None (used up)", f->plays_left);
+            *about = "How many more games the card plays: each game takes one, and at none the card is used up. "
+                     "A new card has 500.";
+            break;
+        case ED_ITEMS: {
+            r->label = "Items owned";
+            int k = 0;
+            for (int b = 0; b < 64; b++)
+                k += f->items[b / 8] >> (b & 7) & 1;
+            SDL_snprintf(v, n, k == 64 ? "All" : k == 0 ? "None" : "%d of 64", k);
+            *about = "The items the card has won, which the game's own item screens offer. A ready card has all "
+                     "of them.";
+            break;
+        }
+        }
+        return;
+    }
+    int c = ed_tab - 1;
+    static const char *const color_labels[4] = { "Color, part 1", "Color, part 2", "Color, part 3",
+                                                 "Color, part 4" };
+    static const char *const slot_labels[4] = { "Item slot 1", "Item slot 2", "Item slot 3", "Item slot 4" };
+    int val;
+    if (i < ED_HAIR) {
+        r->label = color_labels[i];
+        val = f->color[c][i];
+        *about = "The costume's colors, four parts: each its own color, or one of 19 others as a cabinet's "
+                 "customize screen gave them.";
+    } else if (i == ED_HAIR) {
+        r->label = "Hair color";
+        val = f->hair[c];
+        *about = "The hair: its own color, or one of 2 others.";
+    } else if (i == ED_EYES) {
+        r->label = "Eye color";
+        val = f->eye[c];
+        *about = "The eyes: their own color, or one of 3 others.";
+    } else {
+        r->label = slot_labels[i - ED_SLOT];
+        val = f->equip[c][i - ED_SLOT];
+        SDL_snprintf(v, n, val ? "Item %d" : "Empty", val);
+        *about = "An item the character wears, by its number in the character's list (1 to 199), or none. A "
+                 "number the character has no item for shows nothing. Hold Left or Right to go faster.";
+        return;
+    }
+    SDL_snprintf(v, n, val ? "Color %d" : "Its own", val);
+}
+
+static void ed_tab_to(int t)
+{
+    ed_tab = (t % 3 + 3) % 3;
+    ed_row = ed_top = 0;
+}
+
+static void ed_event(const SDL_Event *e)
+{
+    if (e->type != SDL_EVENT_KEY_DOWN && e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN)
+        return;
+    int k = e->type == SDL_EVENT_KEY_DOWN ? (int)e->key.key : -1;
+    int g = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.button : -1;
+    int face = g >= 0 ? ui_pad_face(e->gbutton.which, g) : UI_IN_NONE;
+    int n = ed_rows();
+    if (k == SDLK_DOWN || g == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
+        ed_row = (ed_row + 1) % n;
+    else if (k == SDLK_UP || g == SDL_GAMEPAD_BUTTON_DPAD_UP)
+        ed_row = (ed_row + n - 1) % n;
+    else if (k == SDLK_Q || k == SDLK_PAGEUP || g == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
+        ed_tab_to(ed_tab - 1);
+    else if (k == SDLK_E || k == SDLK_PAGEDOWN || k == SDLK_TAB || g == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
+        ed_tab_to(ed_tab + 1);
+    else if (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
+        ed_change(-1);
+    else if (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
+        ed_change(1);
+    else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK)
+        ed_press();
+    else if (k == SDLK_BACKSPACE || face == UI_IN_DEFAULT) {
+        ed_f = ed_f0;
+        say("card editor: changes undone");
+    } else if (k == SDLK_ESCAPE || face == UI_IN_BACK)
+        ed_close(1);
+}
+
+/* the Cards tab's keys and buttons (its own: the list, then the bar) */
+static void settings_tab(int d);
+static void settings_close(void);
+
+static void cp_event(const SDL_Event *e)
+{
+    if (e->type != SDL_EVENT_KEY_DOWN && e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN)
+        return;
+    int k = e->type == SDL_EVENT_KEY_DOWN ? (int)e->key.key : -1;
+    int g = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.button : -1;
+    int face = g >= 0 ? ui_pad_face(e->gbutton.which, g) : UI_IN_NONE;
+    if ((k == SDLK_DOWN || g == SDL_GAMEPAD_BUTTON_DPAD_DOWN) && cp_n)
+        st_row = (st_row + 1) % cp_n;
+    else if ((k == SDLK_UP || g == SDL_GAMEPAD_BUTTON_DPAD_UP) && cp_n)
+        st_row = (st_row + cp_n - 1) % cp_n;
+    else if (k == SDLK_Q || k == SDLK_PAGEUP || g == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
+        settings_tab(-1);
+    else if (k == SDLK_E || k == SDLK_PAGEDOWN || k == SDLK_TAB || g == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
+        settings_tab(1);
+    else if (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
+        cp_bar_move(-1);
+    else if (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
+        cp_bar_move(1);
+    else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK) {
+        if (focus >= 0 && enabled(focus))
+            press(focus);
+    } else if (k == SDLK_DELETE || face == UI_IN_CLEAR)
+        press(B_CP_DELETE);
+    else if (k == SDLK_ESCAPE || face == UI_IN_BACK) {
+        settings_close();
+        return;
+    }
+    if (page == P_SETTINGS && cards_tab() && !pop)
+        cp_focus_fix();
+}
+
+/* a note that takes a name: the typed text, Backspace, OK and Cancel */
+static int text_pop(void)
+{
+    return pop == POP_RENAME || pop == POP_RINGNAME;
+}
+
+static void move_focus(int d);
+
+static void text_event(const SDL_Event *e)
+{
+    size_t len = strlen(cp_text);
+    if (e->type == SDL_EVENT_TEXT_INPUT && cp_fresh) {
+        cp_text[0] = 0;
+        len = 0;
+    }
+    if (e->type == SDL_EVENT_TEXT_INPUT) {
+        cp_fresh = 0;
+        /* the card's name: up to 31 bytes of UTF-8, whole characters; the
+         * ring name: ASCII's letters, numbers and marks, up to 20 */
+        for (const unsigned char *s = (const unsigned char *)e->text.text; *s;) {
+            size_t cl = *s < 0x80 ? 1 : (*s & 0xe0) == 0xc0 ? 2 : (*s & 0xf0) == 0xe0 ? 3 : (*s & 0xf8) == 0xf0 ? 4 : 1;
+            int ok = pop == POP_RINGNAME ? *s >= 0x20 && *s < 0x7f && len < CARD_NAME_LEN
+                                         : len + cl < sizeof cp_text && (*s >= 0x20 && *s != 0x7f);
+            for (size_t i = 1; i < cl; i++)
+                ok &= (s[i] & 0xc0) == 0x80;
+            if (ok) {
+                memcpy(cp_text + len, s, cl);
+                len += cl;
+                cp_text[len] = 0;
+            }
+            for (size_t i = 0; i < cl && *s; i++)
+                s++;
+        }
+        return;
+    }
+    if (e->type != SDL_EVENT_KEY_DOWN && e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN)
+        return;
+    int k = e->type == SDL_EVENT_KEY_DOWN ? (int)e->key.key : -1;
+    int g = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.button : -1;
+    int face = g >= 0 ? ui_pad_face(e->gbutton.which, g) : UI_IN_NONE;
+    if (k == SDLK_BACKSPACE || face == UI_IN_CLEAR) {
+        while (len && ((unsigned char)cp_text[len - 1] & 0xc0) == 0x80)
+            len--;
+        if (len)
+            len--;
+        cp_text[cp_fresh ? 0 : len] = 0;
+        cp_fresh = 0;
+    } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || face == UI_IN_OK) {
+        press(focus >= 0 ? focus : B_POP_YES);
+    } else if (k == SDLK_ESCAPE || face == UI_IN_BACK) {
+        press(B_POP_OK);
+    } else if (k == SDLK_TAB || k == SDLK_LEFT || k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT ||
+               g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+        move_focus(k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : 1);
+    }
+}
 
 static void settings_open(void)
 {
@@ -1533,6 +2207,7 @@ static void settings_open(void)
     settings_load(&st, settings_path, NULL);
     st_tab = st_row = st_top = 0;
     capturing = 0;
+    cp_refresh(NULL);
 }
 
 static void settings_store(void)
@@ -1576,10 +2251,20 @@ static void settings_close(void)
     go(settings_from);
 }
 
+static void settings_tab_to(int t)
+{
+    st_tab = t;
+    st_row = st_top = 0;
+    if (cards_tab()) {
+        cp_refresh(NULL);
+        focus = B_CP_P1;
+        cp_focus_fix();
+    }
+}
+
 static void settings_tab(int d)
 {
-    st_tab = ((st_tab + d) % T_COUNT + T_COUNT) % T_COUNT;
-    st_row = st_top = 0;
+    settings_tab_to(((st_tab + d) % T_COUNT + T_COUNT) % T_COUNT);
 }
 
 /* A, Enter or a click on a row */
@@ -1602,6 +2287,10 @@ static void capture(const char *name)
 
 static void settings_event(const SDL_Event *e)
 {
+    if (cards_tab()) {
+        cp_event(e);
+        return;
+    }
     if (capturing) {
         if (st_tab == T_PAD) {
             if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
@@ -1799,9 +2488,32 @@ static void press(int b)
         press(B_STEAM);
         break;
     case B_POP_OK:
-        focus = pop == POP_WINE ? B_PLAY : B_STEAM;
+        if (text_pop())
+            SDL_StopTextInput(win);
+        focus = pop == POP_WINE ? B_PLAY : pop == POP_RENAME ? B_CP_RENAME : pop == POP_DELETE ? B_CP_DELETE
+              : pop == POP_RINGNAME ? -1 : B_STEAM;
         pop = POP_NONE;
         break;
+    case B_CP_P1:
+    case B_CP_P2: cp_assign(b == B_CP_P2); break;
+    case B_CP_EDIT: ed_open(); break;
+    case B_CP_NEW: cp_new(); break;
+    case B_CP_COPY: cp_copy(); break;
+    case B_CP_RENAME:
+        SDL_strlcpy(cp_text, cp_names[st_row], sizeof cp_text);
+        pop_open(POP_RENAME);
+        break;
+    case B_CP_DELETE: pop_open(POP_DELETE); break;
+    case B_POP_YES:
+        if (pop == POP_RENAME)
+            cp_rename();
+        else if (pop == POP_DELETE)
+            cp_delete();
+        else if (pop == POP_RINGNAME)
+            ed_name_set();
+        break;
+    case B_ED_SAVE: ed_close(1); break;
+    case B_ED_CANCEL: ed_close(0); break;
     case B_POP_PLAY:
         pop = POP_NONE;
         wine_warned = 1;
@@ -1873,9 +2585,11 @@ static void top_bar(void)
     snprintf(v, sizeof v, "builder %s", builder_ver[0] ? builder_ver : "?");
     ui_text(UI_REGULAR, 14, x + 12, 36, UI_FAINT, v);
     ui_fill(0, 72, LW, 1, UI_LINE);
-    if (page == P_SETTINGS) {
-        float w = ui_text_w(UI_MEDIUM, 15, "Settings");
-        ui_text(UI_MEDIUM, 15, LW - 40 - w, 36, UI_MUTED, "Settings");
+    if (page == P_SETTINGS || page == P_EDIT) {
+        char t[96];
+        snprintf(t, sizeof t, page == P_EDIT ? "Card: %s" : "Settings", ed_name);
+        float w = ui_text_w(UI_MEDIUM, 15, t);
+        ui_text(UI_MEDIUM, 15, LW - 40 - w, 36, UI_MUTED, t);
         return;
     }
     /* the stepper, from the right */
@@ -2262,10 +2976,116 @@ static void draw_play(void)
     draw_check_row();
 }
 
+/* the Cards tab: the cards, the chosen one's details, the bar */
+static void draw_cards(void)
+{
+    static ui_row rows[CP_MAX];
+    for (int i = 0; i < cp_n; i++) {
+        int side = cp_side(i);
+        SDL_zero(rows[i]);
+        rows[i].label = cp_names[i];
+        rows[i].kind = UI_ROW_TEXT;
+        rows[i].value = side == 0 ? "Player 1" : side == 1 ? "Player 2" : "";
+        rows[i].warn = cp_bad[i] || (cp_has[i] && !cp_view[i].blank && !cp_editable(i));
+    }
+    float ry = 164, rh = 268;
+    if (cp_n)
+        ui_rows(40, ry, 540, rh, 42, rows, cp_n, st_row, &st_top);
+    else
+        ui_wrap(UI_REGULAR, 16, 56, ry + 24, 500, 24, UI_FAINT,
+                "No cards yet. New makes one, ready to play: then choose its character and give it to a player.");
+    /* the chosen card */
+    static char text[600];
+    char rank[40];
+    const char *t = cp_n ? cp_names[st_row] : "Cards", *note = NULL;
+    int i = st_row, side = cp_n ? cp_side(i) : -1;
+    const card_view *v = cp_n ? &cp_view[i] : NULL;
+    if (!cp_n)
+        SDL_strlcpy(text, "A card keeps a player's character, rank, record, items and colors, as a cabinet's "
+                          "card did. Each one is a file in the game's user/cards folder.", sizeof text);
+    else if (!cp_has[i])
+        SDL_strlcpy(text, "Not made yet: the game makes it at the player's first game, for the character "
+                          "chosen then. Or Edit makes it a ready card now.", sizeof text);
+    else if (cp_bad[i])
+        SDL_strlcpy(text, "This file is not a card (a card is 128 bytes): the player would have none.", sizeof text);
+    else if (v->blank)
+        SDL_strlcpy(text, "A new card, never used: at its first game the game makes it the player's, for the "
+                          "character chosen then. Or Edit makes it a ready card now.", sizeof text);
+    else if (v->format != 4)
+        snprintf(text, sizeof text, "A card from an older version of the game (its format %d). The game brings "
+                                    "it up to date; the launcher does not edit it.", v->format);
+    else if (!v->header_ok || !v->body_ok)
+        SDL_strlcpy(text, "Its checks do not hold, so the game would not read it.", sizeof text);
+    else
+        snprintf(text, sizeof text, "%s, %s\nRing name: %s\n%d %s, %d %s\n%d %s left\nItems: %s",
+                 card_chara_names[v->chara], card_rank_text(v->level, rank, sizeof rank),
+                 v->name[0] ? v->name : "none", v->wins, v->wins == 1 ? "win" : "wins", v->losses,
+                 v->losses == 1 ? "loss" : "losses", v->plays_left, v->plays_left == 1 ? "game" : "games",
+                 v->items == 64 ? "all" : v->items == 0 ? "none" : "some");
+    if (!st.cards)
+        note = "Cards are off (the Game tab): the game uses none.";
+    else if (side >= 0)
+        note = side == 0 ? "Player 1's card (press Player 1 again for none)." : "Player 2's card (press Player 2 again for none).";
+    else if (cp_n)
+        note = "Player 1 or Player 2 gives it to that player.";
+    ui_about(604, ry, LW - 40 - 604, rh, t, text, note);
+    /* the bar: Player 1 and Player 2 lit for the card's player */
+    static const char *const labels[] = { "Player 1", "Player 2", "Edit", "New", "Copy", "Rename", "Delete" };
+    float x = 40;
+    for (int b = 0; b < (int)SDL_arraysize(labels); b++) {
+        float w = SDL_max(ui_text_w(UI_MEDIUM, 16, labels[b]) + 36, 84);
+        int lit = (b == 0 && side == 0) || (b == 1 && side == 1);
+        button(cp_bar[b], x, 452, w, 44, labels[b], lit, -1);
+        x += w + (b == 1 ? 26 : 12);
+    }
+}
+
+/* the card editor's page */
+static void draw_edit(void)
+{
+    ui_tabs(40, 92, LW - 80, 42, ed_tab_names, 3, ed_tab);
+    ui_fill(40, 148, LW - 80, 1, UI_LINE);
+    ui_row rows[ED_COSTUME_ROWS];
+    static char vals[ED_COSTUME_ROWS][64];
+    const char *abouts[ED_COSTUME_ROWS];
+    int n = ed_rows();
+    for (int i = 0; i < n; i++)
+        ed_row_of(i, &rows[i], vals[i], sizeof vals[i], &abouts[i]);
+    float ry = 164, rh = 336;
+    ui_rows(40, ry, 540, rh, 42, rows, n, ed_row, &ed_top);
+    ui_about(604, ry, LW - 40 - 604, rh, rows[ed_row].label, abouts[ed_row],
+             ed_new ? "Save makes it a ready card." : memcmp(&ed_f, &ed_f0, sizeof ed_f) ? "Changed: Save keeps it." : NULL);
+    static const ui_hint hints[] = {
+        { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Change", { UI_IN_LEFTRIGHT, UI_IN_NONE } },
+        { "Tabs", { UI_IN_PREV, UI_IN_NEXT } }, { "Undo", { UI_IN_DEFAULT, UI_IN_NONE } },
+    };
+    ui_fill(40, 516, LW - 80, 1, UI_LINE);
+    ui_hints(40, 558, 24, hints, 4, 0);
+    static const ui_hint save_hint[] = { { "Save", { UI_IN_BACK, UI_IN_NONE } } };
+    float w = button_w("Save"), cw = button_w("Cancel");
+    button(B_ED_SAVE, LW - 40 - w, 536, w, 44, "Save", 1, -1);
+    button(B_ED_CANCEL, LW - 40 - w - 12 - cw, 536, cw, 44, "Cancel", 0, -1);
+    ui_hints(LW - 40 - w - 12 - cw - 24, 558, 24, save_hint, 1, 2);
+}
+
 static void draw_settings(void)
 {
     ui_tabs(40, 92, LW - 80, 42, tab_names, T_COUNT, st_tab);
     ui_fill(40, 148, LW - 80, 1, UI_LINE);
+    if (cards_tab()) {
+        draw_cards();
+        static const ui_hint cp_hints[] = {
+            { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Buttons", { UI_IN_LEFTRIGHT, UI_IN_NONE } },
+            { "Tabs", { UI_IN_PREV, UI_IN_NEXT } },
+        };
+        ui_fill(40, 516, LW - 80, 1, UI_LINE);
+        ui_hints(40, 558, 24, cp_hints, 3, 0);
+        static const ui_hint done_hint[] = { { "Save", { UI_IN_BACK, UI_IN_NONE } } };
+        float w = button_w("Done");
+        button(B_DONE, LW - 40 - w, 536, w, 44, "Done", 1, -1);
+        ui_hints(LW - 40 - w - 24, 558, 24, done_hint, 1, 2);
+        return;
+    }
     ui_row rows[ACT_COUNT];
     char vals[ACT_COUNT][160];
     int n = tab_count();
@@ -2367,9 +3187,18 @@ static void pop_open(int kind)
     say("%s", kind == POP_FROM_STEAM    ? "Add to Steam: the note to close Steam and open the launcher again"
               : kind == POP_CLOSE_STEAM ? "Add to Steam: the note to close Steam (Try again)"
               : kind == POP_WINE        ? "Play: the note on plain Wine (Add to Steam, Play anyway, Cancel)"
+              : kind == POP_RENAME      ? "Cards: Rename"
+              : kind == POP_DELETE      ? "Cards: Delete (it asks first)"
+              : kind == POP_RINGNAME    ? "card editor: the ring name"
                                         : "Add to Steam: the note that it was added");
     pop = kind;
-    focus = kind == POP_CLOSE_STEAM ? B_POP_RETRY : kind == POP_WINE ? B_POP_STEAM : B_POP_OK;
+    focus = kind == POP_CLOSE_STEAM ? B_POP_RETRY : kind == POP_WINE ? B_POP_STEAM
+          : kind == POP_RENAME || kind == POP_RINGNAME ? B_POP_YES : B_POP_OK;
+    if (text_pop()) {
+        cp_error[0] = 0;
+        cp_fresh = 1;
+        SDL_StartTextInput(win);
+    }
 }
 
 /* Add to Steam's note, over the page: the page dimmed, a card with the
@@ -2404,18 +3233,66 @@ static void draw_pop(void)
         t = "Playing under plain Wine";
         text = WINE_NOTE;
         break;
+    case POP_RENAME:
+        t = "Rename the card";
+        text = "Its new name, which is also its file's in user/cards (up to 31 characters).";
+        break;
+    case POP_RINGNAME:
+        t = "Ring name";
+        text = "The name the game shows for this player: up to 20 letters (A to Z, without accents), numbers, "
+               "spaces and marks.";
+        break;
+    case POP_DELETE: {
+        static char title[96], why[400];
+        int side = cp_side(st_row);
+        snprintf(title, sizeof title, "Delete %s?", st_row < cp_n ? cp_names[st_row] : "");
+        snprintf(why, sizeof why, "%s%s%s",
+                 st_row < cp_n && cp_has[st_row]
+                     ? "The card's file moves to user/cards/Deleted, with the time in its name. To have it back, "
+                       "move it into user/cards again."
+                     : "This card is not made yet, so there is no file to move.",
+                 side >= 0 ? "\n" : "", side == 0 ? "Player 1 has no card after this." : side == 1 ? "Player 2 has no card after this." : "");
+        t = title;
+        text = why;
+        break;
+    }
     }
     nhits = 0;                      /* the page's buttons do not answer under the note */
     SDL_SetRenderDrawColor(ren, 6, 7, 10, 210);
     SDL_RenderFillRect(ren, NULL);
+    int typing = text_pop();
     float w = pop == POP_WINE ? 760 : 620, tw = w - 72;
-    float h = 88 + pop_text(0, 0, tw, text, 0) + 28 + BTN_H + 36;
+    float text_h = pop_text(0, 0, tw, text, 0);
+    float field_h = typing ? 24 + 48 + 12 + 22 + 22 : 0;     /* the field, the error line, the keyboard's line */
+    float h = 88 + text_h + field_h + 28 + BTN_H + 36;
     float x0 = (LW - w) / 2, y0 = (LH - h) / 2;
     ui_round_line(x0, y0, w, h, 16, 1, UI_LINE, UI_CARD);
     ui_text(UI_BOLD, 22, x0 + 36, y0 + 48, UI_TEXT, t);
     pop_text(x0 + 36, y0 + 88, tw, text, 1);
+    if (typing) {
+        /* the name so far, with a caret, then why it cannot be that (Rename) */
+        float fy = y0 + 88 + text_h + 24 - 12;
+        ui_round_line(x0 + 36, fy, tw, 48, 10, 2, UI_ACCENT, UI_BG);
+        if (cp_fresh && cp_text[0])     /* chosen: typing replaces it */
+            ui_round(x0 + 48, fy + 10, ui_text_w(UI_MEDIUM, 18, cp_text) + 8, 28, 5, UI_HOVER);
+        float cw = ui_text(UI_MEDIUM, 18, x0 + 52, fy + 24, UI_TEXT, cp_text);
+        if (SDL_GetTicks() / 530 % 2 == 0 || shot_mode)
+            ui_fill(x0 + 52 + cw + 2, fy + 12, 2, 24, UI_ACCENT);
+        if (pop == POP_RENAME)
+            cp_text_ok();
+        if (cp_error[0])
+            ui_text_in(UI_REGULAR, 14.5f, x0 + 36, fy + 48 + 22, tw, 0, 0, UI_BAD, cp_error);
+        ui_text_in(UI_REGULAR, 14, x0 + 36, fy + 48 + 22 + 24, tw, 0, 0, UI_FAINT,
+                   "On a Steam Deck, Steam + X shows the keyboard.");
+    }
     float by = y0 + h - 36 - BTN_H, bx = x0 + w - 36;
-    if (pop == POP_CLOSE_STEAM) {
+    if (pop == POP_RENAME || pop == POP_DELETE || pop == POP_RINGNAME) {
+        const char *yes = pop == POP_RENAME ? "Rename" : pop == POP_DELETE ? "Delete" : "OK";
+        bx -= button_w("Cancel");
+        button(B_POP_OK, bx, by, 0, BTN_H, "Cancel", 0, -1);
+        bx -= 14 + button_w(yes);
+        button(B_POP_YES, bx, by, 0, BTN_H, yes, pop == POP_DELETE ? 0 : 1, -1);
+    } else if (pop == POP_CLOSE_STEAM) {
         bx -= button_w("Close");
         button(B_POP_OK, bx, by, 0, BTN_H, "Close", 0, -1);
         bx -= 14 + button_w("Try again");
@@ -2449,6 +3326,7 @@ static void draw(void)
     case P_FAIL: draw_fail(); break;
     case P_PLAY: draw_play(); break;
     case P_SETTINGS: draw_settings(); break;
+    case P_EDIT: draw_edit(); break;
     }
     draw_pop();
     /* a present that fails leaves the window showing an old page: say so
@@ -2522,16 +3400,38 @@ static void mouse_event(SDL_Event *e)
         ui_to_logical(e->motion.x, e->motion.y, &x, &y);
     else
         ui_to_logical(e->button.x, e->button.y, &x, &y);
-    if (page == P_SETTINGS && !capturing && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+    if (page == P_SETTINGS && !capturing && !pop && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         int t = ui_tabs_hit(x, y), r = ui_rows_hit(x, y);
         if (t == UI_TAB_PREV || t == UI_TAB_NEXT)
             settings_tab(t == UI_TAB_PREV ? -1 : 1);
         else if (t >= 0) {
-            st_tab = t;
-            st_row = st_top = 0;
+            settings_tab_to(t);
+        } else if (r >= 0 && cards_tab()) {
+            st_row = r;             /* a card is only chosen: the bar acts on it */
+            cp_focus_fix();
         } else if (r >= 0) {
             st_row = r;
             settings_press(r);
+        }
+    }
+    if (page == P_EDIT && !pop && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        int t = ui_tabs_hit(x, y), r = ui_rows_hit(x, y);
+        if (t == UI_TAB_PREV || t == UI_TAB_NEXT)
+            ed_tab_to(ed_tab + (t == UI_TAB_PREV ? -1 : 1));
+        else if (t >= 0)
+            ed_tab_to(t);
+        else if (r >= 0) {
+            /* a choice's left half goes back, its right half on (ui_rows: the
+             * value's box ends 0.35 rows in from the right) */
+            float right = 40 + 540 - 42 * 0.35f, bw = SDL_min(540 * 0.42f, 42 * 5.6f);
+            int was = ed_row;
+            ed_row = r;
+            if (ed_tab == 0 && r == ED_NAME)
+                ed_press();
+            else if (x >= right - bw && x <= right + 4)
+                ed_change(x < right - bw / 2 ? -1 : 1);
+            else if (r == was)
+                ed_change(1);
         }
     }
     int id = hit_at(x, y);
@@ -2541,6 +3441,71 @@ static void mouse_event(SDL_Event *e)
     } else if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_LEFT && id >= 0) {
         focus = id;
         press(id);
+    }
+}
+
+/* an event to the page (or the note over it) */
+static void route_event(SDL_Event *e)
+{
+    if (e->type == SDL_EVENT_MOUSE_MOTION || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+        mouse_event(e);
+    else if (pop && text_pop())
+        text_event(e);
+    else if (pop)
+        page_event(e);
+    else if (page == P_SETTINGS)
+        settings_event(e);
+    else if (page == P_EDIT)
+        ed_event(e);
+    else
+        page_event(e);
+}
+
+/* --shot-keys: keys (SDL's names, as "Down" or "Return"), text:WORDS (typed;
+ * "_" a space) and click:X,Y (the page's units), one after another, each
+ * after a frame is drawn, before the picture */
+static void shot_keys_run(const char *list)
+{
+    static char buf[2048];
+    SDL_strlcpy(buf, list, sizeof buf);
+    char *save = NULL;
+    for (char *tok = SDL_strtok_r(buf, " ", &save); tok; tok = SDL_strtok_r(NULL, " ", &save)) {
+        draw();
+        SDL_Event e;
+        SDL_zero(e);
+        float cx, cy;
+        if (!SDL_strncmp(tok, "text:", 5)) {
+            for (char *c = tok + 5; *c; c++)
+                if (*c == '_')
+                    *c = ' ';
+            e.type = SDL_EVENT_TEXT_INPUT;
+            e.text.text = tok + 5;
+            say("--shot-keys: typing \"%s\"", tok + 5);
+            route_event(&e);
+        } else if (SDL_sscanf(tok, "click:%f,%f", &cx, &cy) == 2) {
+            /* the page's units to the window's (ui_fit's scale), as a click comes */
+            say("--shot-keys: click at %.0f, %.0f", cx, cy);
+            float s = ui_get_scale(), px = 0, py = 0, lx = 0, ly = 0;
+            ui_to_logical(0, 0, &px, &py);      /* the page's origin: -px*s, -py*s */
+            lx = (cx - px) * s;
+            ly = (cy - py) * s;
+            e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            e.button.button = SDL_BUTTON_LEFT;
+            e.button.x = lx;
+            e.button.y = ly;
+            e.button.windowID = SDL_GetWindowID(win);
+            mouse_event(&e);
+        } else {
+            SDL_Keycode k = SDL_GetKeyFromName(tok);
+            if (k == SDLK_UNKNOWN) {
+                say("--shot-keys: no key %s (ignored)", tok);
+                continue;
+            }
+            e.type = SDL_EVENT_KEY_DOWN;
+            e.key.key = k;
+            e.key.down = true;
+            route_event(&e);
+        }
     }
 }
 
@@ -2611,7 +3576,7 @@ static void first_size(int *w, int *h, int *min_w, int *min_h)
 int main(int argc, char **argv)
 {
     const char *opt_game = NULL, *opt_pick_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL,
-               *shot_device = NULL;
+               *shot_device = NULL, *shot_keys = NULL;
     int shot_scale = 1;
     const char *unknown[8];
     int opt_exit = 0, opt_show = 0, nunknown = 0;
@@ -2632,6 +3597,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--shot") && i + 2 < argc) shot_page = argv[++i], shot_file = argv[++i];
         else if (!strcmp(argv[i], "--shot-device") && i + 1 < argc) shot_device = argv[++i];
         else if (!strcmp(argv[i], "--shot-scale") && i + 1 < argc) shot_scale = SDL_atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--shot-keys") && i + 1 < argc) shot_keys = argv[++i];
         else if (nunknown < 8) unknown[nunknown++] = argv[i];
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -2744,13 +3710,15 @@ int main(int argc, char **argv)
             {"files", P_FILES, 0}, {"build", P_BUILD, 0}, {"work", P_WORK, 0}, {"fail", P_FAIL, 0},
             {"play", P_PLAY, 0}, {"settings", P_SETTINGS, T_GAME}, {"picture", P_SETTINGS, T_PICTURE},
             {"pad", P_SETTINGS, T_PAD}, {"key1", P_SETTINGS, T_KEY1}, {"key2", P_SETTINGS, T_KEY2},
+            {"cards", P_SETTINGS, T_CARDS},
         };
+        shot_mode = 1;
         for (size_t i = 0; i < SDL_arraysize(pages); i++)
             if (!strcmp(shot_page, pages[i].name)) {
                 if (pages[i].page == P_SETTINGS)
                     settings_open();
                 go(pages[i].page);
-                st_tab = pages[i].tab;
+                settings_tab_to(pages[i].tab);
             }
         if (page == P_WORK || page == P_FAIL)
             shot_fake();
@@ -2802,6 +3770,8 @@ int main(int argc, char **argv)
             }
         if (shot_device && ui_device_named(shot_device) >= 0)
             ui_set_device(ui_device_named(shot_device));    /* the caps' style (ui.h) */
+        if (shot_keys)
+            shot_keys_run(shot_keys);
         draw();
         draw();         /* the second time with the hits of the first (focus rings) */
         SDL_Surface *sf = SDL_RenderReadPixels(ren, NULL);
@@ -2854,12 +3824,8 @@ int main(int argc, char **argv)
                 running = 0;
             else if (e.type == SDL_EVENT_GAMEPAD_ADDED)
                 SDL_OpenGamepad(e.gdevice.which);
-            else if (e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
-                mouse_event(&e);
-            else if (page == P_SETTINGS)
-                settings_event(&e);
             else
-                page_event(&e);
+                route_event(&e);
         }
         if (quit_asked)
             running = 0;

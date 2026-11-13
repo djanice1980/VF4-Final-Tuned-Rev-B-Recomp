@@ -373,6 +373,13 @@ int game_machine_card_put(int side, const unsigned char *card)
     return 0;
 }
 
+int game_machine_card_take(int side)
+{
+    if (!hw_card_option)
+        return 0;
+    return hw_card_take(side) > 0;
+}
+
 int game_machine_card_get(int side, unsigned char *card)
 {
     if (side < 0 || side > 1 || hw_card_get(side, card))

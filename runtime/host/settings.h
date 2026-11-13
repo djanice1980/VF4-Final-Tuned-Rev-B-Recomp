@@ -28,6 +28,7 @@ enum {
 };
 
 #define BIND_MAX 4          /* inputs one action can have */
+#define CARD_NAME_MAX 32    /* a card profile's name, with its 0 (user/cards/NAME.card) */
 #define BIND_NAME 24        /* an SDL key or gamepad button name */
 
 typedef struct binding {
@@ -50,7 +51,10 @@ typedef struct settings {
     int scale;              /* the GPU renderer's resolution: 1..4 times 640 x 480 */
     int sound;              /* 1 on */
     int volume;             /* 0..100 (%), the game's menu changes it while it plays */
-    int cards;              /* 1: the cabinet has its two card units; the cards are user/cards/p1.card, p2.card */
+    int cards;              /* 1: the cabinet has its two card units */
+    char card[2][CARD_NAME_MAX];    /* the card profile in each player's unit: user/cards/NAME.card
+                                     * (one not there yet: a card never used, kept under that name
+                                     * once the game has written it); "" none (the unit stays empty) */
     int network;            /* 1: the game's own NETWORK setting on; 0 off (the default: no network check at start) */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[ACT_COUNT];         /* every gamepad (the first is player 1, the second player 2) */
@@ -68,6 +72,11 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg));
 
 /* writes the whole file (through path.tmp and a rename); 0 or -1 */
 int settings_save(const settings *s, const char *path);
+
+/* name can be a card profile's: a file name on every system and a value in
+ * settings.txt (1 to 31 characters, no / \ : * ? " < > | # or control
+ * characters, no space or dot at either end, not "none") */
+int settings_card_name_ok(const char *name);
 
 /* a binding as text: "Up, W" (empty: "-") */
 void settings_binding_text(const binding *b, char *out, size_t n);

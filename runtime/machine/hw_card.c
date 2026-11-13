@@ -487,6 +487,25 @@ int hw_card_put(int n, const u8 *card)
     return 0;
 }
 
+/* recomp (card profiles): the player takes the card, as "card pN eject":
+ * a unit whose lock is on (the game is using the card) holds it until the
+ * game opens the lock. 0: the unit is empty now; 1: it leaves when the lock
+ * opens (ask again); -1: no such unit */
+int hw_card_take(int n)
+{
+    if (n < 0 || n > 1)
+        return -1;
+    card_unit *u = &cs.u[n];
+    if (!u->present)
+        return 0;
+    if (u->locked) {
+        u->eject_wanted = 1;
+        return 1;
+    }
+    card_remove(n, "taken (the game window)");
+    return 0;
+}
+
 int hw_card_get(int n, u8 *card)
 {
     if (n < 0 || n > 1 || !cs.u[n].present)

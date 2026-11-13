@@ -107,6 +107,11 @@ int game_machine_card_put(int side, const unsigned char *card);
  * differs from what was last put or got, 0 when not, -1 when there is none */
 int game_machine_card_get(int side, unsigned char *card);
 
+/* on the machine's thread: the player takes the card out. 0: the unit is
+ * empty; 1: the game is using the card (its lock is on), and it leaves when
+ * the game lets go of it: ask again later */
+int game_machine_card_take(int side);
+
 /* from the frame function: the sound the chip made since the last call, up
  * to max stereo frames (44,100 a second); with sound_chip 0 there is none */
 unsigned game_machine_audio(short *dst, unsigned max);
