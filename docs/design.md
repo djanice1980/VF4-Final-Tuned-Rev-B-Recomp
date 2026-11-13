@@ -1624,11 +1624,12 @@ So the fault is in Wine's Direct3D 12 presentation on this system, not in
 the launcher's code. The launcher now logs its renderer and video driver
 at start, a present that fails (and when it works again), device
 resets, and the first window sizes, so the next report has that in
-`launcher.log`. Not decided yet: whether the launcher should prefer
-Vulkan over Direct3D 12 when Direct3D 11 is not there (a workaround for
-plain Wine). Not tried: why wined3d's Direct3D 11 does not start, and
-the game window under plain Wine (it draws with SDL_GPU, Direct3D 12
-first).
+`launcher.log`. David's decision: Proton only. The launcher keeps SDL's
+own renderer choice (no preference for Vulkan over Direct3D 12 to get
+round plain Wine), and the README says plain Wine is not supported. Not
+looked into, for that reason: why wined3d's Direct3D 11 does not start,
+and the game's window under plain Wine (it draws with SDL_GPU, Direct3D
+12 first).
 
 **Checked** (offscreen, no window; the dialog's answer given by the test
 option `--pick-game DIR`):

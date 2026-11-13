@@ -16,6 +16,39 @@ emulator runs at play time.
 > `vf4tuned.zip` (the 317-0387-COM PIC). Everything the build creates comes
 > from your set and stays on your PC. Never share those files.
 
+## Installing a release
+
+Download `vf4ft-…-windows.zip` from this repository's Releases page. It
+holds the launcher and builder only, no game. You also need your MAME
+`vf4tuned` set: `vf4tuned.zip` and `vf4tuned/gds-0036f.chd`.
+
+**On Windows:**
+
+1. Extract the zip into a folder of its own, for example `C:\Games\VF4FT`.
+2. Run `vf4ft-launcher.exe`.
+3. **Game files:** Use this set (one it found), or Choose folder… and pick
+   the folder that holds `vf4tuned.zip`.
+4. **Build:** the game goes into `game\` beside the launcher, or elsewhere
+   with Change…. Press Build. The first build downloads about 200 MB of
+   compiler and takes a few minutes.
+5. **Play.** Add to Steam on the Play page (with Steam closed) adds the
+   game to your Steam library.
+
+**On Linux or a Steam Deck**, through Steam's Proton:
+
+1. Extract the zip into a folder of its own, for example `~/Games/vf4ft`.
+2. In Steam: Games menu, "Add a Non-Steam Game to My Library", Browse, set
+   the file type to "All Files", pick `vf4ft-launcher.exe` in that folder,
+   "Add Selected Programs".
+3. Right-click the new entry, Properties, Compatibility: tick "Force the
+   use of a specific Steam Play compatibility tool" and choose Proton
+   Experimental.
+4. Start it from your Steam library, then do steps 3 to 5 above. Play
+   starts the game under the same Proton.
+
+On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode
+([more for the Deck](#steam-deck-m6)). Plain Wine is not supported.
+
 ## Screenshots
 
 **The launcher** makes the game from your set in three steps. These are
@@ -143,9 +176,9 @@ on the Build page: an empty folder or an earlier install is used as it is,
 and any other folder gets a `VF4 Final Tuned` folder of its own inside it
 (the builder never writes among other files). Changing it copies your
 saves and settings into the new folder at the next build; the old folder
-stays as it was. Plain Wine is not a tested way to run the Windows
-launcher; use Proton (Steam, or `umu-run`) or Windows
-([why](docs/design.md#27-install-folder-set-choice-and-plain-wine-2026-11-13)). To build the launcher from this
+stays as it was. The Windows release runs on Windows and, on Linux and
+the Steam Deck, under Proton (Steam, or `umu-run`); plain Wine is not
+supported ([why](docs/design.md#27-install-folder-set-choice-and-plain-wine-2026-11-13)). To build the launcher from this
 repository: `cmake --build build/linux --target vf4ft-launcher` (it needs no
 translated code), then `build/linux/vf4ft-launcher`. A release folder is put
 together by `tools/package_release.py` (its usage is at its top).

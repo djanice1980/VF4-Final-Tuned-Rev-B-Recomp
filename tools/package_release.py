@@ -83,6 +83,64 @@ def python_embed(dest):
         z.extractall(dest)
 
 
+# the release's READ ME.txt: how to install it (README.md's "Installing a
+# release" says the same)
+README_WINDOWS = """VF4 Final Tuned recomp %s: the builder and launcher
+
+This download contains none of the game. The launcher builds the game on
+your PC from your own MAME vf4tuned set: vf4tuned.zip and its GD-ROM,
+vf4tuned/gds-0036f.chd.
+
+ON WINDOWS
+1. Extract this zip into a folder of its own, for example C:\\Games\\VF4FT.
+2. Run vf4ft-launcher.exe.
+3. Game files: Use this set (the one it found), or Choose folder... and
+   pick the folder that holds vf4tuned.zip.
+4. Build: the game goes into game\\ beside the launcher, or elsewhere with
+   Change.... Press Build. The first build downloads about 200 MB of
+   compiler and takes a few minutes.
+5. Play. Add to Steam (on the Play page, with Steam closed) adds the game
+   to your Steam library.
+
+ON LINUX OR A STEAM DECK (through Steam's Proton)
+1. Extract this zip into a folder of its own, for example ~/Games/vf4ft.
+2. In Steam: Games menu, Add a Non-Steam Game to My Library, Browse, set
+   the file type to All Files, pick vf4ft-launcher.exe in that folder,
+   Add Selected Programs.
+3. Right-click the new entry, Properties, Compatibility: tick "Force the
+   use of a specific Steam Play compatibility tool" and choose Proton
+   Experimental.
+4. Start it from your Steam library, then do steps 3 to 5 above (Play
+   starts the game under the same Proton).
+On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
+Plain Wine is not supported: run the launcher through Proton.
+
+Updates: the launcher checks for a newer release when it starts and
+offers Update now. Your saves and settings stay.
+
+More: builder/README.md. The launcher's fonts are Noto Sans and Noto Sans
+Mono, under the SIL Open Font License 1.1: builder/runtime/ui/OFL.txt.
+"""
+
+README_LINUX = """VF4 Final Tuned recomp %s: the builder and launcher
+
+This download contains none of the game. The launcher builds the game on
+your PC from your own MAME vf4tuned set: vf4tuned.zip and its GD-ROM,
+vf4tuned/gds-0036f.chd.
+
+1. Extract this archive into a folder of its own, for example ~/Games/vf4ft.
+2. Run vf4ft-launcher.
+3. Game files: Use this set (the one it found), or Choose folder... and
+   pick the folder that holds vf4tuned.zip.
+4. Build: the game goes into game/ beside the launcher, or elsewhere with
+   Change.... Press Build.
+5. Play.
+
+More: builder/README.md. The launcher's fonts are Noto Sans and Noto Sans
+Mono, under the SIL Open Font License 1.1: builder/runtime/ui/OFL.txt.
+"""
+
+
 def main():
     a = sys.argv[1:]
     version = None
@@ -120,14 +178,8 @@ def main():
         sdl = toolchain.fetch("sdl3-mingw")
         shutil.copy2(os.path.join(sdl, "x86_64-w64-mingw32", "bin", "SDL3.dll"), out)
         python_embed(os.path.join(out, "python"))
-    with open(os.path.join(out, "READ ME.txt"), "w") as f:
-        f.write("VF4 Final Tuned recomp: the builder and launcher.\n\n"
-                "Run vf4ft-launcher, choose the folder with your MAME vf4tuned set\n"
-                "(gds-0036f.chd and vf4tuned.zip), press Build, then Play.\n"
-                "The game is built into game/ beside the launcher, from your own set;\n"
-                "this download contains none of the game. Details: builder/README.md\n\n"
-                "The launcher's fonts are Noto Sans and Noto Sans Mono, under the SIL\n"
-                "Open Font License 1.1: builder/runtime/ui/OFL.txt.\n")
+    with open(os.path.join(out, "READ ME.txt"), "w", newline="\r\n" if kind == "windows" else "\n") as f:
+        f.write((README_WINDOWS if kind == "windows" else README_LINUX) % (version or m[1]))
     zpath = out.rstrip(os.sep) + ".zip"
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for dirpath, _, names in os.walk(out):
