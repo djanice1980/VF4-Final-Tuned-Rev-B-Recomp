@@ -426,7 +426,11 @@ shown are the real pad's (a DualSense's shapes, not Xbox letters).
 the picture. Its tabs are Game, Picture, Sound and Controls: Q and E (or
 LB and RB) switch them. Up and Down choose, Left and Right change, A or
 Enter selects, B or Esc goes back (A and B by their labels, so on a Switch
-pad A is the right button); the keys or buttons for each are shown
+pad A is the right button). The mouse works too: the row under it is
+chosen, a click selects it (or changes an option onward), a right click
+changes an option back (elsewhere it closes the menu), the wheel moves
+through the rows, and the tabs, the Q and E caps, the Ko-fi badge and the
+first start's notice buttons can be clicked. The keys or buttons for each are shown
 at its foot, as the keyboard or the gamepad last used names them, and the
 panel on the right says what the chosen row does. Picture,
 scaling, fullscreen and volume change at once; renderer, resolution and

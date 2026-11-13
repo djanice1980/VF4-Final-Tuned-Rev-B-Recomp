@@ -1816,3 +1816,46 @@ padtype=steamvirtual`) and the file, logs the list and its slot.
 
 Not tried: a real DualSense under Steam (David's next run will say: the
 log's "left out" line).
+
+## 31. The mouse in the game's menu (2026-11-13)
+
+David asked for mouse clicks in the game's menu (the launcher had them;
+the game's menu took keys and pads only).
+
+**What (runtime/host/menu.c `menu_mouse`, main.c's event loop):**
+- The row under the mouse is chosen as it moves (its text shows on the
+  right); moving onto another row cancels a Restart, Quit or Open the
+  launcher that asked once, as Up and Down do.
+- A left click: on a tab or the Q and E caps, that tab; on a row, the
+  row's A (an option goes one onward; Restart, Quit and Open the launcher
+  ask for a second click); on Ko-fi's badge (shown with Support on
+  Ko-fi), the Ko-fi page.
+- A right click: on a row, Left (an option one back; nothing on an
+  action); anywhere else, Back (the menu closes).
+- The wheel moves the choice a row per turn, without wrapping.
+- The first start's Ko-fi notice: the mouse over a button moves the focus
+  to it; a click is that button (the badge is Support on Ko-fi); a right
+  click closes it.
+- The menu is drawn over the whole window in pixels; SDL gives the mouse
+  in window units (logical on Wayland), so they are multiplied by
+  `SDL_GetWindowPixelDensity`. `menu_mouse` puts back the menu's own
+  `ui_fit` before `ui_to_logical` (the operator bar draws at another
+  scale) and does nothing until the menu was drawn after opening (the hit
+  tests are the last drawing's).
+- Mouse events are taken only while the menu is open; the operator bar
+  takes none.
+- For tests, `--keys` has `mouse:KIND@XxY` (move, left, right, up, down at
+  a window point).
+
+**Checked** natively, offscreen (1280 x 960, density 1), by `--keys`:
+hover chose Credits, a click made it Arcade coins (with its dot); a click
+on Picture opened that tab and a right click put Picture from 4:3 to
+Stretch; two wheel turns went down two rows; the E cap went to Sound; a
+right click outside the rows closed the menu; the badge's click reached a
+stand-in browser (no session bus); Quit asked again and the second click
+quit, with settings.txt saved. The notice: the mouse over Support on
+Ko-fi focused it, a click on Close closed it without opening anything,
+and a click on Support on Ko-fi opened the page and closed it.
+
+Not tried: a real mouse, and a density other than 1 (a scaled Wayland
+desktop running the native build).

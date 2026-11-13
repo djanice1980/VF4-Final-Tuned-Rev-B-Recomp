@@ -33,6 +33,8 @@
  *                     shot=menu.bmp,Escape": SDL key names, "@N" waits for vertical blank N,
  *                     "shot=FILE" saves the window as shown (the menu included) to a BMP file,
  *                     "pad:a+x=N" holds buttons of a virtual gamepad (SDL's names) for N turns (6),
+ *                     "mouse:KIND@XxY" the mouse at window point X, Y: KIND move, left or right
+ *                     (a click), up or down (a turn of the wheel),
  *                     "padtype=NAME" anywhere in the list gives that gamepad a real pad's ids (its
  *                     glyphs): xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck, steamvirtual
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
@@ -1131,6 +1133,46 @@ static void vpad_turn(void)
             SDL_SetJoystickVirtualButton(vpad, b, false);
 }
 
+/* --keys mouse:KIND@XxY: the mouse's event at window point X, Y, as SDL
+ * gives it (the press and the release of a click) */
+static void key_mouse(SDL_Window *w, const char *what)
+{
+    char kind[16] = "";
+    float x = 0, y = 0;
+    if (SDL_sscanf(what, "%15[a-z]@%fx%f", kind, &x, &y) != 3) {
+        logf_("--keys: \"mouse:%s\" is not KIND@XxY", what);
+        return;
+    }
+    SDL_Event e;
+    SDL_zero(e);
+    if (!strcmp(kind, "move")) {
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.windowID = SDL_GetWindowID(w);
+        e.motion.x = x, e.motion.y = y;
+        SDL_PushEvent(&e);
+    } else if (!strcmp(kind, "left") || !strcmp(kind, "right")) {
+        e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        e.button.windowID = SDL_GetWindowID(w);
+        e.button.button = kind[0] == 'l' ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+        e.button.down = true;
+        e.button.clicks = 1;
+        e.button.x = x, e.button.y = y;
+        SDL_PushEvent(&e);
+        e.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.down = false;
+        SDL_PushEvent(&e);
+    } else if (!strcmp(kind, "up") || !strcmp(kind, "down")) {
+        e.type = SDL_EVENT_MOUSE_WHEEL;
+        e.wheel.windowID = SDL_GetWindowID(w);
+        e.wheel.y = kind[0] == 'u' ? 1 : -1;
+        e.wheel.integer_y = (Sint32)e.wheel.y;
+        e.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+        e.wheel.mouse_x = x, e.wheel.mouse_y = y;
+        SDL_PushEvent(&e);
+    } else
+        logf_("--keys: no mouse event is called \"%s\"", kind);
+}
+
 static int keys_parse(const char *list)
 {
     SDL_strlcpy(key_list, list, sizeof key_list);
@@ -1443,6 +1485,36 @@ int main(int argc, char **argv)
                 }
                 break;
             }
+            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_WHEEL: {
+                if (!menu_on)
+                    break;
+                /* the menu is drawn over the whole window in pixels; the
+                 * mouse is in window units (logical on Wayland) */
+                float k = SDL_GetWindowPixelDensity(win), mx, my;
+                int what, d = 0;
+                if (ev.type == SDL_EVENT_MOUSE_MOTION) {
+                    what = MENU_MOUSE_MOVE;
+                    mx = ev.motion.x, my = ev.motion.y;
+                } else if (ev.type == SDL_EVENT_MOUSE_WHEEL) {
+                    what = MENU_MOUSE_WHEEL;
+                    mx = ev.wheel.mouse_x, my = ev.wheel.mouse_y;
+                    float wy = ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -ev.wheel.y : ev.wheel.y;
+                    d = wy > 0 ? -1 : wy < 0 ? 1 : 0;   /* up the list for a turn away */
+                    if (!d)
+                        break;
+                } else {
+                    if (ev.button.button != SDL_BUTTON_LEFT && ev.button.button != SDL_BUTTON_RIGHT)
+                        break;
+                    what = ev.button.button == SDL_BUTTON_LEFT ? MENU_MOUSE_LEFT : MENU_MOUSE_RIGHT;
+                    mx = ev.button.x, my = ev.button.y;
+                }
+                int a = menu_mouse(what, mx * (k > 0 ? k : 1), my * (k > 0 ? k : 1), d);
+                if (a >= 0 && !menu_do(a))
+                    running = 0;
+                break;
+            }
             case SDL_EVENT_GAMEPAD_ADDED:
                 log_gamepad_added(ev.gdevice.which);
                 break;
@@ -1558,6 +1630,8 @@ int main(int argc, char **argv)
                 vpad_press(it + 4);
             else if (!strncmp(it, "padtype=", 8))
                 ;                   /* taken at start-up (vpad_attach) */
+            else if (!strncmp(it, "mouse:", 6))
+                key_mouse(win, it + 6);
             else {
                 SDL_Event k;
                 SDL_zero(k);

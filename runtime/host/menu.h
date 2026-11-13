@@ -1,7 +1,8 @@
 /* The game's own menu, over the picture (docs/design.md sections 21, 22):
  * Insert or Esc, a gamepad's Guide button, or View + Menu held for a second
  * open it, and the game pauses while it is open. Its tabs (Game, Picture,
- * Sound, Controls) are switched with Q and E or the shoulder buttons. The
+ * Sound, Controls) are switched with Q and E or the shoulder buttons, or
+ * clicked; the mouse chooses the row under it (menu_mouse). The
  * player's settings that can change while the game runs change at once;
  * the others are kept for the next start. The cabinet's Test switch and a
  * restart are here too, so a player with only a gamepad (the Steam Deck)
@@ -61,6 +62,15 @@ void menu_kofi(int opened);
 
 /* a command; returns MENU_* */
 int menu_command(int cmd);
+
+/* the mouse (docs/design.md s31), at px, py in pixels of menu_draw's
+ * target: MENU_MOUSE_MOVE chooses the row under it; MENU_MOUSE_LEFT clicks
+ * (a tab, a row as MENU_OK on it, the notice's buttons, Ko-fi's badge);
+ * MENU_MOUSE_RIGHT is Left on the row under it, else Back; MENU_MOUSE_WHEEL
+ * moves the choice d rows (no wrapping). Returns MENU_*, or -1 when the
+ * drawing did not change (before the menu is drawn too). */
+enum { MENU_MOUSE_MOVE, MENU_MOUSE_LEFT, MENU_MOUSE_RIGHT, MENU_MOUSE_WHEEL };
+int menu_mouse(int what, float px, float py, int d);
 
 /* 1 when s was changed since menu_open */
 int menu_changed(void);

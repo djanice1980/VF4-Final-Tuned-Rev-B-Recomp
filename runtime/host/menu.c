@@ -27,6 +27,11 @@ static settings before;     /* as it was when opened */
 static int tab, row, top, armed = -1; /* armed: Restart or Quit, chosen once (the second choice does it) */
 static int notice, notice_focus;    /* the first start's Ko-fi notice; its buttons: 0 Support on Ko-fi, 1 Close */
 static int kofi_said = -1;          /* the Ko-fi page was opened (1) or not (0) since the menu opened */
+/* for the mouse: the last drawing's target (0 until it is drawn after
+ * opening: the hit tests are its), the notice's buttons and Ko-fi's badge
+ * (logical units; w 0 when not drawn) */
+static int drawn_w, drawn_h;
+static SDL_FRect notice_btn[2], badge_at;
 
 void menu_open(settings *cfg, const menu_run *r)
 {
@@ -38,6 +43,7 @@ void menu_open(settings *cfg, const menu_run *r)
     armed = -1;
     notice = 0;
     kofi_said = -1;
+    drawn_w = drawn_h = 0;
     for (int t = 0; t < TABS; t++) {
         nshown[t] = 0;
         for (int i = 0; i < ROWS && tab_rows[t][i] >= 0; i++)
@@ -148,6 +154,82 @@ int menu_command(int cmd)
     return MENU_STAY;
 }
 
+/* ---- the mouse ---- */
+
+static int inside(const SDL_FRect *r, float x, float y)
+{
+    return r->w > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;
+}
+
+/* chooses row r (another row: Restart or Quit asks from the start again) */
+static void choose(int r)
+{
+    if (r != row)
+        armed = -1;
+    row = r;
+}
+
+int menu_mouse(int what, float px, float py, int d)
+{
+    if (!drawn_w)
+        return -1;
+    float x, y;
+    ui_fit(1180, 680, drawn_w, drawn_h);      /* menu_draw's: the operator bar draws at its own scale */
+    ui_to_logical(px, py, &x, &y);
+    if (notice) {
+        int b = inside(&notice_btn[0], x, y) || inside(&badge_at, x, y) ? 0 : inside(&notice_btn[1], x, y) ? 1 : -1;
+        switch (what) {
+        case MENU_MOUSE_MOVE:
+            if (b < 0 || b == notice_focus)
+                return -1;
+            notice_focus = b;
+            return MENU_STAY;
+        case MENU_MOUSE_LEFT: return b == 0 ? MENU_KOFI_CLOSE : b == 1 ? MENU_RESUME : -1;
+        case MENU_MOUSE_RIGHT: return MENU_RESUME;
+        default: return -1;
+        }
+    }
+    int r = ui_rows_hit(x, y), t = ui_tabs_hit(x, y);
+    switch (what) {
+    case MENU_MOUSE_MOVE:
+        if (r < 0 || r == row)
+            return -1;
+        choose(r);
+        return MENU_STAY;
+    case MENU_MOUSE_WHEEL: {
+        int to = SDL_clamp(row + d, 0, rows_in(tab) - 1);
+        if (to == row)
+            return -1;
+        choose(to);
+        return MENU_STAY;
+    }
+    case MENU_MOUSE_LEFT:
+        if (t == UI_TAB_PREV || t == UI_TAB_NEXT)
+            return menu_command(t == UI_TAB_PREV ? MENU_PREV : MENU_NEXT);
+        if (t >= 0) {
+            if (t == tab)
+                return -1;
+            tab = t;
+            row = top = 0;
+            armed = -1;
+            return MENU_STAY;
+        }
+        if (inside(&badge_at, x, y))
+            return MENU_KOFI;
+        if (r < 0)
+            return -1;
+        choose(r);
+        return menu_command(MENU_OK);   /* Restart, Quit and Open the launcher: a second click */
+    case MENU_MOUSE_RIGHT:
+        if (r < 0)
+            return menu_command(MENU_BACK);
+        choose(r);
+        return menu_command(MENU_LEFT); /* an option one back; nothing on an action */
+    default:
+        return -1;
+    }
+}
+
 /* ---- drawing ---- */
 
 /* Ko-fi's badge, w wide (its own shape: 672 x 356); a plain button in its
@@ -182,8 +264,9 @@ static void draw_notice(void)
     y += 23 * (float)ui_wrap(UI_REGULAR, 15.5f, X + P, y, W - 2 * P, 23, UI_MUTED,
                              "This recomp of Virtua Fighter 4 Final Tuned is free. If you enjoy it, you can "
                              "support its development on Ko-fi.");
-    float bw = 250;
-    y += kofi_badge(X + (W - bw) / 2, y, bw) + 26;
+    float bw = 250, bh = kofi_badge(X + (W - bw) / 2, y, bw);
+    badge_at = (SDL_FRect){ X + (W - bw) / 2, y, bw, bh };
+    y += bh + 26;
     ui_text_in(UI_MEDIUM, 15, X, y, W, 1, 0, UI_TEXT, MENU_KOFI_SHOWN);
     y += 34;
     ui_text_in(UI_REGULAR, 13.5f, X, y, W, 1, 0, UI_FAINT,
@@ -193,6 +276,8 @@ static void draw_notice(void)
     const char *l0 = "Support on Ko-fi", *l1 = "Close";
     float w0 = ui_text_w(UI_MEDIUM, 16, l0) + 52, w1 = ui_text_w(UI_MEDIUM, 16, l1) + 52;
     float bx = X + (W - w0 - 14 - w1) / 2, by = Y + H - 62 - 66;
+    notice_btn[0] = (SDL_FRect){ bx, by, w0, 46 };
+    notice_btn[1] = (SDL_FRect){ bx + w0 + 14, by, w1, 46 };
     bx += notice_button(bx, by, l0, notice_focus == 0) + 14;
     notice_button(bx, by, l1, notice_focus == 1);
     ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
@@ -318,6 +403,9 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
 
     /* the panel: 1100 x 620 units in the middle */
     ui_fit(1180, 680, pw, ph);
+    drawn_w = pw;
+    drawn_h = ph;
+    badge_at.w = 0;
     if (notice) {
         draw_notice();
         return;
@@ -389,8 +477,9 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
     about_of(row_id(row), &title, &text, &note);
     ui_about(X + 694, ry, W - 694 - 30, rh, title, text, note);
     if (row_id(row) == A_KOFI) {         /* the badge at the foot of the panel */
-        float bw = 220, aw = W - 694 - 30;
-        kofi_badge(X + 694 + (aw - bw) / 2, ry + rh - 24 - bw * 356 / 672, bw);
+        float bw = 220, aw = W - 694 - 30, bh = bw * 356 / 672;
+        badge_at = (SDL_FRect){ X + 694 + (aw - bw) / 2, ry + rh - 24 - bh, bw, bh };
+        kofi_badge(badge_at.x, badge_at.y, bw);
     }
 
     ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
