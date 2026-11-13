@@ -47,8 +47,8 @@ holds the launcher and builder only, no game. You also need your MAME
 4. Start it from your Steam library, then do steps 3 and 4 above, and
    press **Play**: the game starts under the same Proton, with Steam
    Input. This entry is how you play from now on (it opens on Play once
-   the game is built), so Add to Steam is not needed here, and it cannot
-   work while Steam runs.
+   the game is built). The launcher does not offer Add to Steam here: it
+   is in Steam already.
 
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode
 ([more for the Deck](#steam-deck-m6)). Plain Wine is not supported.
@@ -171,7 +171,8 @@ Build (where the game goes, with Change…; then the stage, a progress bar,
 the time so far and the builder's last lines; Cancel stops it cleanly),
 and Play. The Play page
 also has Settings (the game's settings and controls, in tabs), Add to Steam
-(adds the game as a non-Steam game; close Steam first), Build again, and an
+(adds the game as a non-Steam game; close Steam first; not offered when
+Steam started the launcher, or under Wine or Proton), Build again, and an
 Update card when the builder is newer than the game it built. The mouse,
 the keyboard (arrows, Enter, Esc; Q and E switch tabs) and a gamepad
 (D-pad, A, B; LB and RB switch tabs) all work it. The game goes into

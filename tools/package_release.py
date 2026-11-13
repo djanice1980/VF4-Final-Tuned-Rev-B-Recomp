@@ -112,8 +112,8 @@ ON LINUX OR A STEAM DECK (through Steam's Proton)
    Experimental.
 4. Start it from your Steam library, do steps 3 and 4 above, and press
    Play: the game starts under the same Proton. This entry is how you
-   play from now on; Add to Steam is not needed here (it cannot work
-   while Steam runs).
+   play from now on (the launcher does not offer Add to Steam here: it is
+   in Steam already).
 On a Steam Deck, do steps 1 to 3 in Desktop Mode and step 4 in Game Mode.
 Plain Wine is not supported: run the launcher through Proton.
 

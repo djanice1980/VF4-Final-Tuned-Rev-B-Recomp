@@ -97,6 +97,7 @@ static char found_path[1024];       /* a set find_set found: offered, used once 
 static char saves_from[1024];       /* the install before Change: its user/ goes into the new one at Build */
 static char game_note[400];         /* the Build page's line about the install folder */
 static int game_note_bad;
+static int no_add_to_steam;         /* Steam started the launcher, or Wine/Proton runs it: no Add to Steam */
 
 static void say(const char *fmt, ...)
 {
@@ -482,6 +483,36 @@ static void find_set(void)
     }
 #endif
     say("no set found by itself: choose its folder");
+}
+
+/* Add to Steam edits Steam's shortcut files, which Steam rewrites when it
+ * exits: it works only with Steam closed, from outside Steam. So it is not
+ * offered when Steam started the launcher (Steam's own launch variables;
+ * under Proton the launcher's Steam entry is already how the game is
+ * played), nor to the Windows launcher under Wine or Proton, where the
+ * tool would see the prefix's stand-in Steam and not the real one. */
+static void steam_setup(void)
+{
+    static const char *const vars[] = {"SteamGameId", "SteamClientLaunch", "SteamAppId", NULL};
+    for (int i = 0; vars[i]; i++) {
+        const char *v = SDL_getenv(vars[i]);
+        if (v && v[0]) {
+            no_add_to_steam = 1;
+            say("steam: started by Steam (%s=%s): no Add to Steam, the launcher is in Steam already", vars[i], v);
+            return;
+        }
+    }
+#ifdef _WIN32
+    SDL_SharedObject *nt = SDL_LoadObject("ntdll.dll");
+    const char *(*wine_version)(void) = nt ? (const char *(*)(void))SDL_LoadFunction(nt, "wine_get_version") : NULL;
+    if (wine_version) {
+        no_add_to_steam = 1;
+        say("steam: Wine %s (Proton or plain Wine): no Add to Steam, which needs the real Steam closed",
+            wine_version());
+    }
+    if (nt)
+        SDL_UnloadObject(nt);
+#endif
 }
 
 static void program_path(char *out, size_t n)
@@ -1155,7 +1186,7 @@ static int enabled(int b)
     case B_BUILD: return set_ok() && root[0] && !proc;
     case B_UPDATE: return built && root[0] && !proc;
     case B_PLAY: return built && !game_proc && !proc;
-    case B_STEAM: return built && root[0] && !proc && !built_linux;
+    case B_STEAM: return built && root[0] && !proc && !built_linux && !no_add_to_steam;
     case B_CANCEL: return (proc || shot_working) && !cancel_at;
     case B_REBUILD: return root[0] && !proc;
     /* a download starts only once the check's update.py has ended (it says
@@ -1203,7 +1234,7 @@ static int page_buttons(int *ids)
         }
         ids[n++] = B_PLAY;
         ids[n++] = B_SETTINGS;
-        if (!built_linux)
+        if (!built_linux && !no_add_to_steam)
             ids[n++] = B_STEAM;
         ids[n++] = B_REBUILD;
         ids[n++] = B_FILES;
@@ -1901,7 +1932,7 @@ static void draw_play(void)
     button(B_PLAY, CX, y + 6, 220, 64, "Play", update_ready() || upd_card() ? 0 : 1, UI_I_PLAY);
     float x = CX + 244;
     x += button(B_SETTINGS, x, y + 14, 0, BTN_H, "Settings", 0, -1) + 14;
-    if (!built_linux)
+    if (!built_linux && !no_add_to_steam)
         x += button(B_STEAM, x, y + 14, 0, BTN_H, "Add to Steam", 0, -1) + 14;
     x += button(B_REBUILD, x, y + 14, 0, BTN_H, "Build again", 0, -1) + 14;
     button(B_FILES, x, y + 14, 0, BTN_H, "Game files", 0, -1);
@@ -2167,6 +2198,7 @@ int main(int argc, char **argv)
         SDL_VERSIONNUM_MINOR(SDL_GetVersion()), SDL_VERSIONNUM_MICRO(SDL_GetVersion()),
         SDL_GetRendererName(ren), SDL_GetCurrentVideoDriver());
     say("install folder: %s", game);
+    steam_setup();
     upd_startup();
     if (!shot_page)
         take_game_request();    /* the game's "Update when I quit" (a game that did not hand it over itself) */

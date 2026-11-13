@@ -1645,3 +1645,19 @@ option `--pick-game DIR`):
 - `gu_init` (in a small harness) found the release through `build.json`,
   found none for an install without it, and logged a release folder that
   was missing.
+
+**Add to Steam only from outside Steam** (David's decision, the same
+day). `tools/steam_shortcut.py` edits Steam's shortcut files, which Steam
+rewrites when it exits, so it needs Steam closed. Run from Steam, the
+launcher could never use it; under Proton the launcher's own Steam entry
+is already how the game is played (Play starts it in the same Proton).
+Under Wine or Proton the tool would also see the prefix's stand-in Steam
+(its registry's SteamPath), not the real one. So `steam_setup` hides the
+button when Steam's launch variables are set (`SteamGameId`,
+`SteamClientLaunch` or `SteamAppId`; umu-run sets `SteamGameId` too), or
+when the Windows launcher finds `wine_get_version` in ntdll, and says
+which in `launcher.log`. Checked offscreen: the native launcher shows it,
+and hides it with `SteamGameId` set; the Windows launcher hides it under
+umu-run (through `SteamGameId`) and under plain Wine with no Steam
+variables (through Wine). Not tried: Steam itself on Windows, whose launch
+variables are expected to be the same ones.
