@@ -17,8 +17,11 @@ emulator runs at play time.
 ## Status
 
 Playable with sound, built on your PC from your own set by the builder
-(M5): from the command line or with the launcher. No release has been
-published yet. The plan, with its milestones: [docs/design.md](docs/design.md).
+(M5): from the command line or with the launcher. M6 added saves, free
+play, the card units, a settings page with rebinding, the GPU renderer at
+up to 4 times the resolution, and the Steam Deck route. Test mode is not
+done yet. No release has been published yet. The plan, with its
+milestones: [docs/design.md](docs/design.md).
 
 | Milestone | State |
 |---|---|
@@ -28,6 +31,7 @@ published yet. The plan, with its milestones: [docs/design.md](docs/design.md).
 | M3: picture, input, real time | Done 2026-11-12. The game runs in a window at 60 fps natively on Linux and under Proton (Direct3D 12), with keyboard and gamepads, and gives the same run as VF4debug's; played through coin, start and a match with a DualSense. The picture is VF4debug's software renderer, 8 to 9 ms a frame with the machine while playing ([details](docs/design.md#15-m3-results-2026-11-12)) |
 | M4: sound | Done 2026-11-12. The game's own sound driver runs on an ARM7 interpreter with a model of the AICA chip and its effect DSP: music, voices, effects and the game's reverb play in the window on Linux and under Proton, and every run is deterministic ([details](docs/design.md#17-m4-results-2026-11-12), [the DSP](docs/design.md#18-the-effect-dsp-2026-11-12)) |
 | M5: builder and launcher | Done 2026-11-12. Your MAME set to an installed game in about a minute, with no MAME tools and nothing to install: the builder reads the CHD itself, keeps the disc's encrypted image (the game decrypts it at start), downloads a pinned compiler and SDL3, translates and compiles. The Windows launcher (with its own Python) built and played the game under Proton in a fresh prefix ([details](docs/design.md#19-m5-results-2026-11-12)) |
+| M6: polish | Done 2026-11-12 except test mode. Saves (the cabinet's backup RAM and settings EEPROM), free play by default the operator's way (or arcade coins), the two card units, `user/settings.txt` with the launcher's Settings page and rebinding. The GPU renderer (Vulkan, natively and under Proton) draws at 1 to 4 times 640 x 480 and matches the software picture; the machine's frame went from 7.0 to 3.1 ms, which puts the Steam Deck at an estimated 10 to 12 ms a frame. The Deck runs the Windows release under Proton (not yet tried on a real Deck). Test (F2) still ends the game ([details](docs/design.md#20-m6-results-2026-11-12)) |
 
 ## How it works
 
@@ -94,11 +98,52 @@ together by `tools/package_release.py` (its usage is at its top).
 Whatever the builder makes is made from your copy of the game: never share
 the install folder.
 
+## Steam Deck (M6)
+
+The Deck runs the Windows release under Proton, in Game Mode. This has not
+been tried on a real Deck yet; the same release was built and played under
+Proton on a desktop PC.
+
+1. **A release zip.** None has been published yet. Until one is, make it on
+   a Linux PC from this repository: steps 1 to 3 of "Development build"
+   below (step 3 makes `build/win64/vf4ft-launcher.exe`), then
+
+   ```bash
+   python3 -I tools/package_release.py windows build/win64/vf4ft-launcher.exe ~/vf4ft-release
+   ```
+
+   That makes `~/vf4ft-release.zip` (about 15 MB; it holds no game data).
+2. **On the Deck, in Desktop Mode** (Steam button, Power, Switch to Desktop):
+   copy the zip over (USB stick, SD card or a network share), right-click
+   it in Dolphin, Extract, Extract archive here. Put the folder anywhere,
+   for example `~/Games/vf4ft-release`.
+3. **Your set** (`gds-0036f.chd` and `vf4tuned.zip`): the launcher finds it
+   by itself in EmuDeck's ROM folders (`Emulation/roms/arcade`, `naomi2`,
+   `naomi` or `mame`, on the Deck or the SD card), or in `~/Games`,
+   `~/Games/naomi2`, `~/roms`, `~/Downloads` or `~/Desktop`. Anywhere else,
+   pick it with Choose set.
+4. **Add it to Steam:** open Steam on the desktop, Games menu, "Add a
+   Non-Steam Game to My Library", Browse, set the file type to "All Files",
+   pick `vf4ft-launcher.exe` in the release folder, then "Add Selected
+   Programs". Right-click the new entry, Properties, Compatibility, tick
+   "Force the use of a specific Steam Play compatibility tool" and choose
+   Proton Experimental.
+5. **In Game Mode**, start it from the library (the Non-Steam tab). The
+   D-pad and A work the buttons: Build (the first run downloads about 190
+   MB of compiler, and takes several minutes on the Deck), then Play. The
+   game runs fullscreen in the same Proton prefix and the launcher comes
+   back when it ends. Settings is where controls, the coin setting, the
+   resolution and the rest are changed.
+
+On the Deck's controls the game's defaults are: X guard, Y punch, B kick,
+A throw (P+G), L1 P+K, R1 P+K+G, Menu start, View coin (not needed with free
+play). Holding View + Menu for a second quits.
+
 ## Development build (CachyOS / Arch)
 
 Steps 1 to 6 build the toolchain and the window. The game itself needs the
 translated code (M1, "Translating the game") and the decompilation's files:
-"Playing (development, M3)" below. Until the code is translated, only the
+"Playing (development, M3 to M6)" below. Until the code is translated, only the
 CPU runtime is built and there is no `vf4ft` program.
 
 1. Tools. Each prints a version line:
@@ -142,7 +187,7 @@ CPU runtime is built and there is no `vf4ft` program.
    ```
 
    Then read `build/win64/vf4ft.log`. Controls and options: "Playing
-   (development, M3)" below.
+   (development, M3 to M6)" below.
 
 6. Run it from Steam (Steam Input). Close Steam first (Steam menu, Exit),
    then add the program as a non-Steam game set to Proton Experimental:
@@ -200,7 +245,7 @@ made from your copy of the game: never commit or share it.
    make -C tests/lockstep -j16 test
    ```
 
-## Playing (development, M3 and M4)
+## Playing (development, M3 to M6)
 
 `build/linux/vf4ft` and `build/win64/vf4ft.exe` (steps 3 and 4, once
 `work/gen/` exists) are the game in a window. Each reads `data/main.bin`
@@ -217,28 +262,64 @@ Windows under Proton: step 5 above; from Steam: step 6. The start-up
 before the warning screen (about 97 s of nothing on the real board) runs
 as fast as it can, so the warning screen shows after 2 to 3 seconds. The
 game runs at 60 frames a second from then on. It is Japanese settings with
-coins: press Coin, then Start.
+free play: press Start.
+
+The default controls (all of them can be changed, below):
 
 | | Keyboard (player 1) | Gamepad (first: player 1, second: player 2) |
 |---|---|---|
 | Move | arrows or WASD | left stick or D-pad |
 | Guard / Punch / Kick | J / K / L | X / Y / B (West / North / East) |
-| Punch + Guard (throw) | | A (South) |
+| Punch + Guard (throw) | U | A (South) |
+| Punch + Kick / Punch + Kick + Guard | I / O | LB / RB |
 | Start | Enter | Menu |
 | Coin | 5 (slot 1), 6 (slot 2) | View |
 | Test / Service | F2 / F3 | |
 | Fullscreen | F11 or Alt+Enter | |
 | Quit | Esc | hold View + Menu for a second |
 
+Test (F2) ends the game for now: the game asks the BIOS for its test menu,
+which is not done yet (`vf4ft.log` says so).
+
+**The player's folder,** `user/` beside the program (or `--user DIR`):
+
+- `settings.txt`: what the launcher's Settings page writes, and the game
+  reads when it starts. One "name = value" a line: `coins` (free play |
+  arcade), `fullscreen` (auto | on | off; auto is on for the Steam Deck and
+  Big Picture), `picture` (4:3 | stretch), `filter` (smooth | sharp),
+  `renderer` (gpu | software), `scale` (1 to 4 times 640 x 480; default 2),
+  `sound` (on | off), `cards` (on | off), then the controls: `key1.punch =
+  K`, `key2.*` for keyboard player 2, `pad.*` for gamepads, with SDL's key
+  and button names, several separated by commas, `-` for none. The file
+  the launcher writes lists every name with its choices. A line the game
+  does not know is skipped, with a message in `vf4ft.log`.
+- `backup.bin`: the cabinet's battery-backed RAM and settings EEPROM,
+  everything the board keeps with the power off, written every 10 seconds
+  when it has changed and when the game ends.
+- `cards/p1.card` and `p2.card`: the two card units' cards, made the first
+  time a player saves to a card.
+
+**The GPU renderer** (`renderer = gpu`, the default) needs Vulkan: it is
+used natively, and under Proton through Proton's own Vulkan. Without
+Vulkan, or with `--gpu direct3d12`, the game shows the software picture
+at 640 x 480, as in M3. `vf4ft.log` says which renderer it used.
+
 Options: `--fullscreen`, `--gpu direct3d12|vulkan`, `--frames N` (quit
 after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `--real-boot` (the start-up at its real pace too), `--image FILE`,
 `--dimm FILE` (a decrypted image, or the disc's `VF41_S.BIN` with
 `dimm.key` beside it), `--log FILE`, `--silent` (no sound chip: VF4debug's
-mailbox model, as in M3). Every 600 frames `vf4ft.log` (beside the
-program) records how long the machine took per frame, on average and at
-most, and how much audio is queued. Sound plays from the warning screen on.
-Rebinding, free play and settings are M6.
+mailbox model, as in M3), `--user DIR`, and for tests `--press LIST`
+(buttons at given vertical blanks, as `6500:p1:start,6800:p1:p+g`) and
+`--shot N FILE` (the picture at vertical blank N to a BMP file). Every 600
+frames `vf4ft.log` (beside the program) records how long the machine took
+per frame, on average and at most, and how much audio is queued. Sound
+plays from the warning screen on.
+
+The shaders' SPIR-V is committed (`runtime/host/gpu_shaders.h`), so
+building needs no shader compiler. After changing a shader in
+`runtime/host/shaders/`, install glslc (`sudo pacman -S shaderc`) and
+run `python3 tools/make_shaders.py`.
 
 ## Running the game headless (development, M2)
 

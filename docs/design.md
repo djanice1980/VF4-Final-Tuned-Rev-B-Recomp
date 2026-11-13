@@ -284,6 +284,11 @@ renderer keeps that reading and replaces the rasterizer:
   smooth scaling to the window, fullscreen. Widescreen needs the game's
   projection and HUD layout changed, so it is a later, separate piece of work.
 
+Built in M6 (section 20). Two things differ from this plan: the textures
+live in one storage buffer that the fragment shader reads itself, in place
+of a cache of GPU textures, and the shaders are SPIR-V, so the device is
+Vulkan (natively, or Proton's winevulkan).
+
 ## 7. Sound
 
 The AICA sound chip runs Sega's sound driver (`aicadrv.bin`, loaded by the
@@ -362,7 +367,7 @@ ME.txt`) and the README tell players never to share it.
 | M3 | Picture, input, real time | playable at 60 fps in a window, silent, on Windows and under Proton (done 2026-11-12, section 15) |
 | M4 | Sound | music, voices and effects (done 2026-11-12, section 17); the DSP's reverb (section 18) |
 | M5 | Builder and launcher | a fresh machine goes from the MAME set to Play with no other installs (section 19) |
-| M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered |
+| M6 | Polish | resolution scaling, settings menu, cards, free play / arcade coin setting, test mode; widescreen considered (all but test mode done 2026-11-12, section 20) |
 
 ## 11. Decided 2026-11-12
 
@@ -777,10 +782,145 @@ native Linux target uses the system's compiler and SDL3.
   files: 15 MB zipped). No release has been published, and there is no CI
   yet.
 - The Linux launcher links the system's SDL3. For Steam Deck it needs SDL3
-  built in, or the Windows release run under Proton.
+  built in, or the Windows release run under Proton (the route M6 took,
+  section 20).
 - Add to Steam on Windows (registry SteamPath, `tasklist`) is written but
   not run on a real Windows Steam. On Linux it is the M0 tool.
 - Play from the launcher on Linux, for the Windows exe, goes through the
   Steam shortcut, so Add to Steam has to come first. It was not run here,
   because Steam was open.
+
+## 20. M6 results (2026-11-12)
+
+Done: saves, free play or arcade coins, the card units, the settings file
+with the launcher's Settings page (rebinding included), the GPU renderer
+with resolution scaling, and the Steam Deck route. Not done: test mode
+(below). Widescreen stays a separate piece of work (section 6).
+
+**Saves.** `user/backup.bin` holds what the cabinet keeps with the power
+off: the battery-backed RAM (64 KiB at 0xa0200000) and the settings EEPROM
+(128 bytes), as one 65,664-byte file in VF4debug's backup-save layout. It
+is loaded before the game starts, and written (to a temporary file, then
+renamed) every 10 seconds when it has changed and when the game ends. A
+file that is there but is not a backup is left alone: the run starts blank
+and never writes over it.
+
+**Free play, the operator's way.** The EEPROM's system area is two copies
+of 18 bytes (at 0x00 and 0x12): a check word, five bytes of board settings
+and eleven of coin settings. Before the game starts, the coin setting (byte
+9 of a copy) is set to 26, which the BIOS stand-in's `coin_config_fix`
+reads as free play. `coins = arcade` puts 0 (1 coin, 1 credit) back only
+when free play is what it finds, so any other coin setting is kept. Both
+copies are then made the same and sealed with the game's own check
+(`crc16_ccitt`, the one `eeprom_check_copies` verifies at start). A blank
+EEPROM is first given what the game writes on its first start. No game
+code is changed. Checked headless: with free play Start goes to character
+select with no coin; with the coin setting at 0, Start with no coin does
+nothing and the attract demo goes on. In the window the attract screen
+says FREE PLAY.
+
+**Cards.** The cabinet's two card units are on by default (`cards = off`
+removes them), with the cards in `user/cards/p1.card` and `p2.card` (128
+bytes each). A card in the unit from the start works: the game reads it
+at character select, writes it (five writes) and locks it.
+A new card is kept once the game has written it; the window's card was the
+harness's byte for byte. `hw_card_put` and `hw_card_get` are the change in
+VF4debug's card model (`runtime/machine/ORIGIN.md`).
+
+**Settings.** `user/settings.txt` (`runtime/host/settings.c`, shared by the
+game and the launcher) is "name = value" lines: `coins` (free play |
+arcade), `fullscreen` (auto | on | off; auto is on when Steam sets
+`SteamDeck=1` or `SteamTenfoot=1`), `picture` (4:3 | stretch), `filter`
+(smooth | sharp), `renderer` (gpu | software), `scale` (1 to 4), `sound`,
+`cards`, and every control: `key1.*` and `key2.*` (keyboard, players 1 and
+2) and `pad.*` (every gamepad; the first is player 1), up to four inputs
+each, by SDL's key and gamepad names. Besides the game's three buttons
+there are buttons for P+G (throw), P+K and P+K+G. A line the game does not
+know is skipped with a message in `vf4ft.log`, so an old file or a hand
+edit never stops the game. The launcher's Settings page writes the file:
+one row per setting, and a Controls page per device where A takes the next
+key or button, X clears, Y restores the default.
+
+**The GPU renderer** (`runtime/host/gpu_render.c`, shaders in
+`runtime/host/shaders`). `view.c` keeps reading the display lists,
+transforming, lighting and sorting the translucent list (section 6); a pass
+to the screen is now handed to the host as vertices, polygon states and
+modifier volumes (`view_host_gpu`, the change to VF4debug's renderer in
+`ORIGIN.md`) instead of going to the software rasterizer. The host draws it
+with SDL_GPU by the rasterizer's rules:
+
+- the background plane; then the opaque and punch-through lists with the
+  chip's depth compares (depth is 1/w scaled by the scene's largest, the
+  greater value nearer, cleared to 0);
+- the opaque list's modifier volumes through the stencil: parity per
+  volume, then inclusion or exclusion, then the shadow pass, which scales
+  the colour of every polygon that takes shadows;
+- the translucent list from the back, with the chip's blend factors.
+
+The plan's texture cache became one storage buffer: an arena of 16 million
+texels, of which only what changed is sent again. The fragment shader
+fetches, wraps, mirrors and clamps texels itself, filters, picks the mip
+level, and does bump maps, shading, offset colour, the alpha test and both
+fogs. Colours are not perspective-corrected (as the chip draws them);
+texture coordinates are. Passes into textures are still drawn by the CPU
+into texture memory, as before. The shaders are GLSL compiled to SPIR-V by
+`tools/make_shaders.py` (glslc), and the result, `gpu_shaders.h`, is
+committed, so players need no shader compiler. SPIR-V means the device is
+Vulkan: natively, or under Proton through winevulkan; when there is none,
+or the renderer cannot start, the software picture is used as before.
+`scale` draws at 1 to 4 times 640 x 480 (default 2, 1280 x 960).
+
+Checked: at scale 1, on frames matched with `--shot` (the machine waits at
+that vertical blank while the picture is saved), the GPU picture matches
+the software one at 1:1 zoom: a mean difference of 1.6 to 2.4 (of 765),
+in scattered single pixels. The Windows exe under Proton draws
+through Vulkan. Not drawn yet: the translucent list's modifier volumes
+(shadows falling on translucent polygons). Frames that have them are
+counted in `vf4ft.log`.
+
+**Speed.** The machine's thread no longer waits for the rasterizer:
+
+| Run | Before (software picture) | GPU renderer |
+|---|---|---|
+| machine thread per frame, silent, unpaced | 7.0 ms | 3.1 ms |
+| 12,100 frames, unpaced | 38 s | 16 s |
+| 4 pinned cores / 8 threads (`taskset -c 0-3,16-19`), with the sound chip | 9 to 10 ms, up to 18 | 4.4 to 5.7 ms, up to about 12 |
+
+The Steam Deck's estimate was the pinned run's ×2.2 (section 15's
+measurements). That put the software picture at about 17 ms a frame, over
+the 16.7 ms a frame has. With the GPU renderer it comes to about 10 to 12
+ms. This is an estimate: no Deck has run it yet.
+
+**The Steam Deck route.** The Windows release (launcher, SDL3.dll, Python's
+embeddable package) is added to Steam as a non-Steam game with Proton and
+runs in Game Mode. The D-pad and A work the launcher's buttons. With no
+set chosen it looks for one in the usual places: EmuDeck's ROM folders on
+the Deck's own storage or an SD card, and a home's Games, roms, Downloads
+and Desktop folders. Under Proton it reaches the Linux side through Wine's
+Z: drive. Play starts the game in the same Proton prefix, and the launcher
+hides until the game ends. The game goes fullscreen by itself (`fullscreen
+= auto`), Steam Input's pad is player 1, and holding View + Menu for a
+second quits. The native Linux launcher still links the system's SDL3, so
+the Windows release is the one for the Deck.
+
+**Test mode: not done.** On the board, Test makes the game call BIOS
+service 0x44, and the BIOS's system menu takes over; its game test mode is
+`test.bin`, the separate test program (2,120 routines, translated and
+compiled since M1 but never run). Our BIOS stand-in has no system menu, so
+service 0x44 stops the machine with a message (`the game asked the BIOS
+for its test menu`). In the window, F2 therefore ends the game, after the
+backup and cards are saved. Running `test.bin` needs:
+
+- the runtime to start and switch between the two programs (`rt_native`
+  has only `main.bin`'s routine table);
+- `test.bin`'s routine and global tables (`meta/test` has its routine list
+  only);
+- the stand-in's hooks, which are keyed to `main.bin`'s addresses, for
+  `test.bin`;
+- BIOS services 0x04, 0x48, 0x4c, 0x50, 0x54 and 0x5c, which `test.bin`
+  calls and the stand-in does not model;
+- a way back to the game when the test program ends.
+
+The coin and free play settings the test mode would change are already in
+the settings file.
 
