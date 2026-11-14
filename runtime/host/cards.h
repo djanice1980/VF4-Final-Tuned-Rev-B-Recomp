@@ -34,7 +34,8 @@ typedef struct card_view {
     int header_ok, body_ok; /* the CRCs (the header or its copy) */
     int chara;              /* the character (card_hdr_char_num): card_chara_names */
     int level;              /* the rank: card_rank_text */
-    int wins, losses;
+    int wins, losses;       /* versus matches only (all_win, all_lose): the game counts no fight
+                             * against the computer */
     int plays_left;         /* use_count */
     int items;              /* the items it has (bits of item_have) */
     char name[44];          /* the ring name as text (card_name_text) */
@@ -58,7 +59,7 @@ const char *card_rank_text(int level, char *buf, size_t n);
 void card_name_text(const Uint8 *name20, char *out, size_t n);
 
 /* a card's details as lines of text, for the launcher's Cards tab and the
- * game menu's: character and rank, ring name, record, games left, items;
+ * game menu's: character and rank, ring name, versus record, games left, items;
  * else what the card is. file: 1 its file is there (v read from it), 0 not
  * made yet (no file), -1 the file is not a card (not 128 bytes). Returns
  * which text it is */

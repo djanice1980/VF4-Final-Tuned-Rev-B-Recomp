@@ -495,7 +495,7 @@ own changes do, with its checks; Backspace or Y undoes the changes. A
 card never used (the game's new card) becomes a ready card when it is
 edited. The game's menu has a Cards tab too: each player's card, chosen
 from the same list or a new one the game makes, with the chosen card's
-character, rank, ring name, record, games left and items beside it,
+character, rank, ring name, versus record, games left and items beside it,
 swapped in between games
 (choosing the other player's card swaps the two; a card the game is using
 leaves once the game has written it). On a cabinet the ring name was set

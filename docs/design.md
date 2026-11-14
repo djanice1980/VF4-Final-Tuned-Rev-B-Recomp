@@ -2265,8 +2265,8 @@ then. One card is in one unit at a time: a card the other unit still holds
 (a swap) goes in once that unit has let it go (`cards_swap`).
 
 The panel on the right shows the chosen card's details, as the launcher's
-Cards tab does: character and rank, ring name, record, games left and
-items, or what the card is (not made yet, never used, an older format, a
+Cards tab does: character and rank, ring name, versus record, games left
+and items, or what the card is (not made yet, never used, an older format, a
 file that is not a card). Both draw the text with `card_view_text`
 (`cards.c`); the launcher adds its Edit hints. The menu reads the card's
 file again when the row changes and every half second. So that the file
@@ -2274,6 +2274,15 @@ holds the game's latest, the machine thread writes the units' cards to their
 files (`cards_save`, tmp file and rename) as the menu pauses it, not only
 every 600 vblanks: opened mid-fight, the menu shows the game just begun
 (399 games left on a 400-game card).
+
+*Versus record (2026-11-13):* David won a fight against the computer and
+his card still had no wins. The game counts only versus matches there:
+`game_judge_init` calls `card_match_result_record` (`all_win`,
+`all_lose` and the rank change) after a match between two players, and
+after one against the computer (`play_style` 1) only moves on to the next
+opponent. Games left (`use_count`, 500 on a new card) goes down by one
+when a game starts on the card, not on a win streak. The text said "0
+wins, 0 losses", so it reads "Versus record: 0 wins, 0 losses" now.
 
 *Fixed after 2a54824:* the first menu left the other player's card out of
 each list, so two cards could not be swapped, and offered a card not made
@@ -2286,7 +2295,7 @@ the first let it go; `cards_swap` now waits for that.
 **The launcher's Cards tab** (Settings): the list of cards, a player's
 card with no file yet among them ("not made yet": the game makes it at
 the first game), and the chosen card's character, rank, ring name,
-record, games left and items. Its bar:
+versus record, games left and items. Its bar:
 - **Player 1, Player 2:** the card becomes that player's (lit when it is);
   pressed on the player's own card, the player has none. Giving a player
   the other player's card swaps the two. Saved with the settings (Done).

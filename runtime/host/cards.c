@@ -157,7 +157,10 @@ int card_view_text(const card_view *v, int file, char *out, size_t n)
         SDL_strlcpy(out, "Its checks do not hold, so the game would not read it.", n);
         return CARD_TEXT_BAD;
     }
-    SDL_snprintf(out, n, "%s, %s\nRing name: %s\n%d %s, %d %s\n%d %s left\nItems: %s",
+    /* the wins and losses are versus matches only: game_judge_init calls
+     * card_match_result_record (all_win, all_lose and the rank) after a
+     * match between two players, never after one against the computer */
+    SDL_snprintf(out, n, "%s, %s\nRing name: %s\nVersus record: %d %s, %d %s\n%d %s left\nItems: %s",
                  card_chara_names[v->chara & (CARD_CHARAS - 1)], card_rank_text(v->level, rank, sizeof rank),
                  v->name[0] ? v->name : "none", v->wins, v->wins == 1 ? "win" : "wins", v->losses,
                  v->losses == 1 ? "loss" : "losses", v->plays_left, v->plays_left == 1 ? "game" : "games",
