@@ -25,6 +25,7 @@ static void set(binding *b, const char *a, const char *c)
 }
 
 const char *const settings_card_default[2] = { "p1", "p2" };
+const char *const settings_region_text[REGIONS] = { "Japan", "USA", "Export", "Korea", "Australia" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -65,6 +66,7 @@ void settings_defaults(settings *s)
     SDL_strlcpy(s->card[0], settings_card_default[0], sizeof s->card[0]);
     SDL_strlcpy(s->card[1], settings_card_default[1], sizeof s->card[1]);
     s->network = 0;
+    s->region = REGION_JAPAN;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -156,6 +158,7 @@ static int choice(const char *v, const char *const *names, int count, int *out)
 
 static const char *const coins_names[] = { "free play", "arcade" };
 static const char *const onoff_names[] = { "off", "on" };
+static const char *const region_names[REGIONS] = { "japan", "usa", "export", "korea", "australia" };
 static const char *const picture_names[PICTURES] = { "4:3", "16:10", "16:9", "21:9", "stretch" };
 
 const char *settings_picture_name(int picture)
@@ -345,6 +348,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "network")) {
                 if ((ok = choice(v, onoff_names, 2, &x)))
                     s->network = x;
+            } else if (!strcmp(name, "region")) {
+                if ((ok = choice(v, region_names, REGIONS, &x)))
+                    s->region = x;
             } else {
                 /* key1.punch, key2.punch, pad.punch */
                 char *dot = strchr(name, '.');
@@ -409,6 +415,9 @@ int settings_save(const settings *s, const char *path)
     PUT("card2 = %s            # player 2's\n", s->card[1][0] ? s->card[1] : "none");
     PUT("network = %s          # the game's own NETWORK setting (test menu, Game Assignments); off skips\n"
         "                       # its network check as it starts\n", onoff_names[s->network]);
+    PUT("region = %s            # japan | usa | export | korea | australia: the board's region, as the\n"
+        "                       # cabinet's BIOS gives it (the warning screen, win streaks, ...)\n",
+        region_names[s->region]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

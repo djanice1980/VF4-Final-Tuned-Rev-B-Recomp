@@ -1536,7 +1536,7 @@ static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sou
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
 static const int tab_rows[T_COUNT][8] = {
-    [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, -1 },
+    [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, -1 },
     [T_CARDS] = { -1 },
     [T_PICTURE] = { OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },

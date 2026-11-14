@@ -465,10 +465,15 @@ the picture is scaled to the window or the screen. Picture, window size,
 scaling, fullscreen and volume change at once; renderer, internal
 resolution and the card units are kept for the next start (marked with a
 dot until then),
-and credits (free play or arcade coins) and Network apply at the next
-restart. Network is the game's own network setting, off by default: off,
+and credits (free play or arcade coins), Network and Region apply at the
+next restart. Network is the game's own network setting, off by default: off,
 the game skips its network check as it starts (there is no network
-service yet, so on only waits and reports a time-out). Operator
+service yet, so on only waits and reports a time-out). Region is the
+board's region, which on a cabinet comes from its BIOS: Japan (the
+default) shows the warning screen at power on, win streaks in Japanese
+and Shun Di reddening as he drinks; USA, Export, Korea and Australia skip
+the warning and show win streaks in English, and USA adds a rating screen
+to the attract loop. The game's text is the same in every region. Operator
 test menu presses the cabinet's Test switch and shows the operator bar,
 where A is Test and X is Service until B or the test menu's EXIT. Restart
 the game turns the cabinet off and on (records, settings and cards are
@@ -527,7 +532,8 @@ with only a gamepad, the menu's Operator test menu does the same.
   `sound` (on | off), `volume` (0 to 100; default 100), `cards` (on |
   off), `network` (off | on; default off: the game's own NETWORK setting,
   written into its settings record as it starts, so it skips its network
-  check), then the controls: `key1.punch =
+  check), `region` (japan | usa | export | korea | australia; default
+  japan: the board's region, as the cabinet's BIOS gives it), then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad.*` for gamepads, with SDL's key
   and button names, several separated by commas, `-` for none. The file

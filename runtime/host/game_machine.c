@@ -89,9 +89,12 @@ unsigned game_machine_audio(short *dst, unsigned max)
     return hw_sound_chip ? aica_audio_take(dst, max) : 0;
 }
 
+static int region;      /* game_machine_region's country: game_machine_init clears cfg */
+
 int game_machine_init(const char *image, const char *dimm, const char *dimm_key, int sound_chip, game_frame_fn fn)
 {
     memset(&cfg, 0, sizeof cfg);
+    cfg.country = region;   /* game_machine_region */
     cfg.image = image;
     cfg.dimm = dimm;
     cfg.run_name = "game";
@@ -233,9 +236,10 @@ static void eeprom_copy_seal(u8 *e, unsigned at)
 }
 
 /* the system area the game writes when it starts on a blank part with this
- * BIOS stand-in (board settings of country 0, which is all the window's
- * machine runs; coin settings from the stand-in's service 0x2c): read back
- * from a run, not made up */
+ * BIOS stand-in (board settings of country 0; coin settings from the
+ * stand-in's service 0x2c): read back from a run, not made up. It holds no
+ * country (board_config_unpack takes it as an argument), so it serves every
+ * region (docs/design.md section 41) */
 static const u8 eeprom_first_start[EEP_COPY_LEN] = {
     0xf0, 0xc6, 0x10, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x11, 0x11,
 };
@@ -371,6 +375,14 @@ static u8 card_last[2][GAME_CARD_SIZE];
 void game_machine_cards(int on)
 {
     hw_card_option = on;
+}
+
+/* ---- the board's region ---- */
+
+void game_machine_region(int country)
+{
+    region = country;
+    cfg.country = country;  /* hle_boot.c's service 0x28 gives it to the game */
 }
 
 int game_machine_card_put(int side, const unsigned char *card)

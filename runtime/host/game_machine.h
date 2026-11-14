@@ -108,6 +108,13 @@ int game_machine_backup_get(unsigned char *b);
 #define GAME_CARD_SIZE 128
 void game_machine_cards(int on);
 
+/* The board's region (docs/design.md section 41): the country the BIOS
+ * stand-in's board settings give the game (0 Japan, 1 USA, 2 export, 3
+ * Korea, 4 Australia). The game asks for them as it starts (board_start),
+ * so: before game_machine_init, or on the machine's thread before
+ * game_machine_restart. */
+void game_machine_region(int country);
+
 /* after init: a card goes into player side's unit (0 or 1) and stays; card
  * NULL is a card never used. 0, or -1 (no units, or a card in already) */
 int game_machine_card_put(int side, const unsigned char *card);

@@ -566,11 +566,13 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
     int restart = SDL_GetAtomicInt(&restart_req);
     if (restart) {
         SDL_SetAtomicInt(&restart_req, 0);
-        logf_("vertical blank %u: the game starts again (the menu's Restart)", frame);
+        logf_("vertical blank %u: the game starts again (the menu's Restart), region %s", frame,
+              settings_region_text[start_cfg.region]);
         backup_save();
         cards_save();
         due = 0;
         busy_since = 0;
+        game_machine_region(start_cfg.region);      /* the game asks for it as it starts again */
         game_machine_restart(restart, start_cfg.network ? GAME_NET_ON : GAME_NET_OFF);
         logf_("restart: the machine's power-on state was not kept");
     }
@@ -615,6 +617,7 @@ static int SDLCALL machine_main(void *arg)
 {
     (void)arg;
     game_machine_cards(cfg_.cards);
+    game_machine_region(cfg_.region);
     if (game_machine_init(image_path, dimm_path, dimm_key, !silent, on_frame)) {
         SDL_SetAtomicInt(&machine_state, 2);
     } else {
@@ -1137,6 +1140,7 @@ static int menu_do(int a)
         bar_on = 0;
         start_cfg.coins = cfg_.coins;           /* the restart takes them (set before the request: the */
         start_cfg.network = cfg_.network;       /* game's thread reads them as it sees it) */
+        start_cfg.region = cfg_.region;
         SDL_SetAtomicInt(&restart_req, cfg_.coins == COINS_ARCADE ? GAME_COINS_ARCADE : GAME_COINS_FREE_PLAY);
         menu_hide();
         return 1;
@@ -1626,11 +1630,12 @@ int main(int argc, char **argv)
     if (!fullscreen)
         fullscreen = fullscreen_wanted();
     logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s (volume %d%%), cards %s, "
-          "network %s",
+          "network %s, region %s",
           cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
           cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
           settings_picture_name(cfg_.picture), cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
-          silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off");
+          silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off",
+          settings_region_text[cfg_.region]);
     logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
           dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
 

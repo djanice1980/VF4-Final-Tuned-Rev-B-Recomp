@@ -2579,3 +2579,78 @@ lines off its shape (bars of 3 lines).
 Not tried: a real Windows PC, Proton under Steam, the Deck, a screen with
 a panel (the usable area less it), and windows moved between screens of
 different scales (the menu works out the room each time it opens).
+
+## 41. Region (2026-11-14)
+
+David asked how to change the game's region, and for a region choice in
+the menu.
+
+**Where the region comes from.** On a cabinet it is the BIOS's (the
+board's BIOS chip), not a setting: the game's test menu has none. As the
+game starts, `board_start` (`sdk/libam/nlam.c` in the decompilation) asks
+the BIOS for its board settings (service 0x28: the country, two flags, DIP
+switch 1), `board_start_core` keeps the country in `boot_country` and
+`board_settings`, and `system_param_country_init`
+(`vf4lib/libbase/src/system_common.c`) reads it from there: 0 Japan, 1 USA,
+2 Export, 3 Korea, 4 Australia (anything else stops the game with an
+assertion). The BIOS stand-in (`hle_boot.c`) answers with `cfg.country`,
+which was always 0 in the window game; only the headless runner had
+`--country`.
+
+**What it changes:** every caller of `system_param_country_get`, and the
+coin settings.
+
+| Region | What the game does |
+| --- | --- |
+| Japan (0) | `warning_init` shows the WARNING screen ("THIS GAME IS TO BE USED ONLY IN JAPAN ...", 600 vertical blanks) after power on; `win_streak_draw` uses the Japanese layouts and digit sprites; `shun_drink_tint_apply` tints Shun Di by his drink count |
+| the others | `warning_init` goes straight to the attract loop; win streaks in the overseas layouts with ASCII digits; no tint |
+| USA (1) | `sega_free` puts RATING_DISP before the SEGA logo: "Parental Advisory Warning / This game is classified LIFE-LIKE VIOLENCE-MILD" for 180 vertical blanks, from the attract loop's second round (`warning_init` sets `advertise_sub6_skip` for the first) |
+| Australia (4) | `australia_notice_draw` asks for "AUSTRALIAN VERSION" at (16, 36) on the title screen (see below) |
+| coins | `coin_config_unpack`'s maximum credit: 24 for USA and Export, 9 for the others (arcade coins only) |
+
+The game's text is otherwise the same in every region.
+
+**The setting:** `region = japan | usa | export | korea | australia` in
+`settings.txt` (default japan); the Region row on the game menu's Game tab
+and the launcher's Settings Game tab. `game_machine_region` puts the
+country in `cfg.country` before `game_machine_init` (which clears `cfg`:
+it keeps its own copy) and, from the frame function, before
+`game_machine_restart`: the game asks for the board settings again as it
+starts, so Restart the game applies it as it does Credits and Network
+(`start_cfg.region`). The EEPROM's system area holds no country
+(`board_config_unpack` takes it as an argument), so a backup made in one
+region works in another, and `eeprom_first_start` (read in a Japanese run)
+serves every region: FREE PLAY showed in each from a blank backup.
+
+**Checked** in a headless KWin (`scratchpad region/`: the Linux game,
+paced, shots by `--keys`; a blank backup, the network off, so the
+start-up's fast-forward ends near vertical blank 3000):
+
+- Japan: the warning at 3000 and 3060, then the SEGA logo from 3120 and
+  AM2 from 3300.
+- USA and Australia: no warning, the attract demo already at 3000;
+  identical to each other up to the second round (3,441,618,428 and
+  3,441,618,422 instructions at 3780), the title screen at 6500 in both;
+  then USA's rating screen from about 6570 to 6745 and its SEGA logo
+  after it, 180 vertical blanks behind Australia's.
+- Restart: Japan at the start; at 3100 the menu, Region to USA, Restart
+  the game ("vertical blank 3109: the game starts again (the menu's
+  Restart), region USA"): after the new start-up the SEGA and AM2 logos
+  with no warning; the same Restart with Japan left on shows the warning
+  again (5400, 5700).
+- The menu's row (Japan to USA, the dot for later, `region = usa` saved),
+  the launcher's Game tab (offscreen `--shot settings`). Linux, win64 and
+  the builder (its own source list) compile.
+
+**Australia's label is not seen.** Australia's and USA's title pictures at
+6500 are identical (no pixel differs). The decompilation's notes for
+`australia_notice_draw` record a harness run as region 4 that queued the
+18 sprites of the text on every title frame, so the game asks for them;
+whether they are hidden on the white title screen by the game itself (z
+0.008, the font's colour) or lost in our renderer is open, and needs a
+capture from a real board or a closer look at the sprite list. The help
+text does not promise the label.
+
+Not tried: win streaks and Shun's tint (they need play), Export and Korea
+runs (the same branches as Australia's but the coins), the test program's
+system information, the Windows game.

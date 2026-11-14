@@ -49,6 +49,11 @@ const option_info options[OPT_COUNT] = {
                       "The game's own network setting (its test menu's Game Assignments). Off, it skips "
                       "its network check as it starts. There is no network service yet: On only waits at "
                       "the start and reports a time-out.", 1 },
+    [OPT_REGION] = { "Region",
+                     "The board's region, as the cabinet's BIOS gives it. Japan shows a warning screen as "
+                     "the game starts, win streaks in Japanese, and Shun Di reddening as he drinks. The "
+                     "others skip the warning and show win streaks in English, and USA adds a rating "
+                     "screen to the attract loop. The game's text is the same in every region.", 1 },
 };
 
 static int wrap(int v, int d, int n)
@@ -163,6 +168,7 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
     case OPT_CREDITS: SDL_strlcpy(buf, s->coins == COINS_ARCADE ? "Arcade coins" : "Free play", n); break;
     case OPT_CARDS: row->kind = UI_ROW_TOGGLE; row->on = s->cards; break;
     case OPT_NETWORK: row->kind = UI_ROW_TOGGLE; row->on = s->network; break;
+    case OPT_REGION: SDL_strlcpy(buf, settings_region_text[s->region], n); break;
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -210,6 +216,7 @@ void option_change(settings *s, int o, int d)
     case OPT_CREDITS: s->coins = wrap(s->coins, d, 2); break;
     case OPT_CARDS: s->cards = !s->cards; break;
     case OPT_NETWORK: s->network = !s->network; break;
+    case OPT_REGION: s->region = wrap(s->region, d, REGIONS); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;
