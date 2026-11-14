@@ -351,6 +351,9 @@ static void about_of(int id, const char **title, const char **text, const char *
         *text = options[id].about;
         if (id == OPT_CREDITS || id == OPT_NETWORK)
             *note = "Applies when the game restarts (Restart the game).";
+        else if (id == OPT_VOLUME && run.no_device)
+            *note = "No sound: no audio device could be opened when the game started. Check the PC's sound "
+                    "output, then quit and start the game again.";
         else if (id == OPT_VOLUME && !run.sound)
             *note = "Sound is off: turn it on below, for the next start.";
         else if (id == OPT_SCALE && s->renderer != RENDERER_GPU)

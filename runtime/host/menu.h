@@ -49,6 +49,7 @@ enum {
 typedef struct menu_run {
     settings start;         /* the settings this run started with */
     int sound;              /* the sound chip runs: the volume applies */
+    int no_device;          /* sound was on, but no audio device opened at the start */
     int test_program;       /* the test program runs now */
     const char *user_dir;   /* the player's folder (ends in a separator): the Cards tab reads cards/ there */
 } menu_run;

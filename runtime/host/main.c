@@ -988,6 +988,7 @@ static void menu_show_as(int notice)
     menu_run r;
     r.start = start_cfg;
     r.sound = audio != NULL;
+    r.no_device = !silent && !audio;    /* silent: sound off in the settings, or --silent */
     r.test_program = SDL_GetAtomicInt(&program_now);
     r.user_dir = user_dir;
     if (notice)
