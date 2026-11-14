@@ -81,13 +81,14 @@ class Log:
             self.last_pct = v
 
 
-# what an install folder holds: the builder's files, and what the game and
-# Wine or Proton add beside the game (the launcher's install_names, which
-# lists the same). A first build refuses a folder with anything else in it,
-# since the build writes and deletes these names there.
+# what an install folder holds: the builder's files, and what the game, the
+# launcher (steam-art: Add to Steam's pictures) and Wine or Proton add beside
+# the game (the launcher's install_names, which lists the same). A first
+# build refuses a folder with anything else in it, since the build writes
+# these names there.
 INSTALL_NAMES = {"build", "data", "user", "build.log", "build.json", "build.json.part", "READ ME.txt",
                  "Font license.txt", "vf4ft.exe", "vf4ft", "SDL3.dll", "vf4ft.log", "vkd3d-proton.cache",
-                 "vkd3d-proton.cache.write", "vf4ft.dxvk-cache"}
+                 "vkd3d-proton.cache.write", "vf4ft.dxvk-cache", "steam-art"}
 
 
 def check_install_folder(out):

@@ -280,11 +280,12 @@ static int found_set(const char *dir)
 
 /* what the builder puts in an install folder (tools/make_game.py's
  * INSTALL_NAMES, which refuses a folder with anything else in it), and what
- * the game and Wine or Proton add beside the game */
+ * the game, Add to Steam (steam-art, art_dir) and Wine or Proton add beside
+ * the game */
 static const char *const install_names[] = {
     "build", "data", "user", "build.log", "build.json", "build.json.part", "READ ME.txt", "Font license.txt",
     "vf4ft.exe", "vf4ft", "SDL3.dll", "vf4ft.log", "vkd3d-proton.cache", "vkd3d-proton.cache.write",
-    "vf4ft.dxvk-cache", NULL};
+    "vf4ft.dxvk-cache", "steam-art", NULL};
 
 typedef struct dir_look { int entries, others; char other[128]; } dir_look;
 
