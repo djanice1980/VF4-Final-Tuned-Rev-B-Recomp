@@ -22,17 +22,19 @@ const option_info options[OPT_COUNT] = {
                          "Auto is fullscreen on the Steam Deck and in Steam's Big Picture, and a window "
                          "elsewhere. F11 or Alt+Enter switches while the game runs.", 0 },
     [OPT_PICTURE] = { "Picture",
-                      "4:3 is the cabinet's screen, with bars at the sides of a wide one. Stretch fills the "
-                      "screen.", 0 },
+                      "4:3 is the cabinet's screen, with bars at the sides of a wide one. 16:10 (the Steam "
+                      "Deck), 16:9 and 21:9 are wide: the cabinet's screen in the middle, nothing stretched, "
+                      "and the camera's view goes on at the sides (the writing and the 2D screens stay 4:3). "
+                      "Stretch fills the screen with the 4:3 picture.", 0 },
     [OPT_FILTER] = { "Scaling",
                      "How the picture is scaled to the screen: Sharp keeps its pixels square, Smooth blends "
                      "them.", 0 },
     [OPT_RENDERER] = { "Renderer",
                        "GPU draws the game with Vulkan at the resolution below. Software draws it on the "
-                       "processor at the cabinet's 640 x 480.", 1 },
+                       "processor at the cabinet's 640 x 480 (wider with a wide picture).", 1 },
     [OPT_SCALE] = { "Resolution",
-                    "The GPU renderer's size: 1 to 4 times the cabinet's 640 x 480. Software does not use "
-                    "it.", 1 },
+                    "The GPU renderer's size: 1 to 4 times the cabinet's 640 x 480, or a wide picture's "
+                    "(854 x 480 for 16:9). Software does not use it.", 1 },
     [OPT_SOUND] = { "Sound",
                     "The sound processor and its effects. Off saves processor time, and the game is "
                     "silent.", 1 },
@@ -129,11 +131,15 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         break;
     }
     case OPT_FULLSCREEN: SDL_strlcpy(buf, fs[s->fullscreen + 1], n); break;
-    case OPT_PICTURE: SDL_strlcpy(buf, s->picture == PICTURE_STRETCH ? "Stretch" : "4:3", n); break;
+    case OPT_PICTURE: {
+        static const char *const pic[PICTURES] = { "4:3", "16:10 wide", "16:9 wide", "21:9 ultrawide", "Stretch" };
+        SDL_strlcpy(buf, pic[s->picture], n);
+        break;
+    }
     case OPT_FILTER: SDL_strlcpy(buf, s->filter == FILTER_SHARP ? "Sharp" : "Smooth", n); break;
     case OPT_RENDERER: SDL_strlcpy(buf, s->renderer == RENDERER_GPU ? "GPU (Vulkan)" : "Software", n); break;
     case OPT_SCALE:
-        SDL_snprintf(buf, n, "%d x %d", 640 * s->scale, 480 * s->scale);
+        SDL_snprintf(buf, n, "%d x %d", settings_picture_width(s->picture) * s->scale, 480 * s->scale);
         row->off = s->renderer != RENDERER_GPU;
         break;
     case OPT_SOUND: row->kind = UI_ROW_TOGGLE; row->on = s->sound; break;
@@ -154,7 +160,7 @@ void option_change(settings *s, int o, int d)
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;
-    case OPT_PICTURE: s->picture = wrap(s->picture, d, 2); break;
+    case OPT_PICTURE: s->picture = wrap(s->picture, d, PICTURES); break;
     case OPT_FILTER: s->filter = wrap(s->filter, d, 2); break;
     case OPT_RENDERER: s->renderer = wrap(s->renderer, d, 2); break;
     case OPT_SCALE: s->scale = wrap(s->scale - 1, d, 4) + 1; break;

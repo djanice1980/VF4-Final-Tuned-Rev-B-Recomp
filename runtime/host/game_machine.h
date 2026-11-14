@@ -7,6 +7,7 @@
 #define VF4FT_GAME_MACHINE_H
 
 #define GAME_PICTURE_W 640
+#define GAME_PICTURE_W_MAX 1280     /* the widest wide screen (game_machine_wide) */
 #define GAME_PICTURE_H 480
 
 /* what the cabinet's controls are doing, in runtime/machine/control.h's bits */
@@ -29,13 +30,21 @@ typedef struct game_input {
 #define GAME_SYS_SERVICE 0x2
 
 /* Once per vertical blank, on the machine's thread: frame is the vertical
- * blank's number; rgb the newest picture (GAME_PICTURE_W x _H, 3 bytes a
- * pixel) or NULL before the first, valid only during the call; in is to be
+ * blank's number; rgb the newest picture (w x GAME_PICTURE_H, 3 bytes a
+ * pixel; w is GAME_PICTURE_W, or wider with game_machine_wide) or NULL
+ * before the first, valid only during the call; in is to be
  * filled with the controls as they are now; booting is set until the game
  * first shows its warning screen (WARNING.DISP, vertical blank 5,832: the
  * start-up before it has nothing to see). The function also keeps the pace (it returns
  * when the frame is due). */
-typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int booting, game_input *in);
+typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int w, int booting, game_input *in);
+
+/* The wide screen (docs/design.md section 39): the game's screen is drawn
+ * `width` pixels wide (even, GAME_PICTURE_W to GAME_PICTURE_W_MAX), its own
+ * 640 in the middle and what the camera sees past its sides around it;
+ * GAME_PICTURE_W is the cabinet's 4:3. Any thread, at any time: the next
+ * picture the game draws takes it. */
+void game_machine_wide(int width);
 
 /* The GPU renderer (runtime/host/gpu_render.c): set before game_machine_init,
  * a pass to the screen goes to fn (view.h, view_gpu_frame) instead of the

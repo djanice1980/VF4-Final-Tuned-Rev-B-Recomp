@@ -20,7 +20,8 @@
 #include <stdio.h>
 #include <string.h>
 
-_Static_assert(GAME_PICTURE_W == VIEW_W && GAME_PICTURE_H == VIEW_H, "the picture's size");
+_Static_assert(GAME_PICTURE_W == VIEW_W && GAME_PICTURE_H == VIEW_H && GAME_PICTURE_W_MAX == VIEW_W_MAX,
+               "the picture's size");
 _Static_assert(GAME_BTN_UP == BTN_UP && GAME_BTN_DOWN == BTN_DOWN && GAME_BTN_LEFT == BTN_LEFT && GAME_BTN_RIGHT == BTN_RIGHT && GAME_BTN_P == BTN_P &&
                GAME_BTN_K == BTN_K && GAME_BTN_G == BTN_G && GAME_BTN_E == BTN_E &&
                GAME_BTN_START == BTN_START && GAME_SYS_TEST == SYS_TEST && GAME_SYS_SERVICE == SYS_SERVICE,
@@ -32,6 +33,11 @@ static game_gpu_fn gpu_fn;
 void game_machine_gpu(game_gpu_fn fn)
 {
     gpu_fn = fn;
+}
+
+void game_machine_wide(int width)
+{
+    view_host_wide(width);
 }
 static char why[700];
 
@@ -63,7 +69,9 @@ static void host_frame(sh4 *c)
         int m = game_mode_main(), s = game_mode_sub();
         booted = (m == 0 && s >= 1 && s < 16) || (m >= 1 && m < 8);
     }
-    frame_fn(machine_frame, view_host_picture(), !booted, &in);
+    int pw = VIEW_W;
+    const u8 *rgb = view_host_picture(&pw);
+    frame_fn(machine_frame, rgb, pw, !booted, &in);
     inputs.player[0] = in.player[0];
     inputs.player[1] = in.player[1];
     inputs.sys = in.sys;

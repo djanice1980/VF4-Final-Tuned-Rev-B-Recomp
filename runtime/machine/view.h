@@ -21,12 +21,19 @@ void view_stats(FILE *f);
 void view_picture(const char *path);
 
 /* recomp: the game window (runtime/host) draws every frame and takes the
- * newest picture at each vertical blank: VIEW_W x VIEW_H, 3 bytes a pixel
- * (red, green, blue), or NULL before the game has rendered one */
+ * newest picture at each vertical blank: *w x VIEW_H, 3 bytes a pixel
+ * (red, green, blue), or NULL before the game has rendered one. *w is
+ * VIEW_W, or the wide screen's width */
 #define VIEW_W 640
 #define VIEW_H 480
+#define VIEW_W_MAX 1280                 /* the widest wide screen */
 void view_host_start(void);
-const u8 *view_host_picture(void);
+const u8 *view_host_picture(int *w);
+/* recomp: the wide screen: the pass to the screen is drawn `width` pixels
+ * wide (even, VIEW_W to VIEW_W_MAX), the game's VIEW_W in its middle and
+ * what the camera sees past its sides around it. VIEW_W: no wide screen.
+ * Any thread; the next pass drawn takes it */
+void view_host_wide(int width);
 
 /* recomp (M6): the GPU path. With view_host_gpu set, a pass to the screen
  * is not rasterized here: after transform, lighting and the translucent

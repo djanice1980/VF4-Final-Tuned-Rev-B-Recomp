@@ -93,6 +93,7 @@
 #define VF4FT_VERSION "development build"   /* the builder (tools/make_game.py) gives its version */
 #endif
 #define PIC_W GAME_PICTURE_W
+#define PIC_W_MAX GAME_PICTURE_W_MAX
 #define PIC_H GAME_PICTURE_H
 #define FRAME_NS (1000000000ull / 60)   /* the machine's vertical blank (runtime/machine/machine.h) */
 
@@ -127,7 +128,8 @@ static void sdl_log(void *userdata, int category, SDL_LogPriority priority, cons
 
 static struct {
     SDL_Mutex *lock;
-    unsigned char pic[PIC_W * PIC_H * 3];       /* the newest picture, RGB */
+    unsigned char pic[PIC_W_MAX * PIC_H * 3];   /* the newest picture, RGB, pic_w x PIC_H */
+    int pic_w;
     unsigned pic_frame;                         /* its vertical blank; 0 = none yet */
     game_input in;                              /* the controls, as this thread last read them */
 } shared;
@@ -483,7 +485,7 @@ static Uint64 due, busy_since, busy_ns, busy_max_ns;
 static unsigned busy_frames, resyncs;
 
 /* machine thread, once per vertical blank (game_frame_fn) */
-static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game_input *in)
+static void on_frame(unsigned frame, const unsigned char *rgb, int w, int booting, game_input *in)
 {
     Uint64 now = SDL_GetTicksNS();
     if (busy_since) {
@@ -501,8 +503,9 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int booting, game
     }
     audio_frame((booting && !real_boot) || unpaced);
     SDL_LockMutex(shared.lock);
-    if (rgb) {
-        memcpy(shared.pic, rgb, sizeof shared.pic);
+    if (rgb && w >= PIC_W && w <= PIC_W_MAX) {
+        memcpy(shared.pic, rgb, (size_t)w * PIC_H * 3);
+        shared.pic_w = w;
         shared.pic_frame = frame;
     }
     *in = shared.in;
@@ -1032,6 +1035,7 @@ static int menu_do(int a)
 {
     switch (a) {
     case MENU_LIVE:
+        game_machine_wide(settings_picture_width(cfg_.picture));
         if (cfg_.fullscreen != live_fullscreen) {
             live_fullscreen = cfg_.fullscreen;
             SDL_SetWindowFullscreen(main_win, fullscreen_wanted());
@@ -1209,25 +1213,33 @@ static void ovl_backdrop(void *ud, const void *pixels, Uint32 w, Uint32 h)
     SDL_free(b);
 }
 
-/* the picture's place in a w x h target: 4:3 in the middle, or all of it */
+/* the shape of the picture last shown: 640 x 480, or a wide screen's */
+static Uint32 shape_w = PIC_W, shape_h = PIC_H;
+
+/* the picture's place in a w x h target: at its own shape (4:3, or a wide
+ * screen's) in the middle, or all of it */
 static void picture_rect(Uint32 w, Uint32 h, Uint32 *x0, Uint32 *y0, Uint32 *dw, Uint32 *dh)
 {
     *dw = w;
     *dh = h;
     if (cfg_.picture == PICTURE_STRETCH)
         ;       /* the whole window */
-    else if ((Uint64)w * 3 > (Uint64)h * 4) *dw = h * 4 / 3;
-    else *dh = w * 3 / 4;
+    else if ((Uint64)w * shape_h > (Uint64)h * shape_w) *dw = (Uint32)((Uint64)h * shape_w / shape_h);
+    else *dh = (Uint32)((Uint64)w * shape_h / shape_w);
     *x0 = (w - *dw) / 2;
     *y0 = (h - *dh) / 2;
 }
 
-/* the picture at 4:3 (or stretched) in the middle of a w x h target, and the
- * menu (ov 1) or the operator bar (2) over it when ovl holds it */
+/* the picture at its shape (or stretched) in the middle of a w x h target,
+ * and the menu (ov 1) or the operator bar (2) over it when ovl holds it */
 static void compose(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, Uint32 w, Uint32 h, SDL_GPUTexture *src,
                     Uint32 src_w, Uint32 src_h, int have_picture, int ov)
 {
     Uint32 x0, y0, dw, dh;
+    if (have_picture && src_w && src_h) {
+        shape_w = src_w;
+        shape_h = src_h;
+    }
     picture_rect(w, h, &x0, &y0, &dw, &dh);
     if (have_picture) {
         SDL_GPUBlitInfo bl;
@@ -1545,7 +1557,7 @@ int main(int argc, char **argv)
           "network %s",
           cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
           cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
-          cfg_.picture == PICTURE_STRETCH ? "stretch" : "4:3", cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
+          settings_picture_name(cfg_.picture), cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
           silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off");
     logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
           dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
@@ -1581,7 +1593,15 @@ int main(int argc, char **argv)
 
     SDL_Window *win = NULL;
     if (!art_dir) {
-        win = SDL_CreateWindow(VF4FT_TITLE, 1280, 960, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+        /* the wide screen (Steam's pictures, --art, are always 4:3); the
+         * window starts at the picture's shape: 1280 x 960, or 720 tall */
+        int pw = settings_picture_width(cfg_.picture), ww = 1280, wh = 960;
+        game_machine_wide(pw);
+        if (pw > PIC_W) {
+            wh = 720;
+            ww = 720 * pw / PIC_H;
+        }
+        win = SDL_CreateWindow(VF4FT_TITLE, ww, wh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
                                (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
         if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
         main_win = win;
@@ -1609,11 +1629,12 @@ int main(int argc, char **argv)
         gpu_render_quit();
         use_gpu = 0;
     }
+    int shown_w = art_dir ? PIC_W : settings_picture_width(cfg_.picture);
     if (use_gpu) {
         game_machine_gpu(gpu_render_submit);
-        logf_("renderer: GPU, %d x %d", PIC_W * cfg_.scale, PIC_H * cfg_.scale);
+        logf_("renderer: GPU, %d x %d", shown_w * cfg_.scale, PIC_H * cfg_.scale);
     } else {
-        logf_("renderer: software, %d x %d", PIC_W, PIC_H);
+        logf_("renderer: software, %d x %d", shown_w, PIC_H);
     }
     if (art_dir && !use_gpu) {
         logf_("art: no GPU renderer, so no artwork");
@@ -1643,7 +1664,7 @@ int main(int argc, char **argv)
     ti.type = SDL_GPU_TEXTURETYPE_2D;
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ti.width = PIC_W;
+    ti.width = PIC_W_MAX;               /* room for a wide screen */
     ti.height = PIC_H;
     ti.layer_count_or_depth = 1;
     ti.num_levels = 1;
@@ -1651,10 +1672,11 @@ int main(int argc, char **argv)
     SDL_GPUTransferBufferCreateInfo bi;
     SDL_zero(bi);
     bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    bi.size = PIC_W * PIC_H * 4;
+    bi.size = PIC_W_MAX * PIC_H * 4;
     SDL_GPUTransferBuffer *upload = SDL_CreateGPUTransferBuffer(gpu, &bi);
     if (!pic_tex || !upload) { logf_("picture texture: %s", SDL_GetError()); return 1; }
-    static unsigned char rgb[PIC_W * PIC_H * 3];
+    static unsigned char rgb[PIC_W_MAX * PIC_H * 3];
+    int rgb_w = PIC_W;                  /* the software picture's width */
 
     SDL_GPUTexture *shot_tex = NULL;    /* --keys shot=: the window as shown */
     Uint32 shot_w = 0, shot_h = 0;
@@ -1897,8 +1919,10 @@ int main(int argc, char **argv)
         SDL_LockMutex(shared.lock);
         shared.in = in;
         frame = shared.pic_frame;
-        if (frame != shown_frame)
-            memcpy(rgb, shared.pic, sizeof rgb);
+        if (frame != shown_frame) {
+            rgb_w = shared.pic_w;
+            memcpy(rgb, shared.pic, (size_t)rgb_w * PIC_H * 3);
+        }
         SDL_UnlockMutex(shared.lock);
 
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
@@ -1906,7 +1930,7 @@ int main(int argc, char **argv)
         if (frame != shown_frame) {
             unsigned char *dst = SDL_MapGPUTransferBuffer(gpu, upload, true);
             if (dst) {
-                for (int i = 0; i < PIC_W * PIC_H; i++) {
+                for (int i = 0; i < rgb_w * PIC_H; i++) {
                     dst[4 * i] = rgb[3 * i];
                     dst[4 * i + 1] = rgb[3 * i + 1];
                     dst[4 * i + 2] = rgb[3 * i + 2];
@@ -1915,7 +1939,7 @@ int main(int argc, char **argv)
                 SDL_UnmapGPUTransferBuffer(gpu, upload);
                 SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
                 SDL_GPUTextureTransferInfo src = { .transfer_buffer = upload, .offset = 0 };
-                SDL_GPUTextureRegion reg = { .texture = pic_tex, .w = PIC_W, .h = PIC_H, .d = 1 };
+                SDL_GPUTextureRegion reg = { .texture = pic_tex, .w = (Uint32)rgb_w, .h = PIC_H, .d = 1 };
                 SDL_UploadToGPUTexture(cp, &src, &reg, true);
                 SDL_EndGPUCopyPass(cp);
                 have_picture = 1;
@@ -1979,7 +2003,7 @@ int main(int argc, char **argv)
             break;
         }
         SDL_GPUTexture *src_tex = pic_tex;
-        Uint32 src_w = PIC_W, src_h = PIC_H;
+        Uint32 src_w = (Uint32)rgb_w, src_h = PIC_H;
         if (use_gpu) {
             unsigned gf = 0;
             SDL_GPUTexture *t = gpu_render_frame(cmd, &src_w, &src_h, &gf);

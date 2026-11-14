@@ -155,7 +155,23 @@ static int choice(const char *v, const char *const *names, int count, int *out)
 
 static const char *const coins_names[] = { "free play", "arcade" };
 static const char *const onoff_names[] = { "off", "on" };
-static const char *const picture_names[] = { "4:3", "stretch" };
+static const char *const picture_names[PICTURES] = { "4:3", "16:10", "16:9", "21:9", "stretch" };
+
+const char *settings_picture_name(int picture)
+{
+    return picture_names[picture >= 0 && picture < PICTURES ? picture : 0];
+}
+
+/* the cabinet's 480 lines at the picture's shape; even, for the middle */
+int settings_picture_width(int picture)
+{
+    switch (picture) {
+    case PICTURE_16_10: return 768;
+    case PICTURE_16_9: return 854;
+    case PICTURE_21_9: return 1146;
+    default: return 640;
+    }
+}
 static const char *const filter_names[] = { "smooth", "sharp" };
 static const char *const renderer_names[] = { "gpu", "software" };
 
@@ -216,7 +232,7 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
                 else if ((ok = choice(v, onoff_names, 2, &x)))
                     s->fullscreen = x;
             } else if (!strcmp(name, "picture")) {
-                if ((ok = choice(v, picture_names, 2, &x)))
+                if ((ok = choice(v, picture_names, PICTURES, &x)))
                     s->picture = x;
             } else if (!strcmp(name, "filter")) {
                 if ((ok = choice(v, filter_names, 2, &x)))
@@ -291,7 +307,8 @@ int settings_save(const settings *s, const char *path)
         coins_names[s->coins]);
     PUT("fullscreen = %s       # auto (on for the Steam Deck and Big Picture) | on | off\n",
         s->fullscreen == FULLSCREEN_AUTO ? "auto" : onoff_names[s->fullscreen]);
-    PUT("picture = %s          # 4:3 | stretch\n", picture_names[s->picture]);
+    PUT("picture = %s          # 4:3 | 16:10 | 16:9 | 21:9 (wide: the 3D fills the sides) | stretch\n",
+        settings_picture_name(s->picture));
     PUT("filter = %s           # smooth | sharp (how the picture is scaled to the window)\n", filter_names[s->filter]);
     PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture)\n", renderer_names[s->renderer]);
     PUT("scale = %d               # the GPU renderer's resolution: 1 to 4 times 640 x 480\n", s->scale);

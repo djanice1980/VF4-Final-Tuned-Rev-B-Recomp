@@ -88,8 +88,13 @@
 #define VW 640                          /* the screen */
 #define VH 480
 _Static_assert(VW == VIEW_W && VH == VIEW_H, "view.h");     /* recomp */
-#define FBW 1024                        /* the largest target a pass can have */
+#define PASS_W 1024                     /* the largest target a pass can have */
+#define FBW 1280                        /* recomp: the buffers' width: PASS_W, or a wide screen's */
 #define FBH 1024
+/* recomp: a wide screen (view_host_wide) is drawn 2 * WIDE_MAX pixels wider
+ * at most, the game's 640 in its middle */
+#define WIDE_MAX ((FBW - VW) / 2)
+_Static_assert(VIEW_W_MAX == FBW && FBW >= PASS_W, "view.h");
 #define VRAM1 0x04000000u               /* the first chip's video memory, texture addresses as offsets */
 #define VRAM1_32 0x05000000u            /* its second window: where the library writes region arrays and planes */
 #define VRAM_SIZE 0x01000000u
@@ -120,6 +125,13 @@ static u8 *pfb;                         /* per pixel: bit 0 the polygon on top t
 static u8 *stn;                         /* per pixel: bit 0 inside a modifier volume of the opaque list */
 static u8 *shown;                       /* the newest finished picture of the screen, RGB */
 static int shown_valid;
+static int shown_w = VW;                /* recomp: its width (wider with view_host_wide) */
+/* recomp: the wide screen. wide_ox is the host's choice (pixels added on each
+ * side); draw_ox the pass being drawn's; keep_left how far left of the game's
+ * screen a triangle may lie and still be kept (0 with no wide screen) */
+static int wide_ox, draw_ox;
+static float keep_left;
+#define EDGE_SLACK 16.0f                /* a 2D triangle "from side to side" may overhang this much */
 static u32 gen = 1;                     /* counts renders: a texture is looked at again after each */
 static u32 screens, screen_renders, pictures, target_pictures, png_written, pipe_frames;
 static u64 tri_count;
@@ -344,6 +356,8 @@ typedef struct scene {
     u32 vols_n[2], vols_cap[2];
     u32 *order;                         /* the translucent triangles from the back */
     u32 order_n, order_cap;
+    u32 *edge;                          /* recomp: the 2D triangles from side to side (list << 30 | index) */
+    u32 edge_n, edge_cap;
 } scene;
 
 #define SCENES 12
@@ -1240,12 +1254,12 @@ static inline u32 tri_room(u32 n)
 _Static_assert(sizeof(vv) == RV_FLOATS * sizeof(float), "vv is RV_FLOATS floats");
 
 /* where a view-space point (X, Y, Z; Z above the near plane) is from guard
- * plane k: 0 or more is inside (x >= -GUARD, x <= FBW + GUARD, y ...) */
+ * plane k: 0 or more is inside (x >= -GUARD, x <= PASS_W + GUARD, y ...) */
 static inline float guard_dist(const xform *xf, int k, const float *p)
 {
     switch (k) {
     case 0: return xf->sx * p[0] + (xf->cx + GUARD) * p[2];
-    case 1: return (FBW + GUARD - xf->cx) * p[2] - xf->sx * p[0];
+    case 1: return (PASS_W + GUARD - xf->cx) * p[2] - xf->sx * p[0];
     case 2: return xf->sy * p[1] + (xf->cy + GUARD) * p[2];
     default: return (FBH + GUARD - xf->cy) * p[2] - xf->sy * p[1];
     }
@@ -1307,8 +1321,8 @@ static inline int tri_fill(dtri *d, const rv *a, const rv *b, const rv *c, u32 s
     if (c->y < loy) loy = c->y;
     if (c->y > hiy) hiy = c->y;
     /* off every target, or not a number */
-    if (!(hix >= 0 && lox < FBW && hiy >= 0 && loy < FBH && lox > -GUARD_FAR && hix < GUARD_FAR && loy > -GUARD_FAR &&
-          hiy < GUARD_FAR))
+    if (!(hix >= keep_left && lox < PASS_W && hiy >= 0 && loy < FBH && lox > -GUARD_FAR && hix < GUARD_FAR &&
+          loy > -GUARD_FAR && hiy < GUARD_FAR))
         return 0;
     d->v[0] = *a;
     d->v[1] = *b;
@@ -1647,6 +1661,15 @@ static void emit(const rv *a, const rv *b, const rv *c, const rstate *st)
     }
     if (!tri_fill(d, a, b, c, state_add(sc, st)))
         return;
+    /* recomp: the wide screen: a 2D triangle from side to side of the
+     * game's screen (scene_shift takes it to the target's sides) */
+    if (keep_left < 0) {
+        float lx = fminf(a->x, fminf(b->x, c->x)), hx = fmaxf(a->x, fmaxf(b->x, c->x));
+        if (lx <= 0 && hx >= VW && lx >= -EDGE_SLACK && hx <= VW + EDGE_SLACK) {
+            GROW(sc->edge, sc->edge_cap, sc->edge_n + 1);
+            sc->edge[sc->edge_n++] = (u32)k << 30 | sc->tris_n[k];
+        }
+    }
     if (!sc->run_open[k]) {
         GROW(sc->runs[k], sc->runs_cap[k], sc->runs_n[k] + 1);
         sc->runs[k][sc->runs_n[k]].first = sc->tris_n[k];
@@ -1693,9 +1716,9 @@ static void vol_close(int which, int kind)
             if (t->y[k] < y0) y0 = t->y[k];
             if (t->y[k] > y1) y1 = t->y[k];
         }
-    v->x0 = (s16)(x0 < 0 ? 0 : x0 > FBW ? FBW : x0);
+    v->x0 = (s16)(x0 < keep_left ? keep_left : x0 > PASS_W ? PASS_W : x0);
     v->y0 = (s16)(y0 < 0 ? 0 : y0 > FBH ? FBH : y0);
-    v->x1 = (s16)(x1 < 0 ? -1 : x1 > FBW - 1 ? FBW - 1 : x1);
+    v->x1 = (s16)(x1 < keep_left ? keep_left - 1 : x1 > PASS_W - 1 ? PASS_W - 1 : x1);
     v->y1 = (s16)(y1 < 0 ? -1 : y1 > FBH - 1 ? FBH - 1 : y1);
 }
 
@@ -2675,6 +2698,7 @@ static scene *scene_open(u32 key)
         s->tris_n[k] = s->runs_n[k] = 0, s->run_open[k] = 0;
     s->st_n = s->xf_n = s->ls_n = s->jobs_n = s->vcopy_n = s->order_n = 0;
     s->vt_n[0] = s->vt_n[1] = s->vols_n[0] = s->vols_n[1] = 0;
+    s->edge_n = 0;
     s->used = 1;
     s->key = key;
     s->born = ++births;
@@ -2719,7 +2743,7 @@ static void lists_begin(int pass)
     es.xf_new = es.ls_new = 1;
     es.ls.amb[0] = es.ls.amb[1] = es.ls.amb[2] = 1;
     es.light_mask = 0xffff;
-    es.clip[2] = FBW - 1;
+    es.clip[2] = PASS_W - 1;
     es.clip[3] = FBH - 1;
 }
 
@@ -2787,7 +2811,7 @@ static void bg_plane(bgplane *bp)
         bp->ga[k] = ga[k];
         bp->gb[k] = gb[k];
     }
-    bp->x0 = x[0];
+    bp->x0 = x[0] + (float)draw_ox;    /* recomp: the wide screen's shift */
     bp->y0 = y[0];
     bp->flat = flat;
     bp->fog = fog;
@@ -3217,17 +3241,119 @@ static void gpu_export(scene *sc)
     gpu_dirty_n = 0;
 }
 
+/* recomp: a triangle looks the same stretched sideways: it has no texture,
+ * or v does not change along x (by half a texel at most across it) and
+ * each row of the texels its coordinates cover is one colour */
+static int tex_flat_across(const tex *t, const dtri *d)
+{
+    if (!t || !t->lv[0] || t->w <= 0 || t->h <= 0)
+        return 1;
+    const rv *p0 = &d->v[0], *p1 = &d->v[1], *p2 = &d->v[2];
+    float det = (p1->x - p0->x) * (p2->y - p0->y) - (p2->x - p0->x) * (p1->y - p0->y);
+    if (!(det > 1e-3f || det < -1e-3f))
+        return 0;
+    float dvdx = ((p1->v - p0->v) * (p2->y - p0->y) - (p2->v - p0->v) * (p1->y - p0->y)) / det;
+    float lx = fminf(p0->x, fminf(p1->x, p2->x)), hx = fmaxf(p0->x, fmaxf(p1->x, p2->x));
+    if (!(fabsf(dvdx) * (hx - lx) * (float)t->h <= 0.5f))
+        return 0;
+    float u0 = p0->u, u1 = u0, v0 = p0->v, v1 = v0;
+    for (int j = 1; j < 3; j++) {
+        u0 = fminf(u0, d->v[j].u);
+        u1 = fmaxf(u1, d->v[j].u);
+        v0 = fminf(v0, d->v[j].v);
+        v1 = fmaxf(v1, d->v[j].v);
+    }
+    if (!(u0 > -1e4f && u1 < 1e4f && v0 > -1e4f && v1 < 1e4f))
+        return 0;
+    int w = t->w, h = t->h;
+    int x0 = (int)floorf(u0 * (float)w), x1 = (int)ceilf(u1 * (float)w) - 1;
+    int y0 = (int)floorf(v0 * (float)h), y1 = (int)ceilf(v1 * (float)h) - 1;
+    if (x1 < x0) x1 = x0;
+    if (y1 < y0) y1 = y0;
+    if (x1 - x0 >= w) { x0 = 0; x1 = w - 1; }
+    if (y1 - y0 >= h) { y0 = 0; y1 = h - 1; }
+    for (int y = y0; y <= y1; y++) {
+        const u32 *row = t->lv[0] + (size_t)((y % h + h) % h) * (size_t)w;
+        u32 first = row[(x0 % w + w) % w];
+        for (int x = x0 + 1; x <= x1; x++)
+            if (row[(x % w + w) % w] != first)
+                return 0;
+    }
+    return 1;
+}
+
+/* recomp: the wide screen. The scene was made for the game's 640 x 480;
+ * every triangle, volume and clip rectangle moves right by ox, so the
+ * game's screen lies in the middle of the wider target and what the
+ * camera sees past its sides fills the rest. A clip rectangle that reaches
+ * the game's left or right edge reaches the target's, and so does a 2D
+ * triangle from side to side that looks the same stretched. A scene is
+ * drawn once (render_started marks it unused), so nothing moves it back. */
+static void scene_shift(scene *sc, int ox)
+{
+    float f = (float)ox;
+    /* a 2D triangle from side to side of the game's screen that looks the
+     * same stretched (the stage intros' black bars, fades, the rankings'
+     * lines) reaches the target's sides: its corners at the screen's edges
+     * move out */
+    for (u32 i = 0; i < sc->edge_n; i++) {
+        dtri *d = &sc->tris[sc->edge[i] >> 30][sc->edge[i] & 0x3fffffffu];
+        if (!tex_flat_across(sc->st[d->st].t, d))
+            continue;
+        for (int j = 0; j < 3; j++)
+            d->v[j].x += d->v[j].x <= 0 ? -f : d->v[j].x >= VW ? f : 0.0f;
+    }
+    for (int k = 0; k < 3; k++)
+        for (u32 r = 0; r < sc->runs_n[k]; r++) {
+            dtri *d = sc->tris[k] + sc->runs[k][r].first;
+            for (u32 i = 0; i < sc->runs[k][r].n; i++, d++) {
+                d->v[0].x += f;
+                d->v[1].x += f;
+                d->v[2].x += f;
+            }
+        }
+    for (u32 i = 0; i < sc->st_n; i++) {
+        s16 *c = sc->st[i].clip;
+        if ((sc->st[i].pcw >> 16 & 3) < 2)
+            continue;
+        c[0] = (s16)(c[0] <= 0 ? c[0] : c[0] + ox);
+        c[2] = (s16)(c[2] >= VW - 1 ? c[2] + 2 * ox : c[2] + ox);
+    }
+    for (int w = 0; w < 2; w++) {
+        for (u32 i = 0; i < sc->vt_n[w]; i++)
+            for (int k = 0; k < 3; k++)
+                sc->vt[w][i].x[k] += f;
+        for (u32 i = 0; i < sc->vols_n[w]; i++) {
+            sc->vols[w][i].x0 = (s16)(sc->vols[w][i].x0 + ox);
+            sc->vols[w][i].x1 = (s16)(sc->vols[w][i].x1 + ox);
+        }
+    }
+}
+
+/* recomp: the host's wide screen: the pass to the screen is drawn `width`
+ * pixels wide (640 to VIEW_W_MAX; 640, the game's own, is no wide screen) */
+void view_host_wide(int width)
+{
+    int ox = width > VW ? (width - VW) / 2 : 0;
+    __atomic_store_n(&wide_ox, ox > WIDE_MAX ? WIDE_MAX : ox, __ATOMIC_RELAXED);
+}
+
 static void scene_draw(scene *sc, int to_texture)
 {
     u32 xc = view_core_reg(0, 0x68), yc = view_core_reg(0, 0x6c), sof = view_core_reg(0, 0x60);
     tg.w = (int)(xc >> 16 & 0x7ff) + 1;
     tg.h = (int)(yc >> 16 & 0x3ff) + 1;
-    if (tg.w > FBW) tg.w = FBW;
+    if (tg.w > PASS_W) tg.w = PASS_W;
     if (tg.h > FBH) tg.h = FBH;
     if (!to_texture && (tg.w > VW || tg.h > VH)) {
         tg.w = VW;
         tg.h = VH;
     }
+    /* recomp: the wide screen, for a pass to the whole of the game's screen */
+    int wide = __atomic_load_n(&wide_ox, __ATOMIC_RELAXED);
+    keep_left = wide ? (float)-WIDE_MAX : 0.0f;
+    draw_ox = !to_texture && tg.w == VW && tg.h == VH ? wide : 0;
+    tg.w += 2 * draw_ox;
     tg.to_texture = to_texture;
     tg.addr = sof & 0x00fffffcu;
     tg.stride = (view_core_reg(0, 0x4c) & 0x1ff) * 8;
@@ -3276,6 +3402,8 @@ static void scene_draw(scene *sc, int to_texture)
     for (int k = 0; k < 3; k++)
         for (u32 r = 0; r < sc->runs_n[k]; r++)
             tri_count += sc->runs[k][r].n;
+    if (draw_ox)
+        scene_shift(sc, draw_ox);
     double t1 = now_seconds();
     if (gpu) {
         gpu_export(sc);
@@ -3318,10 +3446,11 @@ static void render_started(void)
         } else if (drawn) {
             if (marks)
                 marks_draw();
+            shown_w = tg.w;             /* recomp: VW, or the wide screen's */
             for (int y = 0; y < VH; y++) {
                 const u32 *frow = fb + y * FBW;
-                u8 *out = shown + (size_t)y * VW * 3;
-                for (int x = 0; x < VW; x++) {
+                u8 *out = shown + (size_t)y * shown_w * 3;
+                for (int x = 0; x < shown_w; x++) {
                     out[3 * x] = (u8)(frow[x] >> 16);
                     out[3 * x + 1] = (u8)(frow[x] >> 8);
                     out[3 * x + 2] = (u8)frow[x];
@@ -3336,7 +3465,7 @@ static void render_started(void)
             if (pic_targets_seen && !pic_targets_drawn && pic_waited < 3)
                 pic_waited++;
             else {
-                if (!png_write(pic_path, shown, VW, VH))
+                if (!png_write(pic_path, shown, shown_w, VH))
                     png_written++;
                 pic_request = 0;
             }
@@ -3344,7 +3473,7 @@ static void render_started(void)
         if (drawn && png_dir && s->regular) {
             char path[1200];
             snprintf(path, sizeof path, "%s/f%06u.png", png_dir, machine_frame);
-            if (!png_write(path, shown, VW, VH))
+            if (!png_write(path, shown, shown_w, VH))
                 png_written++;
         }
         screen_renders++;
@@ -3418,7 +3547,7 @@ static void view_start(void)
     zb = malloc((size_t)FBW * FBH * sizeof(float));
     pfb = calloc((size_t)FBW, FBH);
     stn = calloc((size_t)FBW, FBH);
-    shown = calloc(VW * VH, 3);
+    shown = calloc((size_t)FBW * VH, 3);       /* recomp: room for the wide screen */
     if (!fb || !zb || !pfb || !stn || !shown) {
         fprintf(stderr, "view: no memory\n");
         exit(1);
@@ -3522,9 +3651,11 @@ void view_host_start(void)
     view_start();
 }
 
-/* recomp: the newest picture (VIEW_W x VIEW_H, RGB), or NULL before the first */
-const u8 *view_host_picture(void)
+/* recomp: the newest picture (*w x VIEW_H, RGB: w is VIEW_W, or wider with
+ * view_host_wide), or NULL before the first */
+const u8 *view_host_picture(int *w)
 {
+    *w = shown_w;
     return shown_valid ? shown : NULL;
 }
 

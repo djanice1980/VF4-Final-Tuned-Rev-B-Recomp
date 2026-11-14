@@ -846,7 +846,8 @@ VF4debug's card model (`runtime/machine/ORIGIN.md`).
 **Settings.** `user/settings.txt` (`runtime/host/settings.c`, shared by the
 game and the launcher) is "name = value" lines: `coins` (free play |
 arcade), `fullscreen` (auto | on | off; auto is on when Steam sets
-`SteamDeck=1` or `SteamTenfoot=1`), `picture` (4:3 | stretch), `filter`
+`SteamDeck=1` or `SteamTenfoot=1`), `picture` (4:3 | 16:10 | 16:9 | 21:9 |
+stretch; the wide ones since section 39), `filter`
 (smooth | sharp), `renderer` (gpu | software), `scale` (1 to 4), `sound`,
 `cards`, and every control: `key1.*` and `key2.*` (keyboard, players 1 and
 2) and `pad.*` (every gamepad; the first is player 1), up to four inputs
@@ -1022,7 +1023,7 @@ player can too. The rows:
 |---|---|---|
 | Resume | closes it | |
 | Credits | free play or arcade coins | at a restart or the next start (the game reads the EEPROM as it starts) |
-| Picture, Scaling, Fullscreen | 4:3 or stretch, smooth or sharp, auto/off/on | at once |
+| Picture, Scaling, Fullscreen | 4:3, 16:10, 16:9, 21:9 (section 39) or stretch, smooth or sharp, auto/off/on | at once |
 | Volume | the game's sound, 0 to 100% in tens (new `volume` setting) | at once; shown as "(sound off)" with the sound chip off |
 | Renderer, Resolution, Card units | GPU or software, 1 to 4 times 640 x 480, the card units | at the next start; marked with a dot while they differ from this run |
 | Operator test menu | presses the Test switch, then the operator bar | at once |
@@ -2417,3 +2418,61 @@ are pixel for pixel the old ones on both renderers; the spare draws the
 same 16 pictures as room for six. Not checked: real hardware or another
 emulator's picture of that pose (the sky above the band is the dome's
 own, drawn from the game's data).
+
+## 39. Wide screens without stretching: 16:10, 16:9 and 21:9 (2026-11-13)
+
+David asked for wide screen options with no stretch, for the Steam Deck
+OLED (16:10) and 21:9 ultrawide screens too. The Picture setting
+(settings.txt `picture`, the menu's and the launcher's Picture row) is now
+4:3, 16:10, 16:9, 21:9 or stretch. A wide choice draws the game's screen
+pass 768, 854 or 1,146 pixels wide (480 tall; 21:9's is a 3440 x 1440
+screen's shape) instead of 640, at the GPU renderer's scale (2,292 x 960
+for 21:9 at 2x).
+
+**How (`view.c`, `view_host_wide`).** The game still makes its 640 x 480
+scene: the projection, the clip rectangles and the 2D are its own. After
+transform, lighting and the translucent sort, `scene_shift` moves the
+pass's triangles, modifier volumes and clip rectangles right by half the
+extra width, so the game's screen lies in the middle and the camera's view
+goes on at each side: what lay left of x = 0 (kept now, `keep_left`) or
+right of 640 was there all along and is drawn. A clip rectangle that
+reaches the game's left or right edge reaches the target's. The
+background plane moves with them (`bg_plane`). Passes into textures and
+any pass not of the whole 640 x 480 screen are unchanged. The buffers are
+1,280 wide (`FBW`); the game's own passes keep their old 1,024 limit
+(`PASS_W`).
+
+**The 2D.** The HUD, the writing and the 2D screens (the warning, the
+character select) stay 4:3 in the middle, unstretched; a 2D screen has
+black sides. A 2D triangle that goes from side to side of the game's
+screen and looks the same stretched sideways moves its corners at the
+screen's edges out to the target's (`tex_flat_across`: no texture, or v
+does not change along x and each row of the texels it covers is one
+colour). That covers the stage intros' black bars (without it they were
+black only over the middle 640, with the 3D above and below them at the
+sides), the full-screen black and white flashes, and the rankings' lines.
+A logged run (a temporary count in `emit`, removed) found these to be all
+the screen-wide 2D triangles of a fight and of the attract mode; the
+others that cross the screen are zooming pictures much wider than it,
+left alone. The game's own fades (the white-out between rounds, the
+title's white) are in its 3D and fill the sides already.
+
+**The window.** The picture keeps its shape: the window letterboxes or
+pillarboxes it as before, at the picture's width over 480 rather than
+4:3. A wide picture's window starts 720 tall at its shape (1,719 x 720
+for 21:9). The setting changes at once from the menu; the next frame is
+drawn at the new width. Steam's pictures (`--art`) are always 4:3.
+
+**Checked** (`--shot`, the headless KWin, the same mashing run as
+section 38): 4:3 is pixel for pixel the pictures before this change on
+both renderers (five moments). At 16:9 the middle 640 of the wide picture
+is the 4:3 picture to rounding (at most 0.35% of its pixels differ, almost
+all by one level, since the triangles sit at other x). Fights, victory
+poses, stage intros, round changes, the title, the rankings and the
+attract mode's demos at 16:10, 16:9 and 21:9 on both renderers: the sides
+are the stage, with nothing missing in the shots. The menu's Picture row
+changed from 4:3 to 16:10 during a fight: the next picture was 16:10, in
+the 4:3 window with bars above and below. Not checked: objects the
+game culls at its own 4:3 view's edges popping in at the sides of 21:9
+while the camera moves (none seen in the shots taken), and a real Deck or
+ultrawide monitor.

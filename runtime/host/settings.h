@@ -38,7 +38,7 @@ typedef struct binding {
 
 enum { COINS_FREE_PLAY, COINS_ARCADE };
 enum { FULLSCREEN_AUTO = -1, FULLSCREEN_OFF = 0, FULLSCREEN_ON = 1 };
-enum { PICTURE_4_3, PICTURE_STRETCH };
+enum { PICTURE_4_3, PICTURE_16_10, PICTURE_16_9, PICTURE_21_9, PICTURE_STRETCH, PICTURES };
 enum { FILTER_SMOOTH, FILTER_SHARP };
 enum { RENDERER_GPU, RENDERER_SOFTWARE };
 
@@ -81,6 +81,13 @@ int settings_card_name_ok(const char *name);
 /* each player's own card by default: "p1" and "p2" (the cards' files before
  * profiles; the game makes one at its player's first game) */
 extern const char *const settings_card_default[2];
+
+/* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",
+ * "21:9", "stretch"), and the width the game's screen is drawn at for it,
+ * 480 lines tall: 640 for 4:3 and stretch; 768, 854 and 1146 for the wide
+ * screens (21:9's is a 3440 x 1440 screen's shape) */
+const char *settings_picture_name(int picture);
+int settings_picture_width(int picture);
 
 /* a binding as text: "Up, W" (empty: "-") */
 void settings_binding_text(const binding *b, char *out, size_t n);

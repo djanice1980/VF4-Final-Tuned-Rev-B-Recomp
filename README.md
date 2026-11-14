@@ -454,7 +454,10 @@ changes an option back (elsewhere it closes the menu), the wheel moves
 through the rows, and the tabs, the Q and E caps, the Ko-fi badge and the
 first start's notice buttons can be clicked. The keys or buttons for each are shown
 at its foot, as the keyboard or the gamepad last used names them, and the
-panel on the right says what the chosen row does. Picture,
+panel on the right says what the chosen row does. Picture is 4:3, 16:10
+(the Steam Deck), 16:9 or 21:9 without stretching (the 3D scene goes on
+at the sides; the HUD and the 2D screens stay 4:3 in the middle), or
+Stretch. Picture,
 scaling, fullscreen and volume change at once; renderer, resolution and
 the card units are kept for the next start (marked with a dot until then),
 and credits (free play or arcade coins) and Network apply at the next
@@ -510,7 +513,9 @@ with only a gamepad, the menu's Operator test menu does the same.
 - `settings.txt`: what the launcher's Settings page writes, and the game
   reads when it starts. One "name = value" a line: `coins` (free play |
   arcade), `fullscreen` (auto | on | off; auto is on for the Steam Deck and
-  Big Picture), `picture` (4:3 | stretch), `filter` (smooth | sharp),
+  Big Picture), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
+  ones keep the cabinet's screen in the middle, unstretched, and draw what
+  the camera sees past its sides), `filter` (smooth | sharp),
   `renderer` (gpu | software), `scale` (1 to 4 times 640 x 480; default 2),
   `sound` (on | off), `volume` (0 to 100; default 100), `cards` (on |
   off), `network` (off | on; default off: the game's own NETWORK setting,

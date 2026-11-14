@@ -115,6 +115,17 @@ What the recomp changed:
   triangle and adds a spare the cut pieces share (`tri_spare`, `tri_room`).
   Triangles within the bound are drawn as before (docs/design.md section
   38).
+- `view.h`, `view.c` (2026-11-13): the wide screen, `view_host_wide`. A
+  pass to the whole of the game's 640 x 480 screen is drawn wider (up to
+  `VIEW_W_MAX`, 1,280); after transform, lighting and the sort,
+  `scene_shift` moves its triangles, volumes and clip rectangles right by
+  half the extra width (a clip rectangle that reaches the screen's edge
+  reaches the target's), and `bg_plane` moves the background plane with
+  them. `keep_left` keeps triangles and volumes that lie left of the
+  game's screen. The buffers are `FBW` (1,280) wide; `PASS_W` (1,024) is
+  the old `FBW` wherever it bounded a pass. `view_host_picture` gives the
+  picture's width. Without `view_host_wide` nothing behaves differently
+  (docs/design.md section 39).
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.
