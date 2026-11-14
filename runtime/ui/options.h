@@ -10,8 +10,8 @@
 #include "ui.h"
 
 enum {
-    OPT_CREDITS, OPT_CARDS, OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, OPT_SOUND,
-    OPT_VOLUME, OPT_NETWORK, OPT_CARD1, OPT_CARD2, OPT_COUNT
+    OPT_CREDITS, OPT_CARDS, OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE,
+    OPT_SOUND, OPT_VOLUME, OPT_NETWORK, OPT_CARD1, OPT_CARD2, OPT_COUNT
 };
 
 typedef struct option_info {
@@ -31,5 +31,10 @@ void option_change(settings *s, int o, int d);
 /* the card profiles Player 1 card and Player 2 card go through (None, then
  * these, less the other player's); the names stay the caller's */
 void options_card_names(const char *const *names, int n);
+
+/* the room on the screen the game's window is on (or will be), for Window
+ * size: its Auto, and the sizes that fit (settings.h; 0 x 0: not known,
+ * every size the smallest window allows is offered) */
+void options_screen(const window_room *room);
 
 #endif

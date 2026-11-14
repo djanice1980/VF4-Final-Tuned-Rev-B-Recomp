@@ -899,6 +899,8 @@ static int menu_on, bar_on, ov_dirty;   /* bar_on: the operator bar's buttons (A
 static Uint64 bar_until;                /* the bar is drawn until then (ms); its buttons work until it closes */
 static unsigned pad_hold;               /* buttons held as the menu closed: not the game's until let go */
 static int live_fullscreen;
+static int live_window, live_picture;   /* the Window size and Picture the window has */
+static int window_later;                /* Window size changed in fullscreen: it applies as that ends */
 static int to_launcher;                 /* the menu's Open the launcher: the game quits for it */
 
 static int fullscreen_wanted(void)
@@ -906,6 +908,67 @@ static int fullscreen_wanted(void)
     const char *deck = SDL_getenv("SteamDeck"), *tenfoot = SDL_getenv("SteamTenfoot");
     return cfg_.fullscreen == FULLSCREEN_ON ||
            (cfg_.fullscreen == FULLSCREEN_AUTO && ((deck && atoi(deck)) || (tenfoot && atoi(tenfoot))));
+}
+
+/* the room for the window's picture on w's screen (the primary one before
+ * there is a window) in pixels: the usable area less the window's frame
+ * when SDL knows it (an X11 window manager keeps a title bar on the screen,
+ * so 1080 lines on a 1080 screen were 1052), in w's coordinates times its
+ * pixel density (2 on a Wayland screen at 200%; 1 on Windows, whose
+ * coordinates are pixels) */
+static window_room screen_room(SDL_Window *w)
+{
+    SDL_DisplayID d = w ? SDL_GetDisplayForWindow(w) : SDL_GetPrimaryDisplay();
+    window_room room = { 0, 0, w ? SDL_GetWindowPixelDensity(w) : 1.0f };
+    SDL_Rect r;
+    int top = 0, left = 0, bottom = 0, right = 0;
+    if (room.density <= 0)
+        room.density = 1;
+    if (w && !SDL_GetWindowBordersSize(w, &top, &left, &bottom, &right))
+        top = left = bottom = right = 0;
+    if (d && SDL_GetDisplayUsableBounds(d, &r)) {
+        room.w = (int)((r.w - left - right) * room.density + 0.5f);
+        room.h = (int)((r.h - top - bottom) * room.density + 0.5f);
+    }
+    return room;
+}
+
+/* the Window size setting (docs/design.md section 40): the window to its
+ * size in pixels at the picture's shape (settings_window_size), in the
+ * middle of its screen when it was there already (move 1). Fullscreen
+ * keeps the screen: the size waits for it to end. A maximized window is
+ * restored to it */
+static void window_to_setting(SDL_Window *w, int move)
+{
+    live_window = cfg_.window;
+    live_picture = cfg_.picture;
+    if (!w)
+        return;
+    SDL_WindowFlags fl = SDL_GetWindowFlags(w);
+    if (fl & SDL_WINDOW_FULLSCREEN) {
+        window_later = 1;
+        return;
+    }
+    window_later = 0;
+    if (fl & SDL_WINDOW_MAXIMIZED) {
+        SDL_RestoreWindow(w);
+        SDL_SyncWindow(w);
+    }
+    int pw, ph, cw, ch, ow = 0, oh = 0;
+    window_room room = screen_room(w);
+    settings_window_size(&cfg_, &room, &pw, &ph);
+    cw = (int)(pw / room.density + 0.5f);
+    ch = (int)(ph / room.density + 0.5f);
+    SDL_GetWindowSize(w, &ow, &oh);
+    if (ow == cw && oh == ch)
+        return;
+    SDL_SetWindowSize(w, cw, ch);
+    if (move) {
+        SDL_DisplayID d = SDL_GetDisplayForWindow(w);
+        SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(d), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(d));
+    }
+    logf_("window: %d x %d pixels (Window size %s, room on the screen %d x %d, pixel density %.2f)", pw, ph,
+          cfg_.window == WINDOW_AUTO ? "Auto" : "set", room.w, room.h, room.density);
 }
 
 /* the menu, or (notice) the first start's Ko-fi notice in its place */
@@ -918,6 +981,10 @@ static void menu_show_as(int notice)
     for (int i = 0; i < n; i++)
         list[i] = names[i];
     options_card_names(list, n);
+    {
+        window_room room = screen_room(main_win);
+        options_screen(&room);
+    }
     menu_run r;
     r.start = start_cfg;
     r.sound = audio != NULL;
@@ -1036,6 +1103,10 @@ static int menu_do(int a)
     switch (a) {
     case MENU_LIVE:
         game_machine_wide(settings_picture_width(cfg_.picture));
+        if (cfg_.window != live_window ||
+            settings_window_width(cfg_.picture, PIC_H) != settings_window_width(live_picture, PIC_H))
+            window_to_setting(main_win, 1);     /* the size, or the new picture's shape */
+        live_picture = cfg_.picture;
         if (cfg_.fullscreen != live_fullscreen) {
             live_fullscreen = cfg_.fullscreen;
             SDL_SetWindowFullscreen(main_win, fullscreen_wanted());
@@ -1593,19 +1664,23 @@ int main(int argc, char **argv)
 
     SDL_Window *win = NULL;
     if (!art_dir) {
-        /* the wide screen (Steam's pictures, --art, are always 4:3); the
-         * window starts at the picture's shape: 1280 x 960, or 720 tall */
-        int pw = settings_picture_width(cfg_.picture), ww = 1280, wh = 960;
-        game_machine_wide(pw);
-        if (pw > PIC_W) {
-            wh = 720;
-            ww = 720 * pw / PIC_H;
-        }
+        /* the wide screen (Steam's pictures, --art, are always 4:3). The
+         * window starts at Window size on the primary screen, its pixels
+         * taken as coordinates; then the size is set again for the screen
+         * it opened on, in its own pixels (a scaled Wayland screen) */
+        int ww, wh;
+        window_room room = screen_room(NULL);
+        game_machine_wide(settings_picture_width(cfg_.picture));
+        settings_window_size(&cfg_, &room, &ww, &wh);
         win = SDL_CreateWindow(VF4FT_TITLE, ww, wh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
                                (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
         if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
         main_win = win;
         SDL_SetWindowMinimumSize(win, MENU_MIN_W, MENU_MIN_H);  /* the menu always fits */
+        logf_("window: %d x %d pixels (Window size %s, primary screen %d x %d)%s", ww, wh,
+              cfg_.window == WINDOW_AUTO ? "Auto" : "set", room.w, room.h, fullscreen ? "; fullscreen" : "");
+        SDL_SyncWindow(win);        /* its frame, for the room left (X11) */
+        window_to_setting(win, 1);
     }
     /* The GPU renderer's shaders are SPIR-V: a Vulkan device (natively, or
      * Proton's winevulkan). Without one the software picture is shown, on
@@ -1702,6 +1777,10 @@ int main(int argc, char **argv)
             switch (ev.type) {
             case SDL_EVENT_QUIT:
                 running = 0;
+                break;
+            case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+                if (window_later)
+                    window_to_setting(win, 1);  /* Window size, changed while it was fullscreen */
                 break;
             case SDL_EVENT_KEY_DOWN: {
                 SDL_Keycode key = ev.key.key;

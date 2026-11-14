@@ -108,16 +108,18 @@ static const char *argv0 = "";
 #endif
 
 /* Start the game directly (docs/design.md section 29): with the Play page's
- * switch on, the launcher starts hidden and presses Play itself, and closes
- * when the game ends, so a Steam entry for the launcher plays the game. It
- * shows itself instead when it is needed: no game built, a new builder or
- * an update to put in, the game's "Open the launcher" (exit code 64,
- * runtime/host/updates.h) or a game that ended with an error. --show (the
- * game's Open the launcher, for a game started on its own) never plays. */
+ * switch on, the launcher starts hidden and presses Play itself, so a Steam
+ * entry for the launcher plays the game. It shows itself instead when it is
+ * needed: no game built, a new builder or an update to put in. --show (the
+ * game's Open the launcher, for a game started on its own) never plays.
+ * Whichever way the game started, the launcher closes when it ends with 0
+ * (its Quit, section 40), and shows itself for the game's "Open the
+ * launcher" (exit code 64, runtime/host/updates.h), an update asked for in
+ * its menu, or a game that ended with an error. */
 #define GAME_EXIT_LAUNCHER 64
 static int play_direct;             /* the switch */
-static int direct_run;              /* this run started the game directly: the launcher closes with it */
-static int direct_close;            /* the game it started directly ended: close */
+static int direct_run;              /* this run started the game directly (the window stays hidden) */
+static int game_close;              /* the game it started ended with 0 (Quit): close */
 
 static void direct_path(char *p, size_t n)
 {
@@ -930,8 +932,10 @@ static void watch_game(void)
         game_proc = NULL;
         say("the game ended%s", code == GAME_EXIT_LAUNCHER ? ": its menu's Open the launcher" : "");
         take_game_request();        /* "Update when I quit" in the game's menu */
-        if (direct_run && code == 0 && !upd_auto) {
-            direct_close = 1;       /* started directly: no window */
+        if (code == 0 && !upd_auto) {
+            /* the game's Quit (or its window closed): the launcher goes too.
+             * Its menu's Open the launcher is the way back here (code 64) */
+            game_close = 1;
             return;
         }
         direct_run = 0;
@@ -1531,10 +1535,10 @@ static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sou
                                                  "Keyboard 2" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
-static const int tab_rows[T_COUNT][6] = {
+static const int tab_rows[T_COUNT][8] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, -1 },
     [T_CARDS] = { -1 },
-    [T_PICTURE] = { OPT_FULLSCREEN, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
+    [T_PICTURE] = { OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEY1] = { -1 }, [T_KEY2] = { -1 },
 };
@@ -2235,7 +2239,7 @@ static int tab_count(void)
     if (controls_tab())
         return ACT_COUNT;
     int n = 0;
-    while (n < 6 && tab_rows[st_tab][n] >= 0)
+    while (n < (int)SDL_arraysize(tab_rows[0]) && tab_rows[st_tab][n] >= 0)
         n++;
     return n;
 }
@@ -3058,6 +3062,26 @@ static void draw_edit(void)
 
 static void draw_settings(void)
 {
+    {
+        /* Window size's Auto and the sizes that fit: this screen's usable
+         * area in pixels, less a window's frame (the launcher's own: the
+         * game's is the same kind), as the game counts it (main.c
+         * screen_room). The game's window opens on this screen too, as a
+         * rule */
+        SDL_Rect r;
+        SDL_DisplayID d = SDL_GetDisplayForWindow(win);
+        window_room room = { 0, 0, SDL_GetWindowPixelDensity(win) };
+        int top = 0, left = 0, bottom = 0, right = 0;
+        if (room.density <= 0)
+            room.density = 1;
+        if (!SDL_GetWindowBordersSize(win, &top, &left, &bottom, &right))
+            top = left = bottom = right = 0;
+        if (d && SDL_GetDisplayUsableBounds(d, &r)) {
+            room.w = (int)((r.w - left - right) * room.density + 0.5f);
+            room.h = (int)((r.h - top - bottom) * room.density + 0.5f);
+        }
+        options_screen(&room);
+    }
     ui_tabs(40, 92, LW - 80, 42, tab_names, T_COUNT, st_tab);
     ui_fill(40, 148, LW - 80, 1, UI_LINE);
     if (cards_tab()) {
@@ -3838,8 +3862,8 @@ int main(int argc, char **argv)
         int was = proc != NULL;
         int code = pump_process();
         watch_game();
-        if (direct_close) {
-            running = 0;          /* the game started directly ended: the launcher goes with it */
+        if (game_close) {
+            running = 0;          /* the game quit: the launcher goes with it */
             continue;
         }
         upd_pump();

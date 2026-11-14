@@ -21,6 +21,11 @@ const option_info options[OPT_COUNT] = {
     [OPT_FULLSCREEN] = { "Fullscreen",
                          "Auto is fullscreen on the Steam Deck and in Steam's Big Picture, and a window "
                          "elsewhere. F11 or Alt+Enter switches while the game runs.", 0 },
+    [OPT_WINDOW] = { "Window size",
+                     "The game's window, at the picture's shape. Auto is the largest size that leaves a "
+                     "tenth of the screen free; only the sizes that fit the screen are offered. Fullscreen "
+                     "fills the screen whatever this is, and the window has this size outside it. Dragging "
+                     "the window's edges still resizes it.", 0 },
     [OPT_PICTURE] = { "Picture",
                       "4:3 is the cabinet's screen, with bars at the sides of a wide one. 16:10 (the Steam "
                       "Deck), 16:9 and 21:9 are wide: the cabinet's screen in the middle, nothing stretched, "
@@ -30,11 +35,12 @@ const option_info options[OPT_COUNT] = {
                      "How the picture is scaled to the screen: Sharp keeps its pixels square, Smooth blends "
                      "them.", 0 },
     [OPT_RENDERER] = { "Renderer",
-                       "GPU draws the game with Vulkan at the resolution below. Software draws it on the "
-                       "processor at the cabinet's 640 x 480 (wider with a wide picture).", 1 },
-    [OPT_SCALE] = { "Resolution",
-                    "The GPU renderer's size: 1 to 4 times the cabinet's 640 x 480, or a wide picture's "
-                    "(854 x 480 for 16:9). Software does not use it.", 1 },
+                       "GPU draws the game with Vulkan at the internal resolution below. Software draws it on "
+                       "the processor at the cabinet's 640 x 480 (wider with a wide picture).", 1 },
+    [OPT_SCALE] = { "Internal resolution",
+                    "The size the GPU renderer draws the game at, before the picture is scaled to the window "
+                    "or the screen: 1 to 4 times the cabinet's 640 x 480, or a wide picture's (854 x 480 for "
+                    "16:9). Higher is sharper and needs a faster GPU. Software does not use it.", 1 },
     [OPT_SOUND] = { "Sound",
                     "The sound processor and its effects. Off saves processor time, and the game is "
                     "silent.", 1 },
@@ -71,6 +77,42 @@ static int card_is_file(const char *name)
 static int by_name(const void *a, const void *b)
 {
     return SDL_strcasecmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static window_room screen = { 0, 0, 1.0f };
+
+void options_screen(const window_room *room)
+{
+    screen = *room;
+}
+
+/* Window size: Auto, then the listed heights that fit the screen. A height
+ * from a hand edit goes to the next listed one each way */
+static void window_change(settings *s, int d)
+{
+    int list[WINDOW_SIZES + 1], n = 0, at = -1;
+    list[n++] = WINDOW_AUTO;
+    for (int i = 0; i < WINDOW_SIZES; i++)
+        if (settings_window_fits(s->picture, settings_window_heights[i], &screen) ||
+            settings_window_heights[i] == s->window)
+            list[n++] = settings_window_heights[i];
+    for (int i = 0; i < n; i++)
+        if (list[i] == s->window)
+            at = i;
+    if (at >= 0) {
+        s->window = list[wrap(at, d, n)];
+        return;
+    }
+    int next = WINDOW_AUTO;
+    for (int i = 1; i < n; i++) {
+        if (d > 0 && list[i] > s->window) {
+            next = list[i];
+            break;
+        }
+        if (d < 0 && list[i] < s->window)
+            next = list[i];
+    }
+    s->window = next;
 }
 
 #define CARD_CHOICES 72
@@ -131,6 +173,17 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         break;
     }
     case OPT_FULLSCREEN: SDL_strlcpy(buf, fs[s->fullscreen + 1], n); break;
+    case OPT_WINDOW: {
+        int w, h;
+        settings_window_size(s, &screen, &w, &h);
+        if (s->window != WINDOW_AUTO)
+            SDL_snprintf(buf, n, "%d x %d", w, h);
+        else if (screen.w > 0 && screen.h > 0)
+            SDL_snprintf(buf, n, "Auto (%d x %d)", w, h);
+        else
+            SDL_strlcpy(buf, "Auto", n);
+        break;
+    }
     case OPT_PICTURE: {
         static const char *const pic[PICTURES] = { "4:3", "16:10 wide", "16:9 wide", "21:9 ultrawide", "Stretch" };
         SDL_strlcpy(buf, pic[s->picture], n);
@@ -160,6 +213,7 @@ void option_change(settings *s, int o, int d)
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;
+    case OPT_WINDOW: window_change(s, d); break;
     case OPT_PICTURE: s->picture = wrap(s->picture, d, PICTURES); break;
     case OPT_FILTER: s->filter = wrap(s->filter, d, 2); break;
     case OPT_RENDERER: s->renderer = wrap(s->renderer, d, 2); break;

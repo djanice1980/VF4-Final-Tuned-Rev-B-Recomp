@@ -846,7 +846,8 @@ VF4debug's card model (`runtime/machine/ORIGIN.md`).
 **Settings.** `user/settings.txt` (`runtime/host/settings.c`, shared by the
 game and the launcher) is "name = value" lines: `coins` (free play |
 arcade), `fullscreen` (auto | on | off; auto is on when Steam sets
-`SteamDeck=1` or `SteamTenfoot=1`), `picture` (4:3 | 16:10 | 16:9 | 21:9 |
+`SteamDeck=1` or `SteamTenfoot=1`), `window` (auto or a height in pixels,
+section 40), `picture` (4:3 | 16:10 | 16:9 | 21:9 |
 stretch; the wide ones since section 39), `filter`
 (smooth | sharp), `renderer` (gpu | software), `scale` (1 to 4), `sound`,
 `cards`, and every control: `key1.*` and `key2.*` (keyboard, players 1 and
@@ -1023,12 +1024,12 @@ player can too. The rows:
 |---|---|---|
 | Resume | closes it | |
 | Credits | free play or arcade coins | at a restart or the next start (the game reads the EEPROM as it starts) |
-| Picture, Scaling, Fullscreen | 4:3, 16:10, 16:9, 21:9 (section 39) or stretch, smooth or sharp, auto/off/on | at once |
+| Picture, Scaling, Fullscreen, Window size | 4:3, 16:10, 16:9, 21:9 (section 39) or stretch, smooth or sharp, auto/off/on, the window's size (section 40) | at once |
 | Volume | the game's sound, 0 to 100% in tens (new `volume` setting) | at once; shown as "(sound off)" with the sound chip off |
-| Renderer, Resolution, Card units | GPU or software, 1 to 4 times 640 x 480, the card units | at the next start; marked with a dot while they differ from this run |
+| Renderer, Internal resolution, Card units | GPU or software, 1 to 4 times 640 x 480, the card units | at the next start; marked with a dot while they differ from this run |
 | Operator test menu | presses the Test switch, then the operator bar | at once |
 | Restart the game | power off and on: the game starts again | at once, after a second A |
-| Quit | saves and closes | at once, after a second A |
+| Quit | saves and closes, and the launcher that started it (section 40) | at once, after a second A |
 
 The settings file is written when the menu closes, if anything changed.
 The panel beside the rows says what the chosen one does. The Controls tab
@@ -1715,7 +1716,8 @@ entry (the README's install steps say so).
   kept in `launcher-direct.txt` beside the launcher. Not shown beside an
   update's or a new builder's card.
 - **With it on,** the launcher creates its window hidden, presses Play
-  itself, and closes when the game ends with code 0. It shows itself
+  itself, and closes when the game ends with code 0 (since section 40 it
+  does that with the switch off too). It shows itself
   instead when nothing is built, a new builder or an update is waiting,
   the game asked for an update when it quits, the game ends with an error
   (the Play page says the code), or the game's menu asked for it.
@@ -2459,8 +2461,8 @@ title's white) are in its 3D and fill the sides already.
 
 **The window.** The picture keeps its shape: the window letterboxes or
 pillarboxes it as before, at the picture's width over 480 rather than
-4:3. A wide picture's window starts 720 tall at its shape (1,719 x 720
-for 21:9). The setting changes at once from the menu; the next frame is
+4:3. A wide picture's window started 720 tall at its shape (1,719 x 720
+for 21:9); section 40 gave the window its own setting. The setting changes at once from the menu; the next frame is
 drawn at the new width. Steam's pictures (`--art`) are always 4:3.
 
 **Checked** (`--shot`, the headless KWin, the same mashing run as
@@ -2476,3 +2478,95 @@ the 4:3 window with bars above and below. Not checked: objects the
 game culls at its own 4:3 view's edges popping in at the sides of 21:9
 while the camera moves (none seen in the shots taken), and a real Deck or
 ultrawide monitor.
+
+## 40. Quit quits; Window size and Internal resolution (2026-11-13)
+
+David's report: with the Resolution row at 4x and a 16:9 picture, the
+window stayed 1,281 x 720 on his 4K screen. The row was the GPU
+renderer's size (3,416 x 1,920 there, scaled down to the window), and the
+window had a fixed size of its own (section 39). He asked for both: an
+internal resolution and a window size. And the game's Quit brought the
+launcher back, though the menu has Open the launcher for that.
+
+**Quit.** The launcher closed with the game only when it had started the
+game directly (section 29); otherwise any end of the game showed it
+again. Now it closes whenever the game it started ends with code 0 (Quit,
+or the game's window closed). It still shows itself for Open the launcher
+(code 64), an update asked for in the game's menu, and a game that ended
+with an error. The Start the game directly switch now only keeps the
+launcher's window hidden at the start.
+
+**Internal resolution** is the Resolution row renamed (settings.txt
+`scale` as before): the size the GPU renderer draws at, before the
+picture is scaled to the window or the screen. It applies at the next
+start, as before.
+
+**Window size** (settings.txt `window`, the menu's and the launcher's
+Picture tab) is the window's height in pixels at the picture's shape:
+Auto, 480, 720, 960, 1080, 1440, 1920 or 2160 (the renderer's four sizes,
+a window pixel for each of its pixels, and the screens'). The width is the
+screen's shape, not the picture's width over 480 (`settings_window_width`:
+16:9 at 1080 is 1,920, where 854 x 480 gives 1,922; 21:9 is 3440 x
+1440's). In the room (`window_room`), that is, the screen's usable area
+less the window's frame:
+
+- **Auto** is the largest listed height that fits in nine tenths of the
+  room (the launcher's own first size uses the same 90%, section 28): 720
+  on a 1080 screen with a title bar (960 with none, as on Wayland here),
+  1440 on a 4K one.
+- **The list.** The rows offer only the heights that fit the room and are
+  no smaller than the smallest window (640 x 400 window units, the
+  menu's, times the pixel density). A height from a hand edit or another
+  screen is made smaller at its shape to fit, or larger to the smallest
+  window, and the row shows the size the window gets.
+- **Pixels.** The room and the sizes are pixels: window units times
+  SDL's pixel density (2 on a Wayland screen at 200%; 1 on Windows and
+  X11, whose units are pixels). The window is created at the size worked
+  out on the primary screen, with its pixels taken as units; then,
+  synced, it is set again from the screen it opened on, in its own pixel
+  density, with its frame (`SDL_GetWindowBordersSize`) known: KWin keeps
+  an X11 window's title bar on the screen, so 1,080 lines on a 1080 screen
+  came out 1,052 tall before the frame was counted.
+- **Changes in the menu** apply at once, in the middle of the screen: a
+  new Window size, or a Picture of another shape (the window takes the
+  new shape at the setting's size; 4:3 and stretch are one shape). A
+  maximized window is restored first. In fullscreen the change waits
+  until fullscreen ends (F11, or the Fullscreen row). Dragging the
+  window's edges still resizes it; the setting is unchanged.
+
+The launcher's rows work out the room from its own window: its screen,
+its pixel density and its frame (the game's window has the same kind of
+frame).
+
+**Checked** in a headless KWin (`kwin_wayland --virtual`, Xwayland on),
+the game's own `--keys` driving the menu and `shot=` taking the window as
+shown, in pixels:
+
+| Case | Wayland 1920 x 1080 | X11 1920 x 1080 | Wayland 3840 x 2160 at 200% |
+|---|---|---|---|
+| Auto, 16:9 | 1708 x 960 | 1280 x 720 (room 1920 x 1052) | 3414 x 1920 |
+| Auto, 4:3 | 1280 x 960 | 960 x 720 | 2560 x 1920 |
+| 1080, 4:3 | 1440 x 1080 | 1402 x 1052 (the title bar's 28) | 1440 x 1080 |
+| 2160, 16:9 | 1920 x 1080 | 1870 x 1052 | |
+| 720 to 960 in the menu, 16:9 | 1280 x 720, then 1708 x 960 | the same | 1422 x 800 (the smallest window), then 1708 x 960 |
+| then Picture 21:9 | 1920 x 803 (made smaller) | the same | 2294 x 960 |
+| fullscreen; 720 to 960 in the menu; F11; F11 | 1920 x 1080, stays; 1280 x 960; 1920 x 1080 | the same | |
+| the menu's list, Right from Auto | 480, 720, 960, 1080 | 480, 720, 960, Auto (1080 does not fit) | 960, 1080, 1440, 1920 |
+
+The launcher with a stand-in game ending with a chosen code, offscreen,
+the switch off and on: 0 closed it 1.2 s after the start, 64 and 3 left it
+open (3 with the error on the Play page). Its Picture tab, drawn with
+`--shot`, has the six rows.
+
+The Windows game under plain Wine (an X11 window through Xwayland, the
+same KWin at 1920 x 1080): Wine gives its own frame, so the room was
+1912 x 1046. Auto at 16:9 was 1280 x 720; 720 to 960 in the menu 1708 x
+960, then 21:9 1912 x 800; fullscreen, the change, F11 and F11 again 1920
+x 1080, 1280 x 960, 1920 x 1080; the list Auto, 480, 720, 960, Auto. 1080
+at 4:3 asked for 1394 x 1046 and got 1394 x 1052: Wine's frame is not
+the window manager's, so a window the room's full height can be a few
+lines off its shape (bars of 3 lines).
+
+Not tried: a real Windows PC, Proton under Steam, the Deck, a screen with
+a panel (the usable area less it), and windows moved between screens of
+different scales (the menu works out the room each time it opens).

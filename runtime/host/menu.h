@@ -21,8 +21,8 @@
 
 #include "settings.h"
 
-#define MENU_MIN_W 640      /* the window's smallest size: the menu fits */
-#define MENU_MIN_H 400
+#define MENU_MIN_W WINDOW_MIN_UNITS_W  /* the window's smallest size: the menu fits (settings.h) */
+#define MENU_MIN_H WINDOW_MIN_UNITS_H
 
 #define MENU_KOFI_URL "https://ko-fi.com/P5P81EV1M0"
 #define MENU_KOFI_SHOWN "ko-fi.com/P5P81EV1M0"      /* as the menu shows it, to type in elsewhere */

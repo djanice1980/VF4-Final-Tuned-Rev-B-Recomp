@@ -54,6 +54,7 @@ void settings_defaults(settings *s)
     memset(s, 0, sizeof *s);
     s->coins = COINS_FREE_PLAY;
     s->fullscreen = FULLSCREEN_AUTO;
+    s->window = WINDOW_AUTO;
     s->picture = PICTURE_4_3;
     s->filter = FILTER_SMOOTH;
     s->renderer = RENDERER_GPU;
@@ -172,6 +173,80 @@ int settings_picture_width(int picture)
     default: return 640;
     }
 }
+
+const int settings_window_heights[WINDOW_SIZES] = { 480, 720, 960, 1080, 1440, 1920, 2160 };
+
+/* the screen's shape, not the picture's width over 480 (854 is a pixel more
+ * than 16:9's): 16:9 at 1080 is 1920. 21:9 is 3440 x 1440's */
+int settings_window_width(int picture, int height)
+{
+    int num = 4, den = 3;
+    switch (picture) {
+    case PICTURE_16_10: num = 16, den = 10; break;
+    case PICTURE_16_9: num = 16, den = 9; break;
+    case PICTURE_21_9: num = 43, den = 18; break;
+    }
+    int w = (height * num + den / 2) / den;
+    return w + (w & 1);
+}
+
+/* the smallest window in pixels */
+static void window_min(const window_room *room, int *mw, int *mh)
+{
+    float den = room->density > 0 ? room->density : 1.0f;
+    *mw = (int)(WINDOW_MIN_UNITS_W * den + 0.5f);
+    *mh = (int)(WINDOW_MIN_UNITS_H * den + 0.5f);
+}
+
+int settings_window_fits(int picture, int height, const window_room *room)
+{
+    int mw, mh, w = settings_window_width(picture, height);
+    window_min(room, &mw, &mh);
+    if (w < mw || height < mh)
+        return 0;
+    return room->w <= 0 || room->h <= 0 || (w <= room->w && height <= room->h);
+}
+
+/* w x h at the same shape, scaled to fit in (big 0) or cover (big 1) bw x bh */
+static void window_scale(int *w, int *h, int bw, int bh, int big)
+{
+    if (((long long)*w * bh > (long long)*h * bw) != big) {
+        *h = (int)((long long)*h * bw / *w);
+        *w = bw;
+    } else {
+        *w = (int)((long long)*w * bh / *h);
+        *h = bh;
+    }
+}
+
+void settings_window_size(const settings *s, const window_room *room, int *w, int *h)
+{
+    int known = room->w > 0 && room->h > 0, ht = s->window, mw, mh;
+    window_min(room, &mw, &mh);
+    if (ht == WINDOW_AUTO) {
+        window_room most = *room;
+        most.w = room->w * 9 / 10;
+        most.h = room->h * 9 / 10;
+        ht = known ? 0 : 720;
+        for (int i = 0; known && i < WINDOW_SIZES; i++)
+            if (settings_window_fits(s->picture, settings_window_heights[i], &most))
+                ht = settings_window_heights[i];
+        for (int i = 0; !ht && i < WINDOW_SIZES; i++) {     /* a small screen: the smallest there is */
+            int h1 = settings_window_heights[i];
+            if (settings_window_width(s->picture, h1) >= mw && h1 >= mh)
+                ht = h1;
+        }
+        if (!ht)
+            ht = settings_window_heights[WINDOW_SIZES - 1];
+    }
+    *h = ht;
+    *w = settings_window_width(s->picture, ht);
+    if (known && (*w > room->w || *h > room->h))
+        window_scale(w, h, room->w, room->h, 0);    /* the largest at this shape in the room */
+    if (*w < mw || *h < mh)
+        window_scale(w, h, mw, mh, 1);              /* the smallest at this shape there can be */
+}
+
 static const char *const filter_names[] = { "smooth", "sharp" };
 static const char *const renderer_names[] = { "gpu", "software" };
 
@@ -231,6 +306,12 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
                     ok = 1, s->fullscreen = FULLSCREEN_AUTO;
                 else if ((ok = choice(v, onoff_names, 2, &x)))
                     s->fullscreen = x;
+            } else if (!strcmp(name, "window")) {
+                x = atoi(v);
+                if (!strcmp(v, "auto"))
+                    ok = 1, s->window = WINDOW_AUTO;
+                else if ((ok = x >= WINDOW_MIN && x <= WINDOW_MAX))
+                    s->window = x;
             } else if (!strcmp(name, "picture")) {
                 if ((ok = choice(v, picture_names, PICTURES, &x)))
                     s->picture = x;
@@ -307,11 +388,19 @@ int settings_save(const settings *s, const char *path)
         coins_names[s->coins]);
     PUT("fullscreen = %s       # auto (on for the Steam Deck and Big Picture) | on | off\n",
         s->fullscreen == FULLSCREEN_AUTO ? "auto" : onoff_names[s->fullscreen]);
+    if (s->window == WINDOW_AUTO)
+        PUT("window = auto           # the window's height: auto (the largest of these that leaves a tenth of\n");
+    else
+        PUT("window = %-4d           # the window's height: auto (the largest of these that leaves a tenth of\n",
+            s->window);
+    PUT("                         # the screen) | 480 | 720 | 960 | 1080 | 1440 | 1920 | 2160 (pixels;\n"
+        "                         # the width is the picture's shape)\n");
     PUT("picture = %s          # 4:3 | 16:10 | 16:9 | 21:9 (wide: the 3D fills the sides) | stretch\n",
         settings_picture_name(s->picture));
     PUT("filter = %s           # smooth | sharp (how the picture is scaled to the window)\n", filter_names[s->filter]);
     PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture)\n", renderer_names[s->renderer]);
-    PUT("scale = %d               # the GPU renderer's resolution: 1 to 4 times 640 x 480\n", s->scale);
+    PUT("scale = %d               # the GPU renderer's internal resolution: 1 to 4 times 640 x 480 (the\n"
+        "                         # picture's width at a wide one), before it is scaled to the window\n", s->scale);
     PUT("sound = %s\n", onoff_names[s->sound]);
     PUT("volume = %d             # 0 to 100 (%%); the game's menu changes it too\n", s->volume);
     PUT("cards = %s            # the two card units\n", onoff_names[s->cards]);

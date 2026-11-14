@@ -283,8 +283,9 @@ Proton on a desktop PC.
    D-pad and A work the buttons (B goes back, LB and RB switch tabs):
    Use this set (or Continue), Build (the first run downloads about 190
    MB of compiler, and takes several minutes on the Deck), then Play. The
-   game runs fullscreen in the same Proton prefix and the launcher comes
-   back when it ends. Settings is where controls, the coin setting, the
+   game runs fullscreen in the same Proton prefix. Quitting it closes the
+   launcher too (the game's menu has Open the launcher to go back to
+   it). Settings is where controls, the coin setting, the internal
    resolution and the rest are changed.
 
 On the Deck's controls the game's defaults are the PlayStation 2 versions'
@@ -457,9 +458,13 @@ at its foot, as the keyboard or the gamepad last used names them, and the
 panel on the right says what the chosen row does. Picture is 4:3, 16:10
 (the Steam Deck), 16:9 or 21:9 without stretching (the 3D scene goes on
 at the sides; the HUD and the 2D screens stay 4:3 in the middle), or
-Stretch. Picture,
-scaling, fullscreen and volume change at once; renderer, resolution and
-the card units are kept for the next start (marked with a dot until then),
+Stretch. Window size is the game's window in pixels at the picture's
+shape (Auto is the largest of the sizes that leaves a tenth of the screen
+free); Internal resolution is the size the GPU renderer draws at, before
+the picture is scaled to the window or the screen. Picture, window size,
+scaling, fullscreen and volume change at once; renderer, internal
+resolution and the card units are kept for the next start (marked with a
+dot until then),
 and credits (free play or arcade coins) and Network apply at the next
 restart. Network is the game's own network setting, off by default: off,
 the game skips its network check as it starts (there is no network
@@ -467,7 +472,9 @@ service yet, so on only waits and reports a time-out). Operator
 test menu presses the cabinet's Test switch and shows the operator bar,
 where A is Test and X is Service until B or the test menu's EXIT. Restart
 the game turns the cabinet off and on (records, settings and cards are
-kept); it and Quit ask for a second A. Changes are saved to
+kept); it and Quit ask for a second A. Quit closes the game, and the
+launcher too when it started the game; Open the launcher goes back to
+it. Changes are saved to
 `settings.txt` when the menu closes. The Controls tab shows the controls;
 they are changed in the launcher's Settings, not here.
 

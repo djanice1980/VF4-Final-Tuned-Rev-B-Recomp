@@ -39,12 +39,15 @@ typedef struct binding {
 enum { COINS_FREE_PLAY, COINS_ARCADE };
 enum { FULLSCREEN_AUTO = -1, FULLSCREEN_OFF = 0, FULLSCREEN_ON = 1 };
 enum { PICTURE_4_3, PICTURE_16_10, PICTURE_16_9, PICTURE_21_9, PICTURE_STRETCH, PICTURES };
+enum { WINDOW_AUTO = 0, WINDOW_MIN = 240, WINDOW_MAX = 4320 };
 enum { FILTER_SMOOTH, FILTER_SHARP };
 enum { RENDERER_GPU, RENDERER_SOFTWARE };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
     int fullscreen;         /* FULLSCREEN_*: auto is on for the Steam Deck and Big Picture */
+    int window;             /* the game's window: WINDOW_AUTO, or its height in pixels (the width is the
+                             * picture's shape: settings_window_size) */
     int picture;            /* PICTURE_* */
     int filter;             /* FILTER_* */
     int renderer;           /* RENDERER_*: the GPU (Vulkan) by default, the software picture when it cannot */
@@ -88,6 +91,36 @@ extern const char *const settings_card_default[2];
  * screens (21:9's is a 3440 x 1440 screen's shape) */
 const char *settings_picture_name(int picture);
 int settings_picture_width(int picture);
+
+/* The Window size setting (docs/design.md section 40): the window's height
+ * in pixels, its width the picture's screen shape (16:9 at 1080 is 1920 x
+ * 1080; stretch is 4:3). The listed heights, smallest first: the GPU
+ * renderer's four (480 to 1920, a pixel for each of its pixels) and the
+ * screens' 720, 1080 and 2160 */
+#define WINDOW_SIZES 7
+extern const int settings_window_heights[WINDOW_SIZES];
+/* the game's window is never smaller than this in window units, so its
+ * menu fits (menu.h): in pixels, times the screen's pixel density (1280 x
+ * 800 on a Wayland screen at 200%) */
+#define WINDOW_MIN_UNITS_W 640
+#define WINDOW_MIN_UNITS_H 400
+/* the room for the window's picture: the screen's usable area less the
+ * window's frame, in pixels (0 x 0: not known), and the pixel density */
+typedef struct window_room {
+    int w, h;
+    float density;
+} window_room;
+/* the width for a height at the picture's shape (even) */
+int settings_window_width(int picture, int height);
+/* 1: a height's window fits the room and is no smaller than the smallest
+ * window */
+int settings_window_fits(int picture, int height, const window_room *room);
+/* the window's size in pixels for s in that room: the setting's height,
+ * or Auto's (the largest listed one that fits in nine tenths of the room;
+ * 720 when the room is not known), made smaller at the same shape when it
+ * is larger than the room, and larger when it is smaller than the
+ * smallest window */
+void settings_window_size(const settings *s, const window_room *room, int *w, int *h);
 
 /* a binding as text: "Up, W" (empty: "-") */
 void settings_binding_text(const binding *b, char *out, size_t n);
