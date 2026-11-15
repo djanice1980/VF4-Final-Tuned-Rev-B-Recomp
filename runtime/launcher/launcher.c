@@ -244,6 +244,28 @@ static void load_install(void)
     }
 }
 
+/* a folder's path as the system writes it: Windows' "\" (the set search
+ * joins names with "/"), and no "." or separator at the end (a root's
+ * separator stays: "/", "C:\") */
+static void path_tidy(char *p)
+{
+#ifdef _WIN32
+    for (char *c = p; *c; c++)
+        if (*c == '/')
+            *c = '\\';
+#endif
+    for (;;) {
+        size_t n = strlen(p);
+        int sep = n > 1 && (p[n - 1] == '/' || p[n - 1] == '\\');
+        if (n > 1 && p[n - 1] == '.' && (p[n - 2] == '/' || p[n - 2] == '\\'))
+            p[n - 1] = 0;       /* "/." */
+        else if (sep && !(n == 3 && p[1] == ':'))
+            p[n - 1] = 0;
+        else
+            break;
+    }
+}
+
 static void load_state(void)
 {
     char *s = SDL_LoadFile(set_file, NULL);
@@ -251,6 +273,7 @@ static void load_state(void)
     if (s) {
         SDL_strlcpy(set_path, s, sizeof set_path);
         set_path[strcspn(set_path, "\r\n")] = 0;
+        path_tidy(set_path);    /* one saved by a launcher before 0.5.7 may end in "/." */
         SDL_free(s);
     }
     load_install();
@@ -282,6 +305,7 @@ static int found_set(const char *dir)
     if (!is_set(dir))
         return 0;
     SDL_strlcpy(found_path, dir, sizeof found_path);
+    path_tidy(found_path);
     say("found a set in %s: offered on the Game files page", found_path);
     return 1;
 }
@@ -444,7 +468,8 @@ static void copy_saves(void)
     saves_from[0] = 0;
 }
 
-/* each folder in `dir` + `tail`; `tail` may itself have one "*" level */
+/* each folder in `dir` + `tail`; `tail` may itself have one "*" level, and
+ * "" or "." is the folder itself */
 typedef struct scan { const char *tail; int found; } scan;
 
 static SDL_EnumerationResult SDLCALL scan_one(void *ud, const char *dir, const char *name)
@@ -455,7 +480,10 @@ static SDL_EnumerationResult SDLCALL scan_one(void *ud, const char *dir, const c
     int sep = dl && (dir[dl - 1] == '/' || dir[dl - 1] == '\\');
     snprintf(p, sizeof p, "%.*s/%s", (int)(sep ? dl - 1 : dl), dir, name);
     char full[1200];
-    snprintf(full, sizeof full, "%s/%s", p, sc->tail);
+    if (!sc->tail[0] || !strcmp(sc->tail, "."))
+        SDL_strlcpy(full, p, sizeof full);
+    else
+        snprintf(full, sizeof full, "%s/%s", p, sc->tail);
     if (strstr(sc->tail, "*/")) {
         char head[256];
         const char *star = strstr(sc->tail, "*/");
@@ -3667,8 +3695,10 @@ int main(int argc, char **argv)
     if (opt_game)
         SDL_strlcpy(game, opt_game, sizeof game);
     load_state();
-    if (opt_set)
+    if (opt_set) {
         SDL_strlcpy(set_path, opt_set, sizeof set_path);
+        path_tidy(set_path);
+    }
     for (int i = 0; i < nunknown; i++)
         say("not an option: %s (ignored)", unknown[i]);
     say("builder files: %s", root[0] ? root : "(not found)");
@@ -3865,6 +3895,7 @@ int main(int argc, char **argv)
         if (SDL_GetAtomicInt(&picked)) {
             SDL_SetAtomicInt(&picked, 0);
             SDL_strlcpy(set_path, picked_path, sizeof set_path);
+            path_tidy(set_path);
             SDL_SaveFile(set_file, set_path, strlen(set_path));
             say("set: %s", set_path);
             if (page == P_FILES)
