@@ -2779,7 +2779,9 @@ Windows game and launcher built, the player's builder compiled):
 - a card not made yet (card1 = p1): Edit, Save as it is: a ready card
   inserted;
 - the launcher's editor: the same picture as before, a new card edited
-  and saved with good checks.
+  and saved with good checks;
+- the Windows game: David played the test copy (built from these
+  sources) on 2026-11-14 with no problems.
 
-Not checked: the Windows game run, a Steam Deck's keyboard, an edit
-waiting when the machine stops.
+Not checked: a Steam Deck's keyboard, an edit waiting when the machine
+stops.
