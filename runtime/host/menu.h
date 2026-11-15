@@ -1,8 +1,9 @@
 /* The game's own menu, over the picture (docs/design.md sections 21, 22):
  * Insert or Esc, a gamepad's Guide button, or View + Menu held for a second
- * open it, and the game pauses while it is open. Its tabs (Game, Picture,
- * Sound, Controls) are switched with Q and E or the shoulder buttons, or
- * clicked; the mouse chooses the row under it (menu_mouse). The
+ * open it, and the game pauses while it is open. Its tabs (Game, Cards,
+ * Picture, Sound, Controls) are switched with Q and E or the shoulder buttons, or
+ * clicked; the mouse chooses the row under it (menu_mouse). The Cards tab
+ * opens the card editor in the tabs' place (docs/design.md section 42). The
  * player's settings that can change while the game runs change at once;
  * the others are kept for the next start. The cabinet's Test switch and a
  * restart are here too, so a player with only a gamepad (the Steam Deck)
@@ -19,6 +20,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "cards.h"
 #include "settings.h"
 
 #define MENU_MIN_W WINDOW_MIN_UNITS_W  /* the window's smallest size: the menu fits (settings.h) */
@@ -27,8 +29,15 @@
 #define MENU_KOFI_URL "https://ko-fi.com/P5P81EV1M0"
 #define MENU_KOFI_SHOWN "ko-fi.com/P5P81EV1M0"      /* as the menu shows it, to type in elsewhere */
 
-/* what the player asks of it */
-enum { MENU_UP, MENU_DOWN, MENU_LEFT, MENU_RIGHT, MENU_OK, MENU_BACK, MENU_PREV, MENU_NEXT };
+/* what the player asks of it. MENU_ESCAPE: Esc, Insert or Guide (it closes
+ * the menu, or the card editor or its note first); MENU_ERASE: Backspace
+ * (back to the game; the editor's Undo; a letter less in the note);
+ * MENU_UNDO: a pad's Y (the editor's Undo); MENU_CLEAR: a pad's X (a letter
+ * less in the note) */
+enum {
+    MENU_UP, MENU_DOWN, MENU_LEFT, MENU_RIGHT, MENU_OK, MENU_BACK, MENU_PREV, MENU_NEXT, MENU_ESCAPE, MENU_ERASE,
+    MENU_UNDO, MENU_CLEAR
+};
 
 /* what the window then does */
 enum {
@@ -51,7 +60,13 @@ typedef struct menu_run {
     int sound;              /* the sound chip runs: the volume applies */
     int no_device;          /* sound was on, but no audio device opened at the start */
     int test_program;       /* the test program runs now */
-    const char *user_dir;   /* the player's folder (ends in a separator): the Cards tab reads cards/ there */
+    /* the card editor's (main.c, docs/design.md section 42): a card as the
+     * menu shows it, with a Saved edit that is not in its file yet (1; 0 no
+     * file; -1 the file is not a card; *held: a game is using it), and an
+     * edit Saved (the fields that differ between from and to; fresh: a card
+     * never used or not made yet, which becomes a ready card) */
+    int (*card_peek)(const char *name, Uint8 *card, int *held);
+    void (*card_edit)(const char *name, const card_fields *from, const card_fields *to, int fresh);
 } menu_run;
 
 /* opens it on s (the settings in use, changed in place) */
@@ -76,6 +91,12 @@ int menu_mouse(int what, float px, float py, int d);
 
 /* 1 when s was changed since menu_open */
 int menu_changed(void);
+
+/* 1 while the card editor's ring name note is up: the window then sends
+ * the typed text (menu_text), and of the keys only Enter, Esc, Backspace,
+ * Left and Right (as MENU_OK, _ESCAPE, _ERASE, _LEFT, _RIGHT) */
+int menu_typing(void);
+void menu_text(const char *utf8);
 
 /* the menu over the whole of r's target, pw x ph pixels; backdrop is the
  * picture to show behind it (or NULL). r must be ui_init's renderer. */

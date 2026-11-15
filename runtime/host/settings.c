@@ -63,8 +63,9 @@ void settings_defaults(settings *s)
     s->sound = 1;
     s->volume = 100;
     s->cards = 1;
-    SDL_strlcpy(s->card[0], settings_card_default[0], sizeof s->card[0]);
-    SDL_strlcpy(s->card[1], settings_card_default[1], sizeof s->card[1]);
+    /* no card in either unit (s->card[] stays empty): a card is one
+     * character's, and the select screen holds a player with a card to it,
+     * so without one every player picks freely (docs/design.md section 42) */
     s->network = 0;
     s->region = REGION_JAPAN;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */

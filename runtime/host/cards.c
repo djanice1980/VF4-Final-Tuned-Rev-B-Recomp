@@ -1,6 +1,7 @@
 /* The players' cards: see cards.h. */
 #include "cards.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #define REC 20                  /* the record's first byte in the card (word 5) */
@@ -248,6 +249,40 @@ void card_fields_put(Uint8 *card, const card_fields *f)
         }
     }
     card_seal(card);
+}
+
+/* each field of card_fields, as its offset and size: a name and the items
+ * whole, every other value on its own */
+typedef struct field_at { size_t at, size; } field_at;
+#define FIELD(x) { offsetof(card_fields, x), sizeof ((card_fields *)0)->x }
+static const field_at fields[] = {
+    FIELD(name), FIELD(chara), FIELD(level), FIELD(plays_left), FIELD(items),
+    FIELD(color[0][0]), FIELD(color[0][1]), FIELD(color[0][2]), FIELD(color[0][3]),
+    FIELD(color[1][0]), FIELD(color[1][1]), FIELD(color[1][2]), FIELD(color[1][3]),
+    FIELD(hair[0]), FIELD(hair[1]), FIELD(eye[0]), FIELD(eye[1]),
+    FIELD(equip[0][0]), FIELD(equip[0][1]), FIELD(equip[0][2]), FIELD(equip[0][3]),
+    FIELD(equip[1][0]), FIELD(equip[1][1]), FIELD(equip[1][2]), FIELD(equip[1][3]),
+};
+#undef FIELD
+
+void card_edit_add(card_edit *e, const card_fields *from, const card_fields *to)
+{
+    for (size_t i = 0; i < SDL_arraysize(fields); i++) {
+        size_t at = fields[i].at, n = fields[i].size;
+        if (!memcmp((const Uint8 *)from + at, (const Uint8 *)to + at, n))
+            continue;
+        memcpy((Uint8 *)&e->to + at, (const Uint8 *)to + at, n);
+        memset((Uint8 *)&e->set + at, 1, n);
+    }
+}
+
+void card_edit_apply(const card_edit *e, card_fields *f)
+{
+    for (size_t i = 0; i < SDL_arraysize(fields); i++) {
+        size_t at = fields[i].at, n = fields[i].size;
+        if (((const Uint8 *)&e->set)[at])
+            memcpy((Uint8 *)f + at, (const Uint8 *)&e->to + at, n);
+    }
 }
 
 void card_starter(Uint8 *card, Uint32 number)

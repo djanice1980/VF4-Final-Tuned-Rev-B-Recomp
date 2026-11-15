@@ -484,8 +484,11 @@ it. Changes are saved to
 they are changed in the launcher's Settings, not here.
 
 **Cards** keep a player's character, rank, record, items and colors, as a
-cabinet's card did; the game picks the card's character at the select
-screen. The launcher's Settings has a **Cards** tab: the cards in
+cabinet's card did, and a card holds its player to its character: the
+select screen picks the card's character and the player cannot move off
+it. So no player has a card by default, and every character is free;
+giving a player a card is a choice (for tournament-style play with a
+fixed character). The launcher's Settings has a **Cards** tab: the cards in
 `user/cards`, with each one's character, rank, record and games left.
 Player 1 and Player 2 give the chosen card to a player (pressed again:
 no card), Edit opens the card editor, New makes a ready card (Akira,
@@ -499,11 +502,15 @@ item slots by item number, 1 to 199). Save writes the card as the game's
 own changes do, with its checks; Backspace or Y undoes the changes. A
 card never used (the game's new card) becomes a ready card when it is
 edited. The game's menu has a Cards tab too: each player's card, chosen
-from the same list or a new one the game makes, with the chosen card's
-character, rank, ring name, versus record, games left and items beside it,
-swapped in between games
-(choosing the other player's card swaps the two; a card the game is using
-leaves once the game has written it). On a cabinet the ring name was set
+from the same list (None, the default, for no card) or a new one the game
+makes, with the chosen card's character, rank, ring name, versus record,
+games left and items beside it, swapped in between games (choosing the
+other player's card swaps the two; a card the game is using leaves once
+the game has written it). Its **Edit player 1's card** and **Edit player
+2's card** open the same card editor in the menu (Esc or B saves and goes
+back, Cancel at its foot leaves the card as it was); the changes go onto
+the card as the menu closes, and onto a card a game is using (from Start
+to the end of the match) once the game lets go of it, keeping the game's own record and games left. On a cabinet the ring name was set
 on VF.NET and ranks above 10th dan came from it; here the editor sets the
 name, and a card goes as far as 10th dan.
 
@@ -544,9 +551,9 @@ with only a gamepad, the menu's Operator test menu does the same.
   when it has changed and when the game ends.
 - `cards/`: the card profiles, one file each (`NAME.card`, 128 bytes, the
   card as the cabinet's card unit holds it). `card1` and `card2` in
-  `settings.txt` say which is each player's (`p1` and `p2` by default,
-  made the first time a player saves to a card). Cards the launcher
-  deletes go to `cards/Deleted/`.
+  `settings.txt` say which is each player's (`none` by default; the
+  game's menu also offers a new `p1` or `p2`, made the first time that
+  player saves to it). Cards the launcher deletes go to `cards/Deleted/`.
 
 **The GPU renderer** (`renderer = gpu`, the default) needs Vulkan: it is
 used natively, and under Proton through Proton's own Vulkan. Without

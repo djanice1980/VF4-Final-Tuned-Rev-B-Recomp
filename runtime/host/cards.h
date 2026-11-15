@@ -90,6 +90,21 @@ void card_fields_get(const Uint8 *card, card_fields *f);
  * VF.NET set them), then card_seal */
 void card_fields_put(Uint8 *card, const card_fields *f);
 
+/* some of a card's fields changed (docs/design.md section 42): the game
+ * menu's editor keeps one for a card until the card can take it, which for
+ * a card a game is using is when the game lets it go, so the edit goes onto
+ * the game's latest. A field of set is nonzero when the edit sets it (for
+ * name and items: their first byte) */
+typedef struct card_edit {
+    card_fields to;         /* what each field it sets becomes */
+    card_fields set;
+} card_edit;
+
+/* the fields that differ between from and to go into e (over what it set before) */
+void card_edit_add(card_edit *e, const card_fields *from, const card_fields *to);
+/* the fields e sets, into f */
+void card_edit_apply(const card_edit *e, card_fields *f);
+
 /* a card ready to play, as the launcher's New makes it: Akira, 10th kyu,
  * the ring name PLAYER, every item, 500 games, numbered number */
 void card_starter(Uint8 *card, Uint32 number);

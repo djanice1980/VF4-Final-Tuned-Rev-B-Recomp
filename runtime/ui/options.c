@@ -7,17 +7,22 @@ const option_info options[OPT_COUNT] = {
                       "button), as on the cabinet.", 0 },
     [OPT_CARDS] = { "Card units",
                     "The cabinet's two VF.NET card readers: a card keeps its player's ring name, rank, "
-                    "record and items. Player 1 card and Player 2 card choose whose card is in each.", 1 },
+                    "record and items, and holds the player to its character. Player 1 card and Player 2 card "
+                    "choose whose card is in each.", 1 },
     [OPT_CARD1] = { "Player 1 card",
-                    "The card in player 1's unit: one in the game's user/cards folder (the launcher's "
-                    "Settings, Cards tab makes and edits them), or a new one the game makes at the player's "
-                    "first game. Choosing player 2's card swaps the two cards. They change as the menu "
-                    "closes; a card in use in a game leaves once the game has written it.", 0 },
+                    "None (the default): player 1 picks any character. With a card in, the select screen holds "
+                    "the player to the card's character, as a cabinet does. A card is one in the game's "
+                    "user/cards folder (the launcher's Settings, Cards tab makes them; Edit changes one), or a "
+                    "new one (p1) the game makes at the player's first game. Choosing player 2's card swaps the "
+                    "two cards. They change as the menu closes; a card in use in a game leaves once the game has "
+                    "written it.", 0 },
     [OPT_CARD2] = { "Player 2 card",
-                    "The card in player 2's unit: one in the game's user/cards folder (the launcher's "
-                    "Settings, Cards tab makes and edits them), or a new one the game makes at the player's "
-                    "first game. Choosing player 1's card swaps the two cards. They change as the menu "
-                    "closes; a card in use in a game leaves once the game has written it.", 0 },
+                    "None (the default): player 2 picks any character. With a card in, the select screen holds "
+                    "the player to the card's character, as a cabinet does. A card is one in the game's "
+                    "user/cards folder (the launcher's Settings, Cards tab makes them; Edit changes one), or a "
+                    "new one (p2) the game makes at the player's first game. Choosing player 1's card swaps the "
+                    "two cards. They change as the menu closes; a card in use in a game leaves once the game has "
+                    "written it.", 0 },
     [OPT_FULLSCREEN] = { "Fullscreen",
                          "Auto is fullscreen on the Steam Deck and in Steam's Big Picture, and a window "
                          "elsewhere. F11 or Alt+Enter switches while the game runs.", 0 },

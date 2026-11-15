@@ -67,6 +67,13 @@ What the recomp changed:
   card out, as the controller's `card pN eject` (a unit whose lock is on
   holds the card until the game opens it), for the game menu's Player 1
   card and Player 2 card.
+- `hw.h`, `hw_card.c` (the game menu's card editor): `hw_card_last`, the
+  card in a unit or the one that left it last, as it left (a card taken
+  while the lock was on leaves as the lock opens, right after the game's
+  last write), and `hw_card_held`, whether a game holds the card: from a
+  read with the lock off (the game's read at the start of a game, which it
+  writes back before it locks the unit) or while the lock is on, until the
+  lock opens or the card leaves (`read_open` in the unit's state).
 - `view.h`, `view.c` (M6): the GPU path, `view_host_gpu`. A pass to the
   screen is handed to the host after transform, lighting and the
   translucent sort (`gpu_export`: the triangles in raster()'s order with

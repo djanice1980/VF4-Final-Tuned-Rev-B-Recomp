@@ -2240,7 +2240,7 @@ Tuned's record is its format 4: CRC-16 (polynomial 0x8005, from 0, high
 bit first) over the header (bytes 2 to 23, stored little-endian at 0 and
 1), over the body (26 to 83, at 24 and 25), and the header again as bytes
 84 to 107. `card1` and `card2` in `settings.txt` name each player's card
-(`p1` and `p2` by default, or `none`); a name is 1 to 31 characters,
+(`p1` and `p2` by default then; `none` by default since section 42); a name is 1 to 31 characters,
 without `/ \ : * ? " < > | #`, a space or dot at either end, or a Windows
 device name.
 
@@ -2654,3 +2654,132 @@ text does not promise the label.
 Not tried: win streaks and Shun's tint (they need play), Export and Korea
 runs (the same branches as Australia's but the coins), the test program's
 system information, the Windows game.
+
+## 42. No card by default; the card editor in the game's menu (2026-11-14)
+
+David's request: no card given to a player by default ("When a card is
+assigned to you, you can only play with the character on the card. Good
+for tournament mode, bad for arcade mode"), and the card editable from the
+game's menu the same way as from the launcher.
+
+**No card by default.** `settings_defaults` leaves `card1` and `card2`
+empty (`none`); they were `p1` and `p2` (section 37), so every first game
+made a card that then held its player to one character (`select.c`: with a
+registered card in, flags 0x11, the select screen puts the cursor on the
+card's character and the player cannot move it). A `settings.txt` already
+written keeps what it says: the launcher and the game write every setting,
+so an install from 0.5.2 to 0.5.4 still names `p1` (and `p2`) until a
+player picks None. The game menu's list still offers a new `p1` or `p2`
+("p1 (new)") while no card has that name. The help texts (Card units,
+Player 1 card, Player 2 card, the launcher's Cards tab) say a card holds
+its player to its character and None leaves every character free.
+
+**The editor's rows are shared.** The launcher's editor (section 37) moved
+into `runtime/ui/card_editor.c` (`ced_*`): the tabs, the rows and their
+descriptions, Left and Right on each row, the ring name's text in and
+out, Undo, and which cards can be edited (`ced_editable`: a Final Tuned
+card whose checks hold, a card never used, or one not made yet). The
+launcher's page and the game's menu each draw it and take its keys their
+own way; the launcher's behaviour is unchanged.
+
+**In the game's menu,** the Cards tab has **Edit player 1's card** and
+**Edit player 2's card** under each player's card row (greyed, with the
+reason, for None or a card that cannot be edited). Choosing one puts the
+editor in the tabs' place: "Card: NAME" at the top, its tabs Card, Costume
+1 and Costume 2 (Q and E, LB and RB), its rows (Up and Down, Left and
+Right, held to repeat) and the chosen row's description, Undo on Backspace
+or Y, and Save and Cancel at its foot (clickable). Esc, B, Guide or a right
+click outside the rows save and go back to the Cards tab; Esc again closes
+the menu. A or Enter on the ring name opens its note: the old name chosen
+(the first letter typed replaces it), up to 20 ASCII letters, numbers,
+spaces and marks, Backspace or X a letter less, Left and Right between OK
+and Cancel, Enter or A for the chosen one, Esc or B cancel. The window
+turns on SDL's text input only while the note is up (`menu_typing`), and
+sends the letters (`SDL_EVENT_TEXT_INPUT`, `menu_text`); only Enter, Esc,
+Backspace, Left, Right and Tab are commands then. The caret does not blink:
+the menu is drawn again only when something changes.
+
+**When a game is using a card.** The game keeps its own copy of a card
+for the whole of a game, and writes that copy back over the card twice
+(the decompilation's `card_mode.c`): it reads the card when the player
+presses Start (`card_mode_entry_read`, which copies the record into the
+side's card image, `card_record_to_image`), writes the image back as the
+character select ends (`card_mode_select_write`: a play taken off, a new
+code) and only then locks the unit (0xd9, two frames later); after the
+match it reads the card again but writes its image over what it read
+(`card_mode_result_write`, `card_image_to_record`: header and body
+whole, the name, the character and the costumes too), then opens the lock
+(0xda). A change put on the card anywhere in that span is lost. The first
+build of this section took "the lock is on" for "in use" and lost an edit
+saved at the character select: the run's request log showed the reads at
+vertical blanks 3333 and 3347 with the lock off, the edit written at
+3884, the select write at 4483 (its name back to PLAYER) and the lock at
+4495. So the unit model now keeps `read_open`, set by a read made with
+the lock off and cleared when the lock opens or the card leaves, and
+`hw_card_held` is "a card is in, and it was read with the lock off or the
+lock is on". A read with no lock after it (a card the game refuses, the
+test menu's card pages) holds the card until it leaves the unit; an edit
+to it then waits for a swap or the machine's stop.
+
+**Where a Save goes.** The machine is paused while the menu is open, and
+a card in a unit is the game's, as above. So the menu does not write the
+file. A Save hands main.c the fields that changed
+(`card_edit_add`: each field the editor shows, as the change from the card
+as opened to the card as saved), kept per card (`pend`, under
+`shared.lock`); a second Save of the same card adds to it. On the machine
+thread, every vertical blank after the menu's pause (`cards_edits`, before
+`cards_swap`):
+
+- a card in no unit: its file, with the fields put in (`card_edit_apply`,
+  `card_fields_put`), written through a tmp file and a rename;
+- a card in a unit the game is not using: written to its file first
+  (`cards_save`), taken out, its file changed, put back in, all in the
+  same vertical blank, so the game never sees the unit empty;
+- a card a game is using (`hw_card_held`): it stays in, and the edit waits
+  (the log says so once). When the game lets go (the lock opens at the end
+  of the game), the card as the game left it gets the fields as above, so
+  the game's own changes (the record, games left, rank progress) stay and
+  the editor's go on top;
+- a card never used or not made yet (`fresh`): a ready card (section 37's
+  `card_starter`, keeping a card never used's number) with the fields in;
+- as the machine stops (Quit, Open the launcher, the window closed), every
+  edit still waiting goes onto the card's last state (`cards_edits(1)`).
+
+The menu shows a card with its waiting edit in (`card_peek`): the Cards
+tab's details and the editor opened again. The editor's note and the Edit
+row say when a game is using the card. Two `recomp` additions to the card
+unit (`hw_card.c`, ORIGIN.md): `hw_card_held` (above; also for that
+note) and `hw_card_last` (the card in the unit, or the one that left it
+last, as it left), which `game_machine_card_get` now uses, so the game's
+last write to a card that leaves as the lock opens reaches its file even
+when the lock opens in the same vertical blank (before, `cards_save` found
+the unit empty then).
+
+`--keys text:WORDS` (the game's test hook) types WORDS ("_" a space) as
+the keyboard's text; the list now takes 8,192 characters and 96 items.
+
+Checked (Linux game in a headless KWin, the launcher offscreen, the
+Windows game and launcher built, the player's builder compiled):
+
+- no card settings: both units stay empty, and the Cards tab shows None
+  with both Edit rows off and the reason;
+- at the attract loop (card1 = Ace): the editor opened as "Card: Ace";
+  Character Right to Sarah, the ring name typed (Tester), a costume color
+  changed; the Cards tab showed the waiting edit; the file was written as
+  the menu closed, its checks good, and the select screen showed Tester,
+  Sarah held;
+- in a game (Start pressed, the editor opened at the character select):
+  the held note showed, the name saved as Held waited 8,147 vertical
+  blanks and went on as the lock opened after the match; the card kept
+  the game's own changes (499 games left, the experience point, the new
+  code) with the name Held;
+- a gamepad (A opens, Right, Y undoes, B saves) and the mouse (a click on
+  a value's right half, Cancel saves nothing), with the hints in the
+  device's glyphs;
+- a card not made yet (card1 = p1): Edit, Save as it is: a ready card
+  inserted;
+- the launcher's editor: the same picture as before, a new card edited
+  and saved with good checks.
+
+Not checked: the Windows game run, a Steam Deck's keyboard, an edit
+waiting when the machine stops.

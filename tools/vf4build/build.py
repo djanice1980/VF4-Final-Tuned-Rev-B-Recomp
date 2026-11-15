@@ -41,7 +41,7 @@ def units(gen_dirs, tables_cs, tc, version):
     for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c", "updates.c",
               "art.c", "cards.c"):
         out.append((R("host", s), hflags))
-    for s in ("ui.c", "fonts.c", "options.c", "kofi_badge.c"):         # the menu's drawing kit (runtime/ui)
+    for s in ("ui.c", "fonts.c", "options.c", "kofi_badge.c", "card_editor.c"):    # the menu's drawing kit (runtime/ui)
         out.append((R("ui", s), hflags))
     return out
 

@@ -36,7 +36,8 @@
  *                     "mouse:KIND@XxY" the mouse at window point X, Y: KIND move, left or right
  *                     (a click), up or down (a turn of the wheel),
  *                     "padtype=NAME" anywhere in the list gives that gamepad a real pad's ids (its
- *                     glyphs): xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck, steamvirtual
+ *                     glyphs): xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck, steamvirtual,
+ *                     "text:WORDS" types WORDS ("_" a space) as the keyboard's text
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
  *   --art DIR         no window: Steam's pictures for the launcher's entry, made from the attract
@@ -79,6 +80,7 @@
 #include <string.h>
 
 #include "art.h"
+#include "card_editor.h"
 #include "cards.h"
 #include "game_machine.h"
 #include "settings.h"
@@ -393,6 +395,199 @@ static void cards_swap(void)
     }
 }
 
+/* ---- the menu's card editor (docs/design.md section 42) ----
+ * An edit Saved in the menu waits here, as the fields it changes, until the
+ * machine thread can put it onto the card's file: as the menu closes, or,
+ * for a card a game is using (hw_card_held: from the game's read at its
+ * start to the lock opening at its end), once the game lets go of it, so
+ * that it goes onto the game's latest and the game's own changes (its
+ * record, its games left) stay. A card in a unit is taken out for it and
+ * goes back in within the same vertical blank, so the game never sees it
+ * leave. The menu shows a card with its waiting edit (card_peek). */
+typedef struct card_pending {
+    char name[CARD_NAME_MAX];
+    card_edit edit;
+    int fresh;              /* never used or not made yet: it becomes a ready card */
+    unsigned gen;           /* changed at each Save: the machine thread drops only what it wrote */
+} card_pending;
+static card_pending pend[CARDS_MAX + 2];        /* under shared.lock */
+static int npend;
+static SDL_AtomicInt pend_n;
+static char unit_card[2][CARD_NAME_MAX];        /* under shared.lock: the card in each unit, for the menu */
+static int unit_held[2];                        /* and whether a game holds it */
+
+static int pend_find(const char *name)
+{
+    for (int i = 0; i < npend; i++)
+        if (!SDL_strcasecmp(pend[i].name, name))
+            return i;
+    return -1;
+}
+
+/* a card's file with an edit put onto it, in card (CARD_SIZE bytes): 1, or 0
+ * when the file is not a card that can take it (left alone) */
+static int card_edited(const char *name, const card_pending *p, Uint8 *card)
+{
+    char path[4300];
+    size_t n = 0;
+    Uint8 *c = NULL;
+    card_view v;
+    SDL_zero(v);
+    cards_path(path, sizeof path, user_dir, name);
+    if (SDL_GetPathInfo(path, NULL)) {
+        c = SDL_LoadFile(path, &n);
+        if (!c || n != CARD_SIZE) {
+            SDL_free(c);
+            return 0;
+        }
+        card_view_of(c, &v);
+    }
+    int ok = 1;
+    if (!c || v.blank) {
+        /* a ready card; a card never used keeps its number */
+        ok = p->fresh;
+        if (ok)
+            card_starter(card, c ? (Uint32)c[4] << 24 | (Uint32)c[5] << 16 | (Uint32)c[6] << 8 | c[7]
+                                 : card_new_number());
+    } else if (!ced_editable(&v, 1)) {
+        ok = 0;
+    } else {
+        memcpy(card, c, CARD_SIZE);
+    }
+    SDL_free(c);
+    if (!ok)
+        return 0;
+    card_fields f;
+    card_fields_get(card, &f);
+    card_edit_apply(&p->edit, &f);
+    card_fields_put(card, &f);
+    return 1;
+}
+
+/* on the machine's thread, every vertical blank (final: as the machine
+ * stops, every edit onto its file as the cards are now) */
+static void cards_edits(int final)
+{
+    for (int side = 0; side < 2; side++) {      /* what the menu shows */
+        int held = game_machine_card_held(side);
+        SDL_LockMutex(shared.lock);
+        SDL_strlcpy(unit_card[side], card_ok[side] ? card_in[side] : "", sizeof unit_card[side]);
+        unit_held[side] = held;
+        SDL_UnlockMutex(shared.lock);
+    }
+    if (!SDL_GetAtomicInt(&pend_n))
+        return;
+    static card_pending todo[CARDS_MAX + 2];
+    static int waiting[2];
+    SDL_LockMutex(shared.lock);
+    int n = npend;
+    SDL_memcpy(todo, pend, (size_t)n * sizeof todo[0]);
+    SDL_UnlockMutex(shared.lock);
+    for (int i = 0; i < n; i++) {
+        const card_pending *p = &todo[i];
+        int side = -1;
+        for (int s = 0; s < 2; s++)
+            if (card_ok[s] && !SDL_strcasecmp(card_in[s], p->name))
+                side = s;
+        if (side >= 0) {
+            /* a game using the card writes back the copy it read at its
+             * start: the edit waits, the card stays in (hw_card_held) */
+            if (!final && game_machine_card_held(side)) {
+                if (!waiting[side]++)
+                    logf_("player %d: the card (%s) takes the menu's changes once the game lets go of it",
+                          side + 1, p->name);
+                continue;
+            }
+            cards_save();       /* the game's latest first */
+            if (!final) {
+                if (waiting[side])
+                    logf_("player %d: the game let go of the card (%s) after %d vertical blanks", side + 1, p->name,
+                          waiting[side]);
+                waiting[side] = 0;
+                game_machine_card_take(side);   /* not held: out at once */
+                card_ok[side] = 0;      /* out for the change: it goes back in below, in this vertical blank */
+            }
+        }
+        Uint8 card[CARD_SIZE];
+        char path[4300], tmp[4400];
+        cards_path(path, sizeof path, user_dir, p->name);
+        SDL_snprintf(tmp, sizeof tmp, "%s.tmp", path);
+        if (!card_edited(p->name, p, card))
+            logf_("card editor: %s is not a card that can be edited now: the menu's changes are dropped", path);
+        else if (!SDL_SaveFile(tmp, card, CARD_SIZE) || !SDL_RenamePath(tmp, path)) {
+            logf_("card editor: cannot write %s: %s", path, SDL_GetError());
+            SDL_RemovePath(tmp);
+        } else
+            logf_("card editor: %s written with the menu's changes%s", path, final ? " (as the game stopped)" : "");
+        SDL_LockMutex(shared.lock);
+        int at = pend_find(p->name);
+        if (at >= 0 && pend[at].gen == p->gen) {
+            pend[at] = pend[--npend];
+            SDL_SetAtomicInt(&pend_n, npend);
+        }
+        SDL_UnlockMutex(shared.lock);
+        if (side >= 0 && !final)
+            card_insert(side);  /* card_in[side] still names it */
+    }
+}
+
+/* the menu's callbacks, on the main thread: an edit Saved (the fields that
+ * differ between from and to), and a card as the menu shows it */
+static void card_edit_save(const char *name, const card_fields *from, const card_fields *to, int fresh)
+{
+    SDL_LockMutex(shared.lock);
+    int at = pend_find(name);
+    if (at < 0 && npend < (int)SDL_arraysize(pend)) {
+        at = npend++;
+        SDL_zero(pend[at]);
+        SDL_strlcpy(pend[at].name, name, sizeof pend[at].name);
+    }
+    if (at >= 0) {
+        card_edit_add(&pend[at].edit, from, to);
+        pend[at].fresh |= fresh;
+        pend[at].gen++;
+    }
+    SDL_SetAtomicInt(&pend_n, npend);
+    SDL_UnlockMutex(shared.lock);
+    if (at < 0)
+        logf_("card editor: too many cards changed at once: %s's changes are dropped", name);
+    else
+        logf_("card editor: %s saved in the menu%s", name, fresh ? " (a ready card)" : "");
+}
+
+/* 1 and the card in card, as it will be once its waiting edit is in; 0 no
+ * file (none waiting); -1 the file is not a card. *held: a game is using it */
+static int card_peek(const char *name, Uint8 *card, int *held)
+{
+    char path[4300];
+    size_t n = 0;
+    int file = 0;
+    cards_path(path, sizeof path, user_dir, name);
+    if (SDL_GetPathInfo(path, NULL)) {
+        Uint8 *c = SDL_LoadFile(path, &n);
+        file = c && n == CARD_SIZE ? 1 : -1;
+        if (file > 0)
+            memcpy(card, c, CARD_SIZE);
+        SDL_free(c);
+    }
+    card_pending p;
+    int waiting = 0;
+    *held = 0;
+    SDL_LockMutex(shared.lock);
+    int at = pend_find(name);
+    if (at >= 0) {
+        p = pend[at];
+        waiting = 1;
+    }
+    for (int side = 0; side < 2; side++)
+        if (unit_card[side][0] && !SDL_strcasecmp(unit_card[side], name))
+            *held = unit_held[side];
+    SDL_UnlockMutex(shared.lock);
+    if (waiting && file >= 0 && card_edited(name, &p, card))
+        file = 1;
+    return file;
+}
+
 /* on the main thread, as the menu closes: the units' cards as chosen */
 static void cards_choose(void)
 {
@@ -562,6 +757,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
             SDL_Delay(5);
         due = 0;
     }
+    cards_edits(0);         /* the menu's card edits, then its card choices */
     cards_swap();
     int restart = SDL_GetAtomicInt(&restart_req);
     if (restart) {
@@ -628,6 +824,7 @@ static int SDLCALL machine_main(void *arg)
         logf_("machine stopped%s: %s", bad ? " by itself" : "", game_machine_why());
         backup_save();
         cards_save();
+        cards_edits(1);     /* edits still waiting (a game held the card): onto its last state */
         SDL_SetAtomicInt(&machine_state, 3);
     }
     SDL_Event ev;
@@ -993,7 +1190,8 @@ static void menu_show_as(int notice)
     r.sound = audio != NULL;
     r.no_device = !silent && !audio;    /* silent: sound off in the settings, or --silent */
     r.test_program = SDL_GetAtomicInt(&program_now);
-    r.user_dir = user_dir;
+    r.card_peek = card_peek;
+    r.card_edit = card_edit_save;
     if (notice)
         menu_open_notice(&cfg_, &r);
     else
@@ -1362,8 +1560,8 @@ static void compose(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, Uint32 w,
 }
 
 /* --keys: keys for tests */
-#define KEY_ITEMS 64
-static char key_list[2048];
+#define KEY_ITEMS 96
+static char key_list[8192];
 static const char *key_item[KEY_ITEMS];
 static int key_items, key_at, key_wait;
 
@@ -1487,6 +1685,10 @@ static int keys_parse(const char *list)
     for (char *it = SDL_strtok_r(colon + 1, ",", &save); it; it = SDL_strtok_r(NULL, ",", &save)) {
         if (key_items == KEY_ITEMS)
             return -1;
+        if (!strncmp(it, "text:", 5))       /* typed text: "_" a space */
+            for (char *c = it + 5; *c; c++)
+                if (*c == '_')
+                    *c = ' ';
         key_item[key_items++] = it;
     }
     return 0;
@@ -1793,9 +1995,19 @@ int main(int argc, char **argv)
                 int cmd = -1;
                 if (!ev.key.repeat && (key == SDLK_F11 || (key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
                     SDL_SetWindowFullscreen(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
-                else if (!ev.key.repeat && (key == SDLK_INSERT || key == SDLK_ESCAPE)) {
+                else if (menu_on && menu_typing()) {
+                    /* the ring name's note: the letters come as text (SDL_EVENT_TEXT_INPUT) */
+                    if (!ev.key.repeat && (key == SDLK_RETURN || key == SDLK_KP_ENTER))
+                        cmd = MENU_OK;
+                    else if (!ev.key.repeat && (key == SDLK_ESCAPE || key == SDLK_INSERT))
+                        cmd = MENU_ESCAPE;
+                    else if (key == SDLK_BACKSPACE)
+                        cmd = MENU_ERASE;
+                    else if (!ev.key.repeat && (key == SDLK_LEFT || key == SDLK_RIGHT || key == SDLK_TAB))
+                        cmd = key == SDLK_LEFT ? MENU_LEFT : MENU_RIGHT;
+                } else if (!ev.key.repeat && (key == SDLK_INSERT || key == SDLK_ESCAPE)) {
                     if (menu_on)
-                        menu_do(MENU_RESUME);
+                        cmd = MENU_ESCAPE;      /* the card editor first, else the menu closes */
                     else
                         menu_show();
                 } else if (menu_on) {
@@ -1806,7 +2018,7 @@ int main(int argc, char **argv)
                     else if (!ev.key.repeat && (key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE))
                         cmd = MENU_OK;
                     else if (!ev.key.repeat && key == SDLK_BACKSPACE)
-                        cmd = MENU_BACK;
+                        cmd = MENU_ERASE;       /* back to the game; the card editor's Undo */
                     else if (!ev.key.repeat && (key == SDLK_Q || key == SDLK_PAGEUP))
                         cmd = MENU_PREV;
                     else if (!ev.key.repeat && (key == SDLK_E || key == SDLK_PAGEDOWN))
@@ -1821,7 +2033,7 @@ int main(int argc, char **argv)
                 int face = ui_pad_face(ev.gbutton.which, b);    /* A selects, B goes back: by label */
                 if (b == SDL_GAMEPAD_BUTTON_GUIDE) {
                     if (menu_on)
-                        menu_do(MENU_RESUME);
+                        menu_do(menu_command(MENU_ESCAPE));
                     else
                         menu_show();
                 } else if (menu_on && face == UI_IN_OK) {
@@ -1829,6 +2041,8 @@ int main(int argc, char **argv)
                         running = 0;
                 } else if (menu_on && (face == UI_IN_BACK || b == SDL_GAMEPAD_BUTTON_START)) {
                     menu_do(menu_command(MENU_BACK));
+                } else if (menu_on && (face == UI_IN_DEFAULT || face == UI_IN_CLEAR)) {
+                    menu_do(menu_command(face == UI_IN_DEFAULT ? MENU_UNDO : MENU_CLEAR));
                 } else if (menu_on && (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
                     menu_do(menu_command(b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER ? MENU_PREV : MENU_NEXT));
                 } else if (!menu_on && bar_on && face == UI_IN_BACK) {
@@ -1868,6 +2082,12 @@ int main(int argc, char **argv)
                     running = 0;
                 break;
             }
+            case SDL_EVENT_TEXT_INPUT:
+                if (menu_on && menu_typing()) {
+                    menu_text(ev.text.text);
+                    ov_dirty = 1;
+                }
+                break;
             case SDL_EVENT_GAMEPAD_ADDED:
                 log_gamepad_added(ev.gdevice.which);
                 break;
@@ -1876,6 +2096,19 @@ int main(int argc, char **argv)
                 break;
             default:
                 break;
+            }
+        }
+        {
+            /* the keyboard's text while the ring name's note is up (on a
+             * Steam Deck, Steam + X shows its keyboard) */
+            static int text_on;
+            int want = menu_on && menu_typing();
+            if (want != text_on) {
+                text_on = want;
+                if (want)
+                    SDL_StartTextInput(win);
+                else
+                    SDL_StopTextInput(win);
             }
         }
         int st = SDL_GetAtomicInt(&machine_state);
@@ -1985,6 +2218,14 @@ int main(int argc, char **argv)
                 ;                   /* taken at start-up (vpad_attach) */
             else if (!strncmp(it, "mouse:", 6))
                 key_mouse(win, it + 6);
+            else if (!strncmp(it, "text:", 5)) {
+                SDL_Event t;
+                SDL_zero(t);
+                t.type = SDL_EVENT_TEXT_INPUT;
+                t.text.windowID = SDL_GetWindowID(win);
+                t.text.text = it + 5;           /* key_list's: it lasts the run */
+                SDL_PushEvent(&t);
+            }
             else {
                 SDL_Event k;
                 SDL_zero(k);

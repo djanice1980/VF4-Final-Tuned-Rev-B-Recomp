@@ -14,7 +14,7 @@ find_package(SDL3 3.4 REQUIRED CONFIG COMPONENTS SDL3-shared)
 # The launcher (M5): the builder's window, Build / Update / Play / Add to
 # Steam. It holds no game code, so it builds without the translation.
 # The drawing kit it shares with the game's menu (runtime/ui).
-set(VF4FT_UI runtime/ui/ui.c runtime/ui/fonts.c runtime/ui/options.c runtime/ui/kofi_badge.c)
+set(VF4FT_UI runtime/ui/ui.c runtime/ui/fonts.c runtime/ui/options.c runtime/ui/kofi_badge.c runtime/ui/card_editor.c)
 add_executable(vf4ft-launcher runtime/launcher/launcher.c runtime/host/settings.c runtime/host/cards.c
                ${VF4FT_UI})
 target_include_directories(vf4ft-launcher PRIVATE runtime/host runtime/ui)

@@ -65,6 +65,7 @@ typedef struct card_unit {
     u8 locked;                  /* the lock is on (0xd9) */
     u8 eject_wanted;            /* the script took the card while the lock was on: it leaves when the lock opens */
     u8 started;                 /* the start-up exchange got as far as the program upload */
+    u8 read_open;               /* recomp: read with the lock off, and the lock not opened since (hw_card_held) */
     u8 card[CARD_BYTES];        /* the card */
     u8 buffer[CARD_BYTES];      /* the unit's read buffer: the card as request 0xa0 found it */
     u8 key[4];                  /* the last key the game sent (0xd4) */
@@ -148,6 +149,7 @@ static void card_remove(int n, const char *how)
         return;
     u->present = 0;
     u->eject_wanted = 0;
+    u->read_open = 0;           /* recomp */
     u->pull_after_writes = 0;
     u->n_removed++;
     note("card unit %d: the card (number %08x) is out: %s", n + 1, get_be32(u->card + 4), how);
@@ -258,6 +260,8 @@ int hw_card_frame(int n, u32 pattern, u32 cmd, u32 to, u32 from, const u8 *d, in
         break;
     case 0xa0:                                  /* take the card into the unit's buffer */
         u->n_reads++;
+        if (u->present && !u->locked)
+            u->read_open = 1;   /* recomp */
         if (u->present)
             memcpy(u->buffer, u->card, CARD_BYTES);
         else
@@ -304,6 +308,7 @@ int hw_card_frame(int n, u32 pattern, u32 cmd, u32 to, u32 from, const u8 *d, in
     case 0xda:                                  /* lock off */
         u->n_unlocks++;
         u->locked = 0;
+        u->read_open = 0;       /* recomp */
         u->busy = busy_for(u, BUSY_SHORT);
         if (u->eject_wanted)
             card_remove(n, "taken when the lock opened");
@@ -512,6 +517,32 @@ int hw_card_get(int n, u8 *card)
         return -1;
     memcpy(card, cs.u[n].card, CARD_BYTES);
     return 0;
+}
+
+/* recomp (the game menu's card editor): the card in the unit, or the one
+ * that left it last as it left (a card taken while the lock was on leaves
+ * as the lock opens, right after the game's last write); 0, or -1 when no
+ * card was ever in */
+int hw_card_last(int n, u8 *card)
+{
+    if (n < 0 || n > 1 || !cs.u[n].n_inserted)
+        return -1;
+    memcpy(card, cs.u[n].card, CARD_BYTES);
+    return 0;
+}
+
+/* recomp (the game menu's card editor): 1 when a card is in and a game is
+ * using it: the game keeps the card as it read it at the start of a game
+ * (card_mode_entry_read, the lock still off), writes that copy back as the
+ * character select ends (card_mode_select_write) and only then locks the
+ * unit; at the end of the game it writes its copy again
+ * (card_mode_result_write, card_image_to_record) and opens the lock. So:
+ * from a read with the lock off, or while the lock is on, until the lock
+ * opens or the card leaves. A read with no lock after it (a card the game
+ * refused; the test menu's card pages) holds it until the card leaves. */
+int hw_card_held(int n)
+{
+    return n >= 0 && n <= 1 && cs.u[n].present && (cs.u[n].locked || cs.u[n].read_open);
 }
 
 void hw_card_stats(FILE *f)

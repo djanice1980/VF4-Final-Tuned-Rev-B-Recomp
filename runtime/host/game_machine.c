@@ -393,6 +393,11 @@ int game_machine_card_put(int side, const unsigned char *card)
     return 0;
 }
 
+int game_machine_card_held(int side)
+{
+    return hw_card_option && hw_card_held(side);
+}
+
 int game_machine_card_take(int side)
 {
     if (!hw_card_option)
@@ -402,7 +407,7 @@ int game_machine_card_take(int side)
 
 int game_machine_card_get(int side, unsigned char *card)
 {
-    if (side < 0 || side > 1 || hw_card_get(side, card))
+    if (side < 0 || side > 1 || hw_card_last(side, card))
         return -1;
     if (!memcmp(card, card_last[side], GAME_CARD_SIZE))
         return 0;

@@ -49,6 +49,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "card_editor.h"
 #include "cards.h"
 #include "options.h"
 #include "settings.h"
@@ -1830,9 +1831,7 @@ static void cp_focus_fix(void)
  * player's card not made yet, becomes a ready card (card_starter) on Save */
 static int cp_editable(int i)
 {
-    const card_view *v = &cp_view[i];
-    return !cp_has[i] || (!cp_bad[i] && (v->blank || (v->format == 4 && v->header_ok && v->body_ok &&
-                                                       v->chara != CARD_NOT_A_PLAYER)));
+    return ced_editable(&cp_view[i], !cp_has[i] ? 0 : cp_bad[i] ? -1 : 1);
 }
 
 static int cp_enabled(int b)
@@ -1850,20 +1849,11 @@ static int cp_enabled(int b)
 
 /* ---- the card editor (a page of its own): ring name, character, rank,
  * games, items, and each costume's colors and worn items, written as the
- * game's own changes write them (cards.h, card_fields_put) ---- */
-enum { ED_NAME, ED_CHARA, ED_RANK, ED_PLAYS, ED_ITEMS, ED_CARD_ROWS };
-enum { ED_COLOR = 0, ED_HAIR = 4, ED_EYES = 5, ED_SLOT = 6, ED_COSTUME_ROWS = 10 };
-static const char *const ed_tab_names[3] = { "Card", "Costume 1", "Costume 2" };
+ * game's own changes write them (cards.h, card_fields_put). Its rows are
+ * card_editor.h's, which the game's menu shares ---- */
 static char ed_name[CARD_NAME_MAX];     /* the profile */
 static Uint8 ed_card[CARD_SIZE];
-static card_fields ed_f, ed_f0;         /* as edited, as it was */
-static int ed_new;                      /* a ready card made on Save (the file has none yet) */
-static int ed_tab, ed_row, ed_top;
-
-static int ed_rows(void)
-{
-    return ed_tab == 0 ? ED_CARD_ROWS : ED_COSTUME_ROWS;
-}
+static card_editor ed;
 
 static void ed_open(void)
 {
@@ -1877,8 +1867,8 @@ static void ed_open(void)
         cp_file(path, sizeof path, ed_name);
         c = SDL_LoadFile(path, &len);
     }
-    ed_new = !(c && len == CARD_SIZE) || cp_view[st_row].blank;
-    if (!ed_new) {
+    int fresh = !(c && len == CARD_SIZE) || cp_view[st_row].blank;
+    if (!fresh) {
         memcpy(ed_card, c, CARD_SIZE);
     } else {
         /* a card never used keeps its number */
@@ -1887,19 +1877,17 @@ static void ed_open(void)
         card_starter(ed_card, number);
     }
     SDL_free(c);
-    card_fields_get(ed_card, &ed_f);
-    ed_f0 = ed_f;
-    ed_tab = ed_row = ed_top = 0;
+    ced_open(&ed, ed_card, fresh);
     page = P_EDIT;
     focus = -1;
-    say("card editor: %s%s", ed_name, ed_new ? " (made a ready card on Save)" : "");
+    say("card editor: %s%s", ed_name, fresh ? " (made a ready card on Save)" : "");
 }
 
 /* Save (or Cancel): back to the Cards tab */
 static void ed_close(int save)
 {
-    if (save && (ed_new || memcmp(&ed_f, &ed_f0, sizeof ed_f))) {
-        card_fields_put(ed_card, &ed_f);
+    if (save && (ed.fresh || ced_changed(&ed))) {
+        card_fields_put(ed_card, &ed.f);
         cp_write(ed_name, ed_card);
     } else {
         say("card editor: %s %s", ed_name, save ? "unchanged" : "left as it was (Cancel)");
@@ -1911,176 +1899,25 @@ static void ed_close(int save)
     cp_focus_fix();
 }
 
-/* the games a card can be given: Left and Right go to the next of these */
-static const int ed_plays[] = { 1, 10, 50, 100, 200, 300, 400, CARD_PLAYS };
-
-static void ed_change(int d)
-{
-    card_fields *f = &ed_f;
-    if (ed_tab == 0) {
-        switch (ed_row) {
-        case ED_CHARA:
-            do
-                f->chara = (f->chara + d + CARD_CHARAS) % CARD_CHARAS;
-            while (f->chara == CARD_NOT_A_PLAYER);
-            break;
-        case ED_RANK:
-            /* a title rank (VF.NET's) is left only by going down */
-            if (f->level > CARD_TOP_RANK)
-                f->level = d < 0 ? CARD_TOP_RANK : f->level;
-            else
-                f->level = (f->level + d + CARD_TOP_RANK + 1) % (CARD_TOP_RANK + 1);
-            break;
-        case ED_PLAYS: {
-            int n = (int)SDL_arraysize(ed_plays), v = f->plays_left, to = -1;
-            for (int i = 0; i < n && to < 0; i++)
-                if (d > 0 && ed_plays[i] > v)
-                    to = ed_plays[i];
-            for (int i = n - 1; i >= 0 && to < 0; i--)
-                if (d < 0 && ed_plays[i] < v)
-                    to = ed_plays[i];
-            f->plays_left = to >= 0 ? to : d > 0 ? ed_plays[0] : ed_plays[n - 1];
-            break;
-        }
-        case ED_ITEMS: {
-            /* every item, none, as the card had them (when that is neither) */
-            static const Uint8 all[8] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, none[8] = { 0 };
-            const Uint8 *ways[3] = { all, none, ed_f0.items };
-            int n = memcmp(ed_f0.items, all, 8) && memcmp(ed_f0.items, none, 8) ? 3 : 2, at = 0;
-            for (int i = 0; i < n; i++)
-                if (!memcmp(f->items, ways[i], 8))
-                    at = i;
-            memcpy(f->items, ways[(at + d + n) % n], 8);
-            break;
-        }
-        }
-        return;
-    }
-    int c = ed_tab - 1;
-    if (ed_row < ED_HAIR)
-        f->color[c][ed_row] = (f->color[c][ed_row] + d + CARD_COLORS + 1) % (CARD_COLORS + 1);
-    else if (ed_row == ED_HAIR)
-        f->hair[c] = (f->hair[c] + d + CARD_HAIRS + 1) % (CARD_HAIRS + 1);
-    else if (ed_row == ED_EYES)
-        f->eye[c] = (f->eye[c] + d + CARD_EYES + 1) % (CARD_EYES + 1);
-    else
-        f->equip[c][ed_row - ED_SLOT] = (f->equip[c][ed_row - ED_SLOT] + d + CARD_ITEMS + 1) % (CARD_ITEMS + 1);
-}
-
 /* A, Enter or a click on a row: the ring name asks for the name */
 static void ed_press(void)
 {
-    if (ed_tab == 0 && ed_row == ED_NAME) {
-        char t[44];
-        card_name_text(ed_f.name, t, sizeof t);
-        SDL_strlcpy(cp_text, SDL_strchr(t, '?') ? "" : t, sizeof cp_text);    /* a name not in ASCII: anew */
+    if (ced_on_name(&ed)) {
+        ced_name_text(&ed, cp_text, sizeof cp_text);
         cp_error[0] = 0;
         pop_open(POP_RINGNAME);
     } else {
-        ed_change(1);
+        ced_change(&ed, 1);
     }
 }
 
-/* the ring name typed (POP_RINGNAME's OK): ASCII, spaces at its ends left out */
+/* the ring name typed (POP_RINGNAME's OK) */
 static void ed_name_set(void)
 {
-    const char *t = cp_text;
-    while (*t == ' ')
-        t++;
-    size_t n = strlen(t);
-    while (n && t[n - 1] == ' ')
-        n--;
-    memset(ed_f.name, 0, sizeof ed_f.name);
-    memcpy(ed_f.name, t, SDL_min(n, sizeof ed_f.name));
+    ced_name_set(&ed, cp_text);
     SDL_StopTextInput(win);
     pop = POP_NONE;
     focus = -1;
-}
-
-/* a row of the editor, its value written to v; its description in *about */
-static void ed_row_of(int i, ui_row *r, char *v, size_t n, const char **about)
-{
-    SDL_zerop(r);
-    r->kind = UI_ROW_CHOICE;
-    r->value = v;
-    const card_fields *f = &ed_f;
-    if (ed_tab == 0) {
-        switch (i) {
-        case ED_NAME:
-            r->label = "Ring name";
-            r->kind = UI_ROW_TEXT;
-            card_name_text(f->name, v, n);
-            if (!v[0])
-                SDL_strlcpy(v, "None", n);
-            *about = "The name the game shows for the player, up to 20 letters, numbers and marks. A cabinet's "
-                     "cards had it set on VF.NET; a card with none shows the game's own text instead. Press A or "
-                     "Enter to type it.";
-            break;
-        case ED_CHARA:
-            r->label = "Character";
-            SDL_strlcpy(v, card_chara_names[f->chara], n);
-            *about = "A card is one character's: with it in, the game picks that character at the select "
-                     "screen. Items are numbered per character, so the worn items mean other items for another "
-                     "one.";
-            break;
-        case ED_RANK:
-            r->label = "Rank";
-            card_rank_text(f->level, v, n);
-            *about = "From 10th kyu to 10th dan, the ranks a card reaches without VF.NET. A new rank starts with "
-                     "no progress toward the next.";
-            break;
-        case ED_PLAYS:
-            r->label = "Games left";
-            SDL_snprintf(v, n, f->plays_left ? "%d" : "None (used up)", f->plays_left);
-            *about = "How many more games the card plays: each game takes one, and at none the card is used up. "
-                     "A new card has 500.";
-            break;
-        case ED_ITEMS: {
-            r->label = "Items owned";
-            int k = 0;
-            for (int b = 0; b < 64; b++)
-                k += f->items[b / 8] >> (b & 7) & 1;
-            SDL_snprintf(v, n, k == 64 ? "All" : k == 0 ? "None" : "%d of 64", k);
-            *about = "The items the card has won, which the game's own item screens offer. A ready card has all "
-                     "of them.";
-            break;
-        }
-        }
-        return;
-    }
-    int c = ed_tab - 1;
-    static const char *const color_labels[4] = { "Color, part 1", "Color, part 2", "Color, part 3",
-                                                 "Color, part 4" };
-    static const char *const slot_labels[4] = { "Item slot 1", "Item slot 2", "Item slot 3", "Item slot 4" };
-    int val;
-    if (i < ED_HAIR) {
-        r->label = color_labels[i];
-        val = f->color[c][i];
-        *about = "The costume's colors, four parts: each its own color, or one of 19 others as a cabinet's "
-                 "customize screen gave them.";
-    } else if (i == ED_HAIR) {
-        r->label = "Hair color";
-        val = f->hair[c];
-        *about = "The hair: its own color, or one of 2 others.";
-    } else if (i == ED_EYES) {
-        r->label = "Eye color";
-        val = f->eye[c];
-        *about = "The eyes: their own color, or one of 3 others.";
-    } else {
-        r->label = slot_labels[i - ED_SLOT];
-        val = f->equip[c][i - ED_SLOT];
-        SDL_snprintf(v, n, val ? "Item %d" : "Empty", val);
-        *about = "An item the character wears, by its number in the character's list (1 to 199), or none. A "
-                 "number the character has no item for shows nothing. Hold Left or Right to go faster.";
-        return;
-    }
-    SDL_snprintf(v, n, val ? "Color %d" : "Its own", val);
-}
-
-static void ed_tab_to(int t)
-{
-    ed_tab = (t % 3 + 3) % 3;
-    ed_row = ed_top = 0;
 }
 
 static void ed_event(const SDL_Event *e)
@@ -2090,23 +1927,22 @@ static void ed_event(const SDL_Event *e)
     int k = e->type == SDL_EVENT_KEY_DOWN ? (int)e->key.key : -1;
     int g = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.button : -1;
     int face = g >= 0 ? ui_pad_face(e->gbutton.which, g) : UI_IN_NONE;
-    int n = ed_rows();
     if (k == SDLK_DOWN || g == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
-        ed_row = (ed_row + 1) % n;
+        ced_move(&ed, 1);
     else if (k == SDLK_UP || g == SDL_GAMEPAD_BUTTON_DPAD_UP)
-        ed_row = (ed_row + n - 1) % n;
+        ced_move(&ed, -1);
     else if (k == SDLK_Q || k == SDLK_PAGEUP || g == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
-        ed_tab_to(ed_tab - 1);
+        ced_tab_to(&ed, ed.tab - 1);
     else if (k == SDLK_E || k == SDLK_PAGEDOWN || k == SDLK_TAB || g == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
-        ed_tab_to(ed_tab + 1);
+        ced_tab_to(&ed, ed.tab + 1);
     else if (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
-        ed_change(-1);
+        ced_change(&ed, -1);
     else if (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
-        ed_change(1);
+        ced_change(&ed, 1);
     else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK)
         ed_press();
     else if (k == SDLK_BACKSPACE || face == UI_IN_DEFAULT) {
-        ed_f = ed_f0;
+        ced_undo(&ed);
         say("card editor: changes undone");
     } else if (k == SDLK_ESCAPE || face == UI_IN_BACK)
         ed_close(1);
@@ -2169,7 +2005,7 @@ static void text_event(const SDL_Event *e)
          * ring name: ASCII's letters, numbers and marks, up to 20 */
         for (const unsigned char *s = (const unsigned char *)e->text.text; *s;) {
             size_t cl = *s < 0x80 ? 1 : (*s & 0xe0) == 0xc0 ? 2 : (*s & 0xf0) == 0xe0 ? 3 : (*s & 0xf8) == 0xf0 ? 4 : 1;
-            int ok = pop == POP_RINGNAME ? *s >= 0x20 && *s < 0x7f && len < CARD_NAME_LEN
+            int ok = pop == POP_RINGNAME ? ced_name_char(*s, len)
                                          : len + cl < sizeof cp_text && (*s >= 0x20 && *s != 0x7f);
             for (size_t i = 1; i < cl; i++)
                 ok &= (s[i] & 0xc0) == 0x80;
@@ -3005,7 +2841,8 @@ static void draw_cards(void)
     int i = st_row, side = cp_n ? cp_side(i) : -1;
     if (!cp_n) {
         SDL_strlcpy(text, "A card keeps a player's character, rank, record, items and colors, as a cabinet's "
-                          "card did. Each one is a file in the game's user/cards folder.", sizeof text);
+                          "card did, and holds the player to its character. Each one is a file in the game's "
+                          "user/cards folder. No player has one at first: every character is free.", sizeof text);
     } else {
         /* the game menu's Cards tab shows the same (card_view_text), less what the launcher adds */
         int kind = card_view_text(&cp_view[i], !cp_has[i] ? 0 : cp_bad[i] ? -1 : 1, text, sizeof text);
@@ -3019,7 +2856,7 @@ static void draw_cards(void)
     else if (side >= 0)
         note = side == 0 ? "Player 1's card (press Player 1 again for none)." : "Player 2's card (press Player 2 again for none).";
     else if (cp_n)
-        note = "Player 1 or Player 2 gives it to that player.";
+        note = "Player 1 or Player 2 gives it to that player, who then plays its character.";
     ui_about(604, ry, LW - 40 - 604, rh, t, text, note);
     /* the bar: Player 1 and Player 2 lit for the card's player */
     static const char *const labels[] = { "Player 1", "Player 2", "Edit", "New", "Copy", "Rename", "Delete" };
@@ -3035,18 +2872,17 @@ static void draw_cards(void)
 /* the card editor's page */
 static void draw_edit(void)
 {
-    ui_tabs(40, 92, LW - 80, 42, ed_tab_names, 3, ed_tab);
+    ui_tabs(40, 92, LW - 80, 42, ced_tab_names, CED_TABS, ed.tab);
     ui_fill(40, 148, LW - 80, 1, UI_LINE);
-    ui_row rows[ED_COSTUME_ROWS];
-    static char vals[ED_COSTUME_ROWS][64];
-    const char *abouts[ED_COSTUME_ROWS];
-    int n = ed_rows();
+    ui_row rows[CED_COSTUME_ROWS];
+    static char vals[CED_COSTUME_ROWS][64];
+    const char *abouts[CED_COSTUME_ROWS];
+    int n = ced_rows(&ed);
     for (int i = 0; i < n; i++)
-        ed_row_of(i, &rows[i], vals[i], sizeof vals[i], &abouts[i]);
+        ced_row(&ed, i, &rows[i], vals[i], sizeof vals[i], &abouts[i]);
     float ry = 164, rh = 336;
-    ui_rows(40, ry, 540, rh, 42, rows, n, ed_row, &ed_top);
-    ui_about(604, ry, LW - 40 - 604, rh, rows[ed_row].label, abouts[ed_row],
-             ed_new ? "Save makes it a ready card." : memcmp(&ed_f, &ed_f0, sizeof ed_f) ? "Changed: Save keeps it." : NULL);
+    ui_rows(40, ry, 540, rh, 42, rows, n, ed.row, &ed.top);
+    ui_about(604, ry, LW - 40 - 604, rh, rows[ed.row].label, abouts[ed.row], ced_note(&ed));
     static const ui_hint hints[] = {
         { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Change", { UI_IN_LEFTRIGHT, UI_IN_NONE } },
         { "Tabs", { UI_IN_PREV, UI_IN_NEXT } }, { "Undo", { UI_IN_DEFAULT, UI_IN_NONE } },
@@ -3429,21 +3265,21 @@ static void mouse_event(SDL_Event *e)
     if (page == P_EDIT && !pop && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         int t = ui_tabs_hit(x, y), r = ui_rows_hit(x, y);
         if (t == UI_TAB_PREV || t == UI_TAB_NEXT)
-            ed_tab_to(ed_tab + (t == UI_TAB_PREV ? -1 : 1));
+            ced_tab_to(&ed, ed.tab + (t == UI_TAB_PREV ? -1 : 1));
         else if (t >= 0)
-            ed_tab_to(t);
+            ced_tab_to(&ed, t);
         else if (r >= 0) {
             /* a choice's left half goes back, its right half on (ui_rows: the
              * value's box ends 0.35 rows in from the right) */
             float right = 40 + 540 - 42 * 0.35f, bw = SDL_min(540 * 0.42f, 42 * 5.6f);
-            int was = ed_row;
-            ed_row = r;
-            if (ed_tab == 0 && r == ED_NAME)
+            int was = ed.row;
+            ed.row = r;
+            if (ced_on_name(&ed))
                 ed_press();
             else if (x >= right - bw && x <= right + 4)
-                ed_change(x < right - bw / 2 ? -1 : 1);
+                ced_change(&ed, x < right - bw / 2 ? -1 : 1);
             else if (r == was)
-                ed_change(1);
+                ced_change(&ed, 1);
         }
     }
     int id = hit_at(x, y);

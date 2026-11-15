@@ -119,9 +119,16 @@ void game_machine_region(int country);
  * NULL is a card never used. 0, or -1 (no units, or a card in already) */
 int game_machine_card_put(int side, const unsigned char *card);
 
-/* on the machine's thread: the card in the unit as it is now; 1 when it
- * differs from what was last put or got, 0 when not, -1 when there is none */
+/* on the machine's thread: the card in the unit as it is now (or, once it
+ * has left, as it left: the game's last write to a card taken while it was
+ * using it); 1 when it differs from what was last put or got, 0 when not,
+ * -1 when no card was ever in */
 int game_machine_card_get(int side, unsigned char *card);
+
+/* on the machine's thread: 1 while a game is using the card in the unit
+ * (from its read at the start of a game until the lock opens at the end;
+ * hw_card_held) */
+int game_machine_card_held(int side);
 
 /* on the machine's thread: the player takes the card out. 0: the unit is
  * empty; 1: the game is using the card (its lock is on), and it leaves when

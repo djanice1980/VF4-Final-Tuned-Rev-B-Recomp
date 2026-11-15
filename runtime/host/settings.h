@@ -85,8 +85,9 @@ int settings_save(const settings *s, const char *path);
  * characters, no space or dot at either end, not "none") */
 int settings_card_name_ok(const char *name);
 
-/* each player's own card by default: "p1" and "p2" (the cards' files before
- * profiles; the game makes one at its player's first game) */
+/* each player's own new card, offered in the game menu's card list while no
+ * card has that name: "p1" and "p2" (the game makes it at its player's
+ * first game). No player has a card by default */
 extern const char *const settings_card_default[2];
 extern const char *const settings_region_text[REGIONS];      /* "Japan", "USA", "Export", "Korea", "Australia" */
 
