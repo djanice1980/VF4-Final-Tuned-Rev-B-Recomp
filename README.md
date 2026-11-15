@@ -131,8 +131,9 @@ play, the card units, a settings page with rebinding, the GPU renderer at
 up to 4 times the resolution, the Steam Deck route, and the operator's
 test mode. The game has its own menu over the picture (Insert, Esc, a
 gamepad's Guide button, or View + Menu held): it pauses the game, changes
-settings, reaches test mode from a gamepad, restarts and quits. The latest
-release, 0.5.5 (Windows, and the Steam Deck through Proton), is on the
+settings, reaches test mode from a gamepad, restarts and quits. Two
+players can play each other on two PCs on one network. The latest
+release, 0.5.6 (Windows, and the Steam Deck through Proton), is on the
 Releases page. The plan, with its
 milestones: [docs/design.md](docs/design.md).
 
