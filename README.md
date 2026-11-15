@@ -459,8 +459,9 @@ panel on the right says what the chosen row does. Picture is 4:3, 16:10
 (the Steam Deck), 16:9 or 21:9 without stretching (the 3D scene goes on
 at the sides; the HUD and the 2D screens stay 4:3 in the middle), or
 Stretch. Window size is the game's window in pixels at the picture's
-shape (Auto is the largest of the sizes that leaves a tenth of the screen
-free); Internal resolution is the size the GPU renderer draws at, before
+shape, in the usual screens' sizes from 640 x 480 to 5120 x 2160 (21:9 at
+the ultrawide screens' own widths; Auto is the largest of the sizes that
+leaves a tenth of the screen free); Internal resolution is the size the GPU renderer draws at, before
 the picture is scaled to the window or the screen. Picture, window size,
 scaling, fullscreen and volume change at once; renderer, internal
 resolution and the card units are kept for the next start (marked with a

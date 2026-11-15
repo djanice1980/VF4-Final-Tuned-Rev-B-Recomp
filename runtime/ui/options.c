@@ -1,6 +1,9 @@
 /* The player's settings as rows: see options.h. */
 #include "options.h"
 
+/* a no-break space (U+00A0): the wrap keeps "1920 x 1080" on one line */
+#define NB "\xc2\xa0"
+
 const option_info options[OPT_COUNT] = {
     [OPT_CREDITS] = { "Credits",
                       "Free play: Start begins a game. Arcade coins: a credit for each coin (the Coin key or "
@@ -27,7 +30,9 @@ const option_info options[OPT_COUNT] = {
                          "Auto is fullscreen on the Steam Deck and in Steam's Big Picture, and a window "
                          "elsewhere. F11 or Alt+Enter switches while the game runs.", 0 },
     [OPT_WINDOW] = { "Window size",
-                     "The game's window, at the picture's shape. Auto is the largest size that leaves a "
+                     "The game's window, at the picture's shape, in the usual screens' sizes (1366" NB "x" NB "768, "
+                     "1920" NB "x" NB "1080, 2560" NB "x" NB "1080 at 21:9 and so on). Auto is the largest size "
+                     "that leaves a "
                      "tenth of the screen free; only the sizes that fit the screen are offered. Fullscreen "
                      "fills the screen whatever this is, and the window has this size outside it. Dragging "
                      "the window's edges still resizes it.", 0 },

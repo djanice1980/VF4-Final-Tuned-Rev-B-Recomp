@@ -98,12 +98,13 @@ extern const char *const settings_region_text[REGIONS];      /* "Japan", "USA", 
 const char *settings_picture_name(int picture);
 int settings_picture_width(int picture);
 
-/* The Window size setting (docs/design.md section 40): the window's height
- * in pixels, its width the picture's screen shape (16:9 at 1080 is 1920 x
- * 1080; stretch is 4:3). The listed heights, smallest first: the GPU
- * renderer's four (480 to 1920, a pixel for each of its pixels) and the
- * screens' 720, 1080 and 2160 */
-#define WINDOW_SIZES 7
+/* The Window size setting (docs/design.md sections 40 and 43): the window's
+ * height in pixels, its width the picture's screen shape (16:9 at 1080 is
+ * 1920 x 1080; stretch is 4:3; 21:9 is the ultrawide screens' own widths at
+ * their heights). The listed heights, smallest first: the GPU renderer's
+ * four (480 to 1920, a pixel for each of its pixels) and the heights of the
+ * usual 4:3, 16:10, 16:9 and 21:9 screens, from 1024 x 576 to 5120 x 2160 */
+#define WINDOW_SIZES 16
 extern const int settings_window_heights[WINDOW_SIZES];
 /* the game's window is never smaller than this in window units, so its
  * menu fits (menu.h): in pixels, times the screen's pixel density (1280 x

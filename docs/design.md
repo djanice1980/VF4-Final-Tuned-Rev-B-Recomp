@@ -2513,7 +2513,8 @@ start, as before.
 **Window size** (settings.txt `window`, the menu's and the launcher's
 Picture tab) is the window's height in pixels at the picture's shape:
 Auto, 480, 720, 960, 1080, 1440, 1920 or 2160 (the renderer's four sizes,
-a window pixel for each of its pixels, and the screens'). The width is the
+a window pixel for each of its pixels, and the screens'; more since
+section 43). The width is the
 screen's shape, not the picture's width over 480 (`settings_window_width`:
 16:9 at 1080 is 1,920, where 854 x 480 gives 1,922; 21:9 is 3440 x
 1440's). In the room (`window_room`), that is, the screen's usable area
@@ -2785,3 +2786,48 @@ Windows game and launcher built, the player's builder compiled):
 
 Not checked: a Steam Deck's keyboard, an edit waiting when the machine
 stops.
+
+## 43. More window sizes (2026-11-14)
+
+David asked why Window size offered so few sizes, with lists of the usual
+16:9, 4:3 and 21:9 screens' resolutions. The list (section 40) was the GPU
+renderer's four heights and the screens' 720, 1080 and 2160; nothing else
+limited it. Two things were missing: the heights of the other usual
+screens, and the ultrawide screens' own widths. A 21:9 window was always
+3440 x 1440's shape (43:18), but 2560 x 1080 and 5120 x 2160 are 64:27 and
+3840 x 1600 is 12:5, so a "1080" 21:9 window was 2,580 wide (too wide for
+the screen it is named after, so made smaller to fit).
+
+**The heights** (`settings_window_heights`, 16 of them): 480, 576, 600,
+720, 768, 800, 900, 960, 1050, 1080, 1200, 1440, 1536, 1600, 1920 and
+2160. At the picture's shape they give every size of David's lists: 16:9
+854 x 480, 1024 x 576, 1280 x 720, 1366 x 768, 1600 x 900, 1920 x 1080,
+2560 x 1440, 3840 x 2160; 4:3 640 x 480, 800 x 600, 1024 x 768, 1280 x
+960, 1400 x 1050, 1440 x 1080, 1600 x 1200, 1920 x 1440, 2048 x 1536; and
+the 16:10 screens' 1280 x 800 (a Steam Deck), 1440 x 900, 1680 x 1050,
+1920 x 1200 and 2560 x 1600. The rows still offer only what fits the
+screen, and settings.txt's note lists them all.
+
+**21:9** (`settings_window_width`) is the ultrawide screens' own width at
+their heights: 2560 at 1080, 3840 at 1600, 5120 at 2160 (3440 at 1440
+already was); other heights keep 43:18. The game's 21:9 picture itself
+is unchanged (1146 x 480, section 39), so in a 2560 x 1080 window it has
+4-pixel bars above and below, as it has in fullscreen on that screen.
+
+**Auto** is unchanged in its rule (the largest listed height in nine
+tenths of the room), so with more heights it comes closer to that: 1600 x
+900 at 16:9 on a 1920 x 1080 screen with a title bar (X11, Windows),
+where it was 1280 x 720; 1708 x 960 without one, as before.
+
+The Window size row's description names a few sizes; its "1920 x 1080"
+keeps together with no-break spaces (U+00A0, which the fonts have and
+`ui_wrap` does not break at).
+
+Checked: every size above computed by `settings_window_width` (a scratch
+program on settings.c; the lists the rows offer on 1920 x 1080 with and
+without a title bar, 1366 x 768, 2560 x 1080, 4K at 200% and 1280 x
+800); the Linux game in a headless KWin: the menu from Auto, Right five
+times, 854 x 480, 1024 x 576, 1068 x 600, 1280 x 720, 1366 x 768, saved
+as `window = 768`; Auto at 16:9 1708 x 960 (Wayland) and 1600 x 900
+(X11, room 1920 x 1052); 21:9 at 1080 on a 2560 x 1080 screen a 2560 x
+1080 window, the picture 2560 x 1072.

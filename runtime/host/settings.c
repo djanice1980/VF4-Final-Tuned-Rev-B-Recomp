@@ -178,17 +178,33 @@ int settings_picture_width(int picture)
     }
 }
 
-const int settings_window_heights[WINDOW_SIZES] = { 480, 720, 960, 1080, 1440, 1920, 2160 };
+/* 576 1024 x 576; 600 800 x 600; 768 1024 x 768 and 1366 x 768; 800 1280 x
+ * 800 (a Steam Deck); 900 1440 x 900 and 1600 x 900; 1050 1400 x 1050 and
+ * 1680 x 1050; 1200 1600 x 1200 and 1920 x 1200; 1536 2048 x 1536; 1600
+ * 2560 x 1600 and 3840 x 1600 */
+const int settings_window_heights[WINDOW_SIZES] = {
+    480, 576, 600, 720, 768, 800, 900, 960, 1050, 1080, 1200, 1440, 1536, 1600, 1920, 2160
+};
 
 /* the screen's shape, not the picture's width over 480 (854 is a pixel more
- * than 16:9's): 16:9 at 1080 is 1920. 21:9 is 3440 x 1440's */
+ * than 16:9's): 16:9 at 1080 is 1920. 21:9 is 3440 x 1440's, but the
+ * ultrawide screens are not one shape: at their own heights the window is
+ * their width (2560 x 1080 and 5120 x 2160 are 64:27, 3840 x 1600 is 12:5) */
 int settings_window_width(int picture, int height)
 {
     int num = 4, den = 3;
     switch (picture) {
     case PICTURE_16_10: num = 16, den = 10; break;
     case PICTURE_16_9: num = 16, den = 9; break;
-    case PICTURE_21_9: num = 43, den = 18; break;
+    case PICTURE_21_9:
+        if (height == 1080)
+            return 2560;
+        if (height == 1600)
+            return 3840;
+        if (height == 2160)
+            return 5120;
+        num = 43, den = 18;
+        break;
     }
     int w = (height * num + den / 2) / den;
     return w + (w & 1);
@@ -400,8 +416,9 @@ int settings_save(const settings *s, const char *path)
     else
         PUT("window = %-4d           # the window's height: auto (the largest of these that leaves a tenth of\n",
             s->window);
-    PUT("                         # the screen) | 480 | 720 | 960 | 1080 | 1440 | 1920 | 2160 (pixels;\n"
-        "                         # the width is the picture's shape)\n");
+    PUT("                         # the screen) | 480 | 576 | 600 | 720 | 768 | 800 | 900 | 960 | 1050 |\n"
+        "                         # 1080 | 1200 | 1440 | 1536 | 1600 | 1920 | 2160 (pixels; the width is\n"
+        "                         # the picture's shape)\n");
     PUT("picture = %s          # 4:3 | 16:10 | 16:9 | 21:9 (wide: the 3D fills the sides) | stretch\n",
         settings_picture_name(s->picture));
     PUT("filter = %s           # smooth | sharp (how the picture is scaled to the window)\n", filter_names[s->filter]);
