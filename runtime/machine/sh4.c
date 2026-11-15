@@ -34,6 +34,7 @@
 #include "observe.h"
 #include "machine.h"
 
+#include "fsca.h"           /* recomp: FSCA's table (runtime/cpu) */
 #include <math.h>
 #include <string.h>
 #include <xmmintrin.h>

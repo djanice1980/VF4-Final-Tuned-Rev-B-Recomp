@@ -63,8 +63,11 @@ def fresh_launcher(launcher):
 
 
 def uncommitted(paths):
+    """[(path, tracked)] of the files that differ from the last commit; an
+    untracked file (git status "??") is not packaged, since the builder's
+    files are the tracked ones (tracked())"""
     r = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--"] + paths, capture_output=True, check=True)
-    return [line[3:] for line in r.stdout.decode().splitlines()]
+    return [(line[3:], not line.startswith("??")) for line in r.stdout.decode().splitlines()]
 
 
 def python_embed(dest):
@@ -182,8 +185,11 @@ def main():
         sys.exit(__doc__)
     kind, launcher, out = a[0], a[1], os.path.abspath(a[2])
     fresh_launcher(launcher)
-    for p in uncommitted(BUILDER_PATHS):
-        print("warning: not committed, packaged as it is now:", p)
+    for p, is_tracked in uncommitted(BUILDER_PATHS):
+        if is_tracked:
+            print("warning: not committed, packaged as it is now:", p)
+        else:
+            print("warning: not tracked by git, LEFT OUT (git add it to package it):", p)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     files = tracked(BUILDER_PATHS)

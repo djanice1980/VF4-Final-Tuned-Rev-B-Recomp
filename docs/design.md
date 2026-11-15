@@ -2895,3 +2895,101 @@ of that file shows the name); 144 and 90 Hz: the notice naming the rate;
 two normal starts at 144 Hz: the first shows it and writes `144 Hz`, the
 second logs that it was shown and shows nothing. The launcher with
 `SteamDeck=1` shows Picture 16:10, without it 4:3. Not yet on a real Deck.
+
+## 45. Two players on two PCs: the plan, and the same machine everywhere (2026-11-14)
+
+David asked about two things: a VF.NET server like Flycast's, and two
+players playing each other on two PCs, in phases: a LAN first, then a
+private online server, then public matchmaking. The two-PC play comes
+first; VF.NET follows (it starts with reading what the event lists of the
+`power_on` reply do in the game).
+
+**Why it is netplay.** The cabinet never linked to another for a versus
+game: VS is two players on one board (`play_style` 2), and the network
+board talks only to the operator's servers (section 5, `hw_dimm_net.c`).
+So two PCs each run the whole machine, the same run, and send each other
+only the players' controls for each vertical blank. That needs the
+machine to be the same run on both, bit for bit, from the same start.
+
+**The phases.**
+
+1. LAN: one PC hosts (player 1), the other joins (player 2), by address
+   or found on the network; inputs a vertical blank or two ahead (on a
+   LAN, not felt); UDP, each packet repeating the last inputs.
+2. Private online: the same over the internet, through a forwarded port
+   or a small relay David runs; rollback (the machine saved each frame,
+   frames run again when a late input differs), which needs a fast
+   in-memory snapshot (`snapshot_save_mem` goes through a file). The
+   machine takes about 3 ms a frame on a desktop, so it fits there; the
+   Steam Deck (an estimated 10 to 12 ms) stays on input delay.
+3. Public matchmaking: a lobby, a queue by ping, a relay so players never
+   see each other's addresses. A decision for later.
+
+**Cards live with their player** (David's rule). A card's file stays on
+its player's PC, or later on the VF.NET server we build, which can be its
+home so it follows the player to any PC. For a game both PCs need both
+cards, since both run both card units: at the start each PC sends its own
+player's card, and the other player's card is kept in memory only. When
+the game writes the cards back, each PC saves its own player's card to its
+own `user/cards/` and drops the other; the two PCs compare the bytes first
+(a difference means the run has split, and the card is not written). The
+cabinet (`backup.bin`, coins, region) is the host's for the session; the
+joining PC's own backup is not touched.
+
+**Phase 0, the ground under all of it:**
+
+- The same game on both PCs: each builds its own from its own set, so the
+  two compare a fingerprint of the built game and refuse to play when it
+  differs.
+- The same run on both (below: done for the processor's arithmetic).
+- Inputs by vertical blank number: the machine now takes whatever the
+  window holds at its vertical blank (`on_frame`).
+- The same start: the host's backup, settings and both cards; the boot
+  is the same run from there.
+- A fingerprint of the machine every so often over the link, so a split
+  is seen at once.
+- The game's menu pauses both PCs (or stays shut); no card editing in a
+  session.
+
+**The same machine everywhere: FSCA.** The machine was already
+deterministic (section 16: the clock is fixed at `hw.rtc_base`, the sound
+chip runs a fixed budget a sample), and compiled arithmetic is IEEE on
+every PC (`-msse2 -ffp-contract=off`, no `-march`). One instruction asked
+the host: FSCA computed its sine and cosine with the C library's `sin` and
+`cos` (`op_fsca`, and the interpreter's `fsca`). Two PCs with different
+math libraries could part by a last bit, and a fighting game's positions
+come from those angles. Evidence first: all 65,536 angles dumped with the
+same expression gave identical bits from glibc (64-bit and 32-bit, with or
+without gcc's merged `sincos`), Wine's ucrtbase and Proton's. Real
+Windows (Microsoft's ucrtbase) could not be tried here, and a library that
+does not reset the rounding mode inside `sin` would differ again. So FSCA
+now reads a table (`runtime/cpu/fsca.h`): the sine for a quarter turn
+(16,385 floats, `fsca_table.inc`, written by `tools/make_fsca_table.py`,
+which checks every angle) and three constants (the double-precision
+angles for a half turn and a quarter and three quarters are not exactly
+pi, pi/2 and 3pi/2, so those results are tiny numbers, not 0). The
+values are the ones glibc gave, so nothing changed on Linux.
+
+The game's rounding mode: the old code rounded `sin`'s double to float in
+the host's current mode, which follows the guest's FPSCR.RM. A temporary
+count in the game (20,000 vertical blanks from a blank cabinet, through a
+game) found 11,264,419 FSCAs, none with RM = 1 (round to zero), none whose
+table result differed from the old way. The lockstep tests' random states
+do set RM = 1, where VF4debug's interpreter gives a step nearer zero on
+some angles (8 failures, each one step): `tests/lockstep/lockstep.c` now
+takes such an interpreter result as the table's and counts it; any other
+difference still fails.
+
+**The fingerprint** (`game_machine_hash`, `--hash-every N`): main RAM and
+the processor's registers in four lanes of FNV-1a over 64-bit words, about
+1.1 ms (it will be the session's split check). Logged as `state: vertical
+blank N: HASH (ms)`.
+
+Checked: the Linux game (gcc) and the Windows game (llvm-mingw clang)
+under Wine, the same blank cabinet, settings and presses (a game started,
+a second player joining), unpaced to vertical blank 20,000: all 40
+fingerprints the same, the same instruction count (19,584,134,467), in
+GAME MODE at the end; the same fingerprints as the Linux run before the
+temporary count. The lockstep tests: 56,294 instruction cases x 32
+states and the routine runs, 1,804,564 checks, none failed (129 FSCA
+results in round-to-zero states taken from the table).

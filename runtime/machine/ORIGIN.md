@@ -133,6 +133,11 @@ What the recomp changed:
   the old `FBW` wherever it bounded a pass. `view_host_picture` gives the
   picture's width. Without `view_host_wide` nothing behaves differently
   (docs/design.md section 39).
+- `sh4.c`, `sh4_exec.inc` (2026-11-14): FSCA takes its sine and cosine
+  from `runtime/cpu/fsca.h`'s table instead of the host's `sin` and `cos`,
+  so two PCs playing one game get the same bits whatever their math
+  library. The values are the ones `sin` and `cos` gave on Linux, so runs
+  keep their hashes (docs/design.md section 45).
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

@@ -84,6 +84,30 @@ static void host_frame(sh4 *c)
     }
 }
 
+unsigned long long game_machine_hash(void)
+{
+    /* four lanes of FNV-1a over 64-bit words: the 32 MiB in about a
+     * millisecond, where one lane's chain of multiplies takes several */
+    const u64 m = 0x100000001b3ull;
+    const u8 *ram = mem_ptr(RAM_BASE);
+    u64 h[4] = { 0xcbf29ce484222325ull, 0x84222325cbf29ce4ull, 0x9e3779b97f4a7c15ull, 0x7f4a7c159e3779b9ull };
+    for (u32 i = 0; i < RAM_SIZE; i += 32)
+        for (int j = 0; j < 4; j++) {
+            u64 w;
+            memcpy(&w, ram + i + 8 * j, 8);
+            h[j] = (h[j] ^ w) * m;
+        }
+    u64 r = h[0];
+    for (int j = 1; j < 4; j++)
+        r = (r ^ h[j]) * m;
+    const u32 regs[] = { cpu.pc, cpu.pr, cpu.sr, cpu.t, cpu.gbr, cpu.vbr, cpu.mach, cpu.macl, cpu.fpul, cpu.fpscr };
+    for (int i = 0; i < 16; i++)
+        r = (((r ^ cpu.r[i]) * m ^ cpu.fr[i].u) * m ^ cpu.xf[i].u) * m;
+    for (size_t i = 0; i < sizeof regs / sizeof regs[0]; i++)
+        r = (r ^ regs[i]) * m;
+    return r;
+}
+
 unsigned game_machine_audio(short *dst, unsigned max)
 {
     return hw_sound_chip ? aica_audio_take(dst, max) : 0;

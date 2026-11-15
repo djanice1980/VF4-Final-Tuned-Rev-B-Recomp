@@ -439,13 +439,14 @@ static __attribute__((noinline)) void X(fpu)(sh4 *c, u32 op)
         }
         if ((n & 1) == 0) {                                       /* fsca FPUL,DRn */
             if (pr) { illegal(c, op); return; }
-            double a = (double)(c->fpul & 0xffff) * (6.283185307179586476925 / 65536.0);
             /* the operation text sets "inexact" whatever the angle */
             c->fpscr = (c->fpscr & fp_keep) | fp_i_bits;
             if (__builtin_expect(c->fpscr & FPSCR_ENABLE & (FPC_I >> 5), 0) && fp_raise(c, FPC_I))
                 return;
-            c->fr[n].f = (float)sin(a);
-            c->fr[n + 1].f = (float)cos(a);
+            /* recomp: fsca.h's table (runtime/cpu), not the host's sin and cos, so every PC
+             * gets the same bits (docs/design.md section 45); the values are the same */
+            c->fr[n].u = rt_fsca_sin(c->fpul & 0xffff);
+            c->fr[n + 1].u = rt_fsca_cos(c->fpul & 0xffff);
             return;
         }
         if (n == 3) {                                             /* fschg */

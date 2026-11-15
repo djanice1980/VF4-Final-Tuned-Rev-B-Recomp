@@ -153,6 +153,11 @@ const char *game_machine_why(void);
  * it, its EXIT starts the game again), else 0; from the frame function */
 int game_machine_program(void);
 
+/* a fingerprint of the machine: main RAM and the processor's registers.
+ * Two runs that are the same run have the same one at each vertical blank
+ * (docs/design.md section 45); from the frame function */
+unsigned long long game_machine_hash(void);
+
 /* from the frame function only: the game starts again from power on, as the
  * test program's EXIT starts it, keeping what the cabinet keeps; coins
  * (GAME_COINS_*) is put in the settings EEPROM and net (GAME_NET_*) in the

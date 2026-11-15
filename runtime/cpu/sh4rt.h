@@ -14,6 +14,7 @@
 #define VF4RT_SH4RT_H
 
 #include "sh4.h"
+#include "fsca.h"
 #include <math.h>
 #include <string.h>
 #include <xmmintrin.h>
@@ -626,14 +627,15 @@ RT_INLINE void op_ftrv(sh4 *c, int n, u32 at)
         c->fr[vn + i] = r[i];
 }
 
+/* the sine and cosine from fsca.h's table: the same bits on every PC */
 RT_INLINE void op_fsca(sh4 *c, int n, u32 at)
 {
-    double a = (double)(c->fpul & 0xffff) * (6.283185307179586476925 / 65536.0);
+    u32 k = c->fpul & 0xffff;
     c->fpscr = (c->fpscr & FP_KEEP) | FP_I_BITS;
     if (RT_UNLIKELY(c->fpscr & FPSCR_ENABLE & (FPC_I >> 5)) && fp_raise(c, FPC_I, at))
         return;
-    c->fr[n].f = (float)sin(a);
-    c->fr[n + 1].f = (float)cos(a);
+    c->fr[n].u = rt_fsca_sin(k);
+    c->fr[n + 1].u = rt_fsca_cos(k);
 }
 
 /* the register pair a paired fmov names: bit 0 picks the other bank (XD) */

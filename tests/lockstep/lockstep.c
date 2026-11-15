@@ -259,6 +259,30 @@ static void random_state(sh4 *c, const insn_case *k)
 /* ---- part 1: single instructions ----------------------------------------- */
 
 static u8 buf_before[BUF_LEN], buf_interp[BUF_LEN];
+static long fsca_rz;
+
+/* FSCA in a state whose FPSCR rounds toward zero (RM = 1). The translation
+ * takes FSCA's sine and cosine from a table (runtime/cpu/fsca.h) that gives
+ * the same bits in either rounding mode; VF4debug's interpreter rounds its
+ * host's sin and cos to float in the guest's mode, so here it can be a step
+ * nearer zero. The game runs FSCA in round-to-nearest only (11.26 million
+ * of them in 20,000 frames, none in round-to-zero: docs/design.md section
+ * 45), where the two agree on every angle. So in these states an
+ * interpreter result one step toward zero from the table's is taken as the
+ * table's (and counted); any other difference still fails. */
+static void fsca_round_to_zero(const insn_case *k, const sh4 *init, sh4 *interp, const sh4 *trans)
+{
+    if ((k->op & 0xf1ff) != 0xf0fd || (init->fpscr & FPSCR_RM) != 1 || interp->stop)
+        return;
+    int n = (k->op >> 8) & 0xe;
+    for (int i = n; i <= n + 1; i++) {
+        u32 x = interp->fr[i].u, t = trans->fr[i].u;
+        if (x != t && (t & 0x7fffffffu) != 0 && x == t - 1) {
+            interp->fr[i].u = t;
+            fsca_rz++;
+        }
+    }
+}
 
 static void test_insns(int states)
 {
@@ -302,6 +326,7 @@ static void test_insns(int states)
                 continue;
             }
             traps += trapped;
+            fsca_round_to_zero(k, &init, &a, &b);
             char why[96];
             if (!compare(&a, &b, why, sizeof why)) {
                 if (!shown++)
@@ -319,7 +344,8 @@ static void test_insns(int states)
         }
     }
     printf("instructions: %u cases x %d states, %ld failed (%ld FPU traps compared, %ld states the interpreter "
-           "stopped on, not compared)\n", insn_case_count, states, failures - before, traps, skipped);
+           "stopped on, not compared; %ld FSCA results in round-to-zero states taken from the table)\n",
+           insn_case_count, states, failures - before, traps, skipped, fsca_rz);
 }
 
 /* ---- part 2: routines of the image ---------------------------------------- */

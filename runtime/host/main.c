@@ -53,6 +53,8 @@
  *   --deck-product FILE  for tests: the firmware's product name from FILE (Jupiter: a Steam
  *                     Deck LCD; Galileo: the OLED) instead of /sys/class/dmi/id/product_name
  *   --screen-hz HZ    for tests: the screen's refresh rate is HZ, not the one SDL reports
+ *   --hash-every N    for tests: logs the machine's fingerprint (main RAM and the registers) every N
+ *                     vertical blanks, to compare two runs (docs/design.md section 45)
  *
  * Settings (M6): user/settings.txt (settings.h), written by the launcher's
  * Settings page: free play or coins, fullscreen, picture, sound, the card
@@ -677,6 +679,7 @@ static void audio_frame(int ahead)
     SDL_SetAudioStreamFrequencyRatio(audio, (float)ratio);
 }
 static unsigned frames_max;
+static unsigned hash_every;             /* --hash-every: the machine's fingerprint every this many vertical blanks */
 static SDL_AtomicInt machine_state;     /* 0 starting, 1 running, 2 init failed, 3 stopped */
 static Uint32 machine_event;            /* an SDL event type: the machine has stopped */
 
@@ -687,6 +690,11 @@ static unsigned busy_frames, resyncs;
 /* machine thread, once per vertical blank (game_frame_fn) */
 static void on_frame(unsigned frame, const unsigned char *rgb, int w, int booting, game_input *in)
 {
+    if (hash_every && frame % hash_every == 0) {        /* --hash-every: before this vertical blank's inputs */
+        Uint64 t0 = SDL_GetTicksNS();
+        unsigned long long h = game_machine_hash();
+        logf_("state: vertical blank %u: %016llx (%.2f ms)", frame, h, (SDL_GetTicksNS() - t0) / 1e6);
+    }
     Uint64 now = SDL_GetTicksNS();
     if (busy_since) {
         Uint64 b = now - busy_since;
@@ -1845,6 +1853,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--refresh-notice") && v) refresh_frame = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--deck-product") && v) settings_steam_deck_test(argv[++i]);
         else if (!strcmp(a, "--screen-hz") && v) screen_hz_test = (float)SDL_atof(argv[++i]);
+        else if (!strcmp(a, "--hash-every") && v) hash_every = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--shot") && v && i + 2 < argc && nshots < 8) {
             shots[nshots].frame = (unsigned)strtoul(argv[++i], NULL, 10);
             shots[nshots++].path = argv[++i];

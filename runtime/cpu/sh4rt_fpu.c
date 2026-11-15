@@ -7,6 +7,11 @@
 
 u32 rt_fp_mx = 0x1f80;
 
+/* FSCA's quarter-turn sine table (fsca.h; written by tools/make_fsca_table.py) */
+const uint32_t rt_fsca_quarter[16385] = {
+#include "fsca_table.inc"
+};
+
 int rt_fp_special_s(sh4 *c, u32 x, fpreg *r, u32 a, u32 b, u32 d, u32 at)
 {
     if (nan_s(r->u)) {
