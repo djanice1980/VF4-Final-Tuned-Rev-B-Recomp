@@ -69,6 +69,7 @@ typedef struct menu_run {
     void (*card_edit)(const char *name, const card_fields *from, const card_fields *to, int fresh);
     float refresh;          /* the window's screen's refresh rate in Hz (0 not known; section 44) */
     int deck;               /* settings_steam_deck() */
+    int session;            /* a two-PC game (session.h): no test menu, restart or card changes */
 } menu_run;
 
 /* opens it on s (the settings in use, changed in place) */
@@ -111,5 +112,9 @@ int menu_bar_height(int ph);
 
 /* the operator bar, pw x ph pixels at r's top left */
 void menu_draw_bar(SDL_Renderer *r, int pw, int ph);
+
+/* the two-PC game's note (session.h: waiting for the other player, why it
+ * ended), a strip of menu_bar_height like the operator bar */
+void menu_draw_note(SDL_Renderer *r, int pw, int ph, const char *text);
 
 #endif

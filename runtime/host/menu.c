@@ -66,9 +66,16 @@ void menu_open(settings *cfg, const menu_run *r)
     ed_on = typing = 0;
     for (int t = 0; t < TABS; t++) {
         nshown[t] = 0;
-        for (int i = 0; i < ROWS && tab_rows[t][i] >= 0; i++)
-            if ((tab_rows[t][i] != A_UPDATES || gu_state() != GU_OFF) && (tab_rows[t][i] != A_LAUNCHER || gu_launcher()))
-                shown_rows[t][nshown[t]++] = tab_rows[t][i];
+        for (int i = 0; i < ROWS && tab_rows[t][i] >= 0; i++) {
+            int id = tab_rows[t][i];
+            /* a two-PC game runs on both PCs alike: the test menu, a restart and the cards in the
+             * units would change one of them only (the Cards tab keeps its Card units row) */
+            if (run.session && (id == A_TEST || id == A_RESTART || id == OPT_CARD1 || id == OPT_CARD2 ||
+                                id == A_EDIT1 || id == A_EDIT2))
+                continue;
+            if ((id != A_UPDATES || gu_state() != GU_OFF) && (id != A_LAUNCHER || gu_launcher()))
+                shown_rows[t][nshown[t]++] = id;
+        }
     }
 }
 
@@ -992,4 +999,20 @@ void menu_draw_bar(SDL_Renderer *r, int pw, int ph)
     x += ui_cap_input(x, 22, h, "F3", 0) + 22;
     x += ui_text(UI_REGULAR, 15, x, 22, UI_MUTED, "Done") + 8;
     ui_cap_input(x, 22, h, ui_pad_face_name(UI_IN_BACK), 1);
+}
+
+void menu_draw_note(SDL_Renderer *r, int pw, int ph, const char *text)
+{
+    (void)r;
+    float k = (float)ph / 44;
+    ui_set_scale(k, 0, 0);
+    float w = (float)pw / k;
+    ui_fill(0, 0, w, 44, UI_PANEL);
+    ui_fill(0, 43, w, 1, UI_LINE);
+    float x = 16 + ui_text(UI_BOLD, 16, 16, 22, UI_ACCENT, "Two PCs") + 20;
+    /* smaller when it would not fit */
+    float size = 15;
+    while (size > 9 && x + ui_text_w(UI_REGULAR, size, text) > w - 16)
+        size -= 1;
+    ui_text(UI_REGULAR, size, x, 22, UI_TEXT, text);
 }

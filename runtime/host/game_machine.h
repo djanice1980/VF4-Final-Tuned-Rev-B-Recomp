@@ -125,6 +125,11 @@ int game_machine_card_put(int side, const unsigned char *card);
  * -1 when no card was ever in */
 int game_machine_card_get(int side, unsigned char *card);
 
+/* on the machine's thread: the card in the unit as game_machine_card_get
+ * would give it, without marking it got (the two-PC game's fingerprint).
+ * 0, or -1 when no card was ever in */
+int game_machine_card_peek(int side, unsigned char *card);
+
 /* on the machine's thread: 1 while a game is using the card in the unit
  * (from its read at the start of a game until the lock opens at the end;
  * hw_card_held) */

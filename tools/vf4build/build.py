@@ -2,6 +2,7 @@
 build (CMakeLists.txt), run directly so that the player needs no CMake."""
 import concurrent.futures
 import glob
+import hashlib
 import os
 
 from . import proc
@@ -16,6 +17,26 @@ MACHINE_INC = ["-I" + R("machine"), "-I" + R("native"), "-I" + R("sound"), "-I" 
 
 class BuildError(Exception):
     pass
+
+
+def source_id():
+    """A fingerprint of the sources a game is made from: SHA-256 over the
+    builder's .c, .h, .inc and .py files (runtime/, translator/, tools/; line
+    ends as \\n), its first 12 digits. Two PCs playing each other compare
+    it with the version (runtime/host/session.c): the same set gives the
+    same game only from the same sources."""
+    h = hashlib.sha256()
+    files = []
+    for top in ("runtime", "translator", "tools"):
+        for d, dirs, names in os.walk(os.path.join(ROOT, top)):
+            dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+            files += [os.path.join(d, n) for n in names if n.endswith((".c", ".h", ".inc", ".py"))]
+    for f in sorted(files, key=lambda p: os.path.relpath(p, ROOT).replace(os.sep, "/")):
+        rel = os.path.relpath(f, ROOT).replace(os.sep, "/")
+        with open(f, "rb") as fh:
+            data = fh.read().replace(b"\r\n", b"\n")
+        h.update(rel.encode() + b"\0" + str(len(data)).encode() + b"\0" + data)
+    return h.hexdigest()[:12]
 
 
 def units(gen_dirs, tables_cs, tc, version):
@@ -37,9 +58,10 @@ def units(gen_dirs, tables_cs, tc, version):
     for tables_c in tables_cs:
         out.append((tables_c, mflags + ["-O0", "-g0"]))
     hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ["-I" + R("host"), "-I" + R("ui"),
-                                                     '-DVF4FT_VERSION="%s"' % version]
+                                                     '-DVF4FT_VERSION="%s"' % version,
+                                                     '-DVF4FT_SOURCE="sources %s"' % source_id()]
     for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c", "updates.c",
-              "art.c", "cards.c"):
+              "art.c", "cards.c", "udp.c", "session.c"):
         out.append((R("host", s), hflags))
     for s in ("ui.c", "fonts.c", "options.c", "kofi_badge.c", "card_editor.c"):    # the menu's drawing kit (runtime/ui)
         out.append((R("ui", s), hflags))

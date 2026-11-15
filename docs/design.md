@@ -2993,3 +2993,113 @@ GAME MODE at the end; the same fingerprints as the Linux run before the
 temporary count. The lockstep tests: 56,294 instruction cases x 32
 states and the routine runs, 1,804,564 checks, none failed (129 FSCA
 results in round-to-zero states taken from the table).
+
+## 46. Two PCs on a LAN: the link, the start, the checks (2026-11-14)
+
+Phase 0 and phase 1 of section 45: two players on two PCs on one network,
+each PC running the whole machine, with only the players' controls going
+between them.
+
+**Using it.** In the launcher, the Play page has a **Two PCs** row under
+Play. Its note has **Host** (this PC is player 1 and waits; its game shows
+this PC's address and port) and **Join** with the host's address typed in
+(this PC is player 2). The address joined last is kept in
+`launcher-two-pc.txt` beside the launcher. From the command line:
+`--host [PORT]`, `--join ADDRESS[:PORT]` (a name, IPv4, or IPv6 in
+`[ ]`), and `--delay N` (vertical blanks of input delay, 1 to 30, the
+host's counts; 2 by default). The port is UDP 29404 unless one is given.
+
+**Why a request file.** On Linux, the Windows build's Play goes through
+Steam (`steam_shortcut.py play`, section 34), which passes no arguments.
+So the launcher writes the game's `user/two-pc.txt` ("host" or
+"join ADDRESS", then the time in seconds) and starts the game as Play
+does. The game reads it as it starts, however it was started, removes it,
+and does not use one older than two minutes. The launcher removes it again
+if the game did not start (the program failed to start, or Steam's
+`play` failed). `user/` is already among the install folder's names.
+
+**The link** (`runtime/host/udp.c`, `session.c`): UDP, one socket, the
+system's own sockets (Windows' `ws2_32`). Every datagram starts with
+`VF4N`, the protocol's version, its kind and the session's number; the
+kinds are in `session.c`'s first comment. The joining PC sends HELLO
+every 250 ms for up to a minute. A thread sends INPUT every 10 ms whether
+or not the game is running a frame, so a PC in its menu still answers;
+15 seconds with nothing heard ends the session. Each INPUT repeats every
+input the other PC has not yet acknowledged, so a lost datagram costs
+nothing but the next one's 10 ms.
+
+**The same game.** HELLO carries the build: the version and, for a game
+made by the builder, a fingerprint of the sources it was built from
+(`build.py`'s `source_id`: SHA-256 over `runtime/`, `translator/` and
+`tools/`, the first 12 hex digits). The host refuses another build with a
+note on the joining PC's screen. The game's code itself comes from the
+player's set, whose image and programs the builder checks by SHA-1, so
+the sources and the set make the same game. A CMake development build says
+"development build (sources unknown)" and two of those play each other.
+
+**The same start.** The host's cabinet is the session's: coins, region,
+network, card units, and its `backup.bin`, which goes over in 1,024-byte
+chunks with a bitmap of what has come, sent again until all are there.
+The joining PC's own `backup.bin` and settings are not read or written.
+The sound chip runs on both PCs whatever the sound setting, since it is
+part of the machine; what is heard still follows each PC's setting.
+
+**Inputs by vertical blank.** The game's start-up step (it runs unpaced
+until the game first shows its warning screen) takes no inputs on either
+PC, so neither waits for the other there. As it ends, each PC stamps its
+player's controls (the player 1 controls and keys on both PCs, which play
+as player 1 or 2 by the role) for the vertical blank `delay` ahead, and a
+vertical blank runs only when both players' inputs for it are here. A wait
+longer than 300 ms is shown on the screen ("Waiting for player 2's
+PC."). A coin is an input like a button.
+
+**The checks.** Every 60 vertical blanks each PC takes a fingerprint:
+`game_machine_hash` (section 45) and both card units' bytes. INPUT carries
+the newest four. The same vertical blank with two different fingerprints
+ends the session at once: "The two games went apart at vertical blank
+N." The log says at the end how many agreed.
+
+**Cards** (section 45's rule). Each PC sends its own player's card: the
+card file named for player 1 in its settings (none, a card never used, or
+its 128 bytes). The other player's card is kept in memory only. At each
+check this PC's player's card is kept as it was, and a card is written to
+`user/cards/` only once a check both PCs agreed on has come: the card as
+it was at that check, and only this PC's player's. So a card is never
+written from a run that split. The Cards menu cannot change cards in a
+session (no card choosing, no editor).
+
+**The menu.** Opening the game's menu on one PC stops both: the other
+shows "Player 1 has the game's menu open." Test mode, Restart and the card
+rows are not in the menu during a session. The Ko-fi and refresh-rate
+notices do not show in a session (they would pause both PCs).
+
+**The end.** Quitting sends BYE; the other PC plays the inputs it already
+has, then says "Player N left the game." and keeps its window, with the
+game stopped, until it is closed. The cabinet's backup is saved by the
+host only. A game whose session never started (no answer, refused, the
+other PC gone during the start) keeps its window with the reason and exits
+with code 4; the launcher shows itself again.
+
+**What was checked** (in a headless KWin, both games over loopback,
+unpaced, with fingerprints every 500 vertical blanks):
+
+- Linux host and Linux joining PC, a game started and a second player
+  joining, to vertical blank 20,000: all 40 fingerprints the same on both
+  PCs, and the same as one game alone with both players' presses moved on
+  by the input delay; 333 checks agreed; the same instruction count.
+- Linux host, the Windows build joining under Wine: the same, and the same
+  fingerprints as the Linux pair.
+- Cards on, both players with a card, the host's menu open for about four
+  seconds mid-game: the joining PC waited and said so; each PC wrote only
+  its own player's card, each the same bytes as the game alone wrote.
+- Both games started by `user/two-pc.txt` only: both read it, removed it
+  and played (50 checks agreed).
+- The launcher, offscreen (`--shot two-pc`, `--shot-keys`): Join with an
+  address typed and Host each wrote the request and started the game,
+  which found it; a game that could not start left no request.
+
+**Not yet:** finding the host on the network without typing its address;
+a host listening on IPv6 (it listens on IPv4; a joining PC can reach an
+IPv6 host only once it does); the internet (phase 2: a forwarded port or a
+relay, and rollback); Restart in a session; a test on two real PCs and on
+real Windows (its firewall's question when the game first hosts).

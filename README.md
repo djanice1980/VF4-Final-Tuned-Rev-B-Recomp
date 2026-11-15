@@ -75,6 +75,15 @@ playing: the game runs through Steam's Proton. Under plain Wine, Play first
 says what to expect (Steam Input missing, Wine's graphics and sound) and
 offers Add to Steam, Play anyway or Cancel.
 
+**Two players on two PCs** (on one network, from 0.5.6): both PCs need the
+same release. On the PC that hosts, press **Two PCs** on the Play page,
+then **Host**: it is player 1, and its game shows this PC's address while
+it waits. On the other PC press **Two PCs**, type that address and press
+**Join**: it is player 2. The host's settings and saves are used; each
+player's card stays on their own PC. If Windows asks, allow the game
+through its firewall (it uses UDP port 29404).
+([How it works](docs/design.md#46-two-pcs-on-a-lan-the-link-the-start-the-checks-2026-11-14).)
+
 ## Screenshots
 
 **The launcher** makes the game from your set in three steps. These are
@@ -87,7 +96,7 @@ the Linux launcher's pages; the Windows release is the same program.
 
 | Play | Settings |
 |---|---|
-| <img src="docs/images/launcher-play.png" alt="The launcher's Play page: Play, Settings, Add to Steam, Build again, Game files"> | <img src="docs/images/launcher-settings-gamepad.png" alt="The launcher's Settings, Gamepad tab, with PlayStation button glyphs"> |
+| <img src="docs/images/launcher-play.png" alt="The launcher's Play page: Play, Settings, Add to Steam, Build again, Game files, and the Two PCs row"> | <img src="docs/images/launcher-settings-gamepad.png" alt="The launcher's Settings, Gamepad tab, with PlayStation button glyphs"> |
 | Play, add the game to Steam, or build it again. | The game's settings and controls in tabs. The defaults are the PlayStation 2 version's layout. |
 
 | Cards | Card editor |
@@ -577,7 +586,11 @@ after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `--real-boot` (the start-up at its real pace too), `--image FILE`,
 `--dimm FILE` (a decrypted image, or the disc's `VF41_S.BIN` with
 `dimm.key` beside it), `--log FILE`, `--silent` (no sound chip: VF4debug's
-mailbox model, as in M3), `--user DIR`, and for tests `--press LIST`
+mailbox model, as in M3), `--user DIR`, `--host [PORT]` and
+`--join ADDRESS[:PORT]` (a game on two PCs, UDP port 29404 unless given)
+with `--delay N` (its input delay in vertical blanks, 2 by default), and
+for tests `--hash-every N` (the machine's fingerprint in the log every N
+vertical blanks), `--press LIST`
 (buttons at given vertical blanks, as `6500:p1:start,6800:p1:p+g`),
 `--art DIR` (no window: Steam's pictures from the attract sequence into
 DIR, as Add to Steam makes them; [design.md s36](docs/design.md#36-steams-pictures-for-the-entry-from-the-players-own-build-2026-11-13)),

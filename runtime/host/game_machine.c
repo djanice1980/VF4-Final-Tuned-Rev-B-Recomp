@@ -429,6 +429,13 @@ int game_machine_card_take(int side)
     return hw_card_take(side) > 0;
 }
 
+int game_machine_card_peek(int side, unsigned char *card)
+{
+    if (side < 0 || side > 1 || hw_card_last(side, card))
+        return -1;
+    return 0;
+}
+
 int game_machine_card_get(int side, unsigned char *card)
 {
     if (side < 0 || side > 1 || hw_card_last(side, card))
