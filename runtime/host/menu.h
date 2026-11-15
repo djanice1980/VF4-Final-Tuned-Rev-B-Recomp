@@ -70,7 +70,13 @@ typedef struct menu_run {
     float refresh;          /* the window's screen's refresh rate in Hz (0 not known; section 44) */
     int deck;               /* settings_steam_deck() */
     int session;            /* a two-PC game (session.h): no test menu, restart or card changes */
+    /* the host of a two-PC game: its join code (docs/design.md section 50), for the Game tab's Join
+     * code row: whether another PC can join and with what code in buf (MENU_CODE_*, as session.h's
+     * session_code), and a new code. NULL: no such row */
+    int (*join_code)(char *buf, size_t n);
+    void (*join_code_new)(void);
 } menu_run;
+enum { MENU_CODE_NONE, MENU_CODE_SHOWN, MENU_CODE_GONE };
 
 /* opens it on s (the settings in use, changed in place) */
 void menu_open(settings *s, const menu_run *run);

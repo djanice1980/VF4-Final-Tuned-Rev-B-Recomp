@@ -98,7 +98,21 @@ udp_sock udp_open(int port, const udp_addr *like)
         close_sock(s);
         return UDP_NONE;
     }
+    /* room for a burst of datagrams (a joining PC's game, session.c): Windows
+     * gives 64 KiB and Linux about 200; the system may give less than this */
+    int room = 4 << 20;
+    setsockopt(s, SOL_SOCKET, SO_RCVBUF, (const char *)&room, sizeof room);
+    setsockopt(s, SOL_SOCKET, SO_SNDBUF, (const char *)&room, sizeof room);
     return (udp_sock)s;
+}
+
+int udp_room(udp_sock s)
+{
+    int room = 0;
+    socklen_t len = sizeof room;
+    if (getsockopt((sys_sock)s, SOL_SOCKET, SO_RCVBUF, (char *)&room, &len))
+        return -1;
+    return room;
 }
 
 void udp_close(udp_sock s)

@@ -4,6 +4,7 @@
 #define VF4RT_NATIVE_H
 
 #include "sh4.h"
+#include <stddef.h>
 
 /* builds the block table of the main program and starts watching stores into
  * its code; image is the file the translation was made from; 0 on success */
@@ -19,6 +20,14 @@ int rt_native_run(sh4 *c);
  * first instruction (the BIOS stand-in starts the other program from it:
  * rt_native.c); 0 on success, else the Test switch stops the game as before */
 int rt_native_power_on(void);
+
+/* a snapshot of a run of this build (snapshot_save_mem from a frame hook,
+ * while the game, not its test program, ran) into the machine, and the run
+ * goes on from where it was taken: see rt_native.c. Before rt_native_run:
+ * 0 on success. From the frame hook while the game runs: does not return
+ * on success (the run starts again from the snapshot). Else -1:
+ * snapshot_error says why and the machine is as it was */
+int rt_native_load(const unsigned char *data, size_t size);
 
 /* the program running now: PROGRAM_MAIN or PROGRAM_TEST (tables.h) */
 int rt_native_program(void);

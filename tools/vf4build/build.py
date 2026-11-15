@@ -57,12 +57,14 @@ def units(gen_dirs, tables_cs, tc, version):
         out.append((s, mflags))
     for tables_c in tables_cs:
         out.append((tables_c, mflags + ["-O0", "-g0"]))
-    hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ["-I" + R("host"), "-I" + R("ui"),
+    hflags = COMMON + tc.sdl_cflags + MACHINE_INC + ["-I" + R("host"), "-I" + R("ui"), "-I" + R("crypto"),
                                                      '-DVF4FT_VERSION="%s"' % version,
                                                      '-DVF4FT_SOURCE="sources %s"' % source_id()]
     for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c", "updates.c",
-              "art.c", "cards.c", "udp.c", "session.c"):
+              "art.c", "cards.c", "udp.c", "session.c", "snap_patch.c", "secure.c"):
         out.append((R("host", s), hflags))
+    for s in ("monocypher.c", "monocypher-ed25519.c"):    # the two-PC game's cryptography (runtime/crypto, ORIGIN.md)
+        out.append((R("crypto", s), COMMON + ["-I" + R("crypto")]))
     for s in ("ui.c", "fonts.c", "options.c", "kofi_badge.c", "card_editor.c"):    # the menu's drawing kit (runtime/ui)
         out.append((R("ui", s), hflags))
     return out

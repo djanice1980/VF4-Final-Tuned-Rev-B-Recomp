@@ -3,7 +3,8 @@
  * player's controls for each vertical blank, a few vertical blanks ahead
  * (the input delay). One PC hosts, as player 1 or player 2 (its choice),
  * the other joins as the other player. When the session ends, the host's
- * game can go on alone (the caller's choice); the joining PC's stops.
+ * game can go on alone (the caller's choice), and another PC can join it
+ * later (session_open, below); the joining PC's stops.
  *
  * The start: the joining PC says which build it is and sends its player's
  * card; the host answers with the cabinet (its backup, coins, region,
@@ -95,5 +96,94 @@ int session_status(char *buf, size_t n);
 
 /* at the end: the socket closes, the other PC is told */
 void session_end(void);
+
+/* ---- a PC joining a game going on (docs/design.md section 49) ----
+ *
+ * Once the session has ended and the host's game goes on alone, another PC
+ * (of the same build) can join it as the other player. Both PCs keep a
+ * snapshot of their machine at the end of the session's start-up, the
+ * reference: the host its own, and the joining PC, which replays the
+ * session's start as it was (the same cabinet, both players' cards then,
+ * no inputs), its copy, the same run to that vertical blank. The host
+ * then sends only the difference from the reference to its machine as it
+ * is now (snap_patch.h), with the joining player's card in its unit; the
+ * joining PC loads it, and both go on from the next vertical blank as a
+ * session again. */
+
+/* the host, on the machine's thread, once session_frame has said the
+ * session ended: the other PC is told, and the session stays open for
+ * another to join. The reference is the machine at the end of vertical
+ * blank ref_frame, ref_size bytes, snap_hash ref_hash. 0, or -1 when it
+ * cannot (the network failed): then session_end */
+int session_open(unsigned ref_frame, size_t ref_size, unsigned long long ref_hash);
+
+/* the host, on the machine's thread while it plays alone: 1 once a
+ * joining PC has its copy at the reference: *p is its player, *same 1 when
+ * its copy is the host's reference to the byte (else the difference is
+ * made from nothing). The join is then the machine's to finish
+ * (session_late_send) or give up (session_late_cancel) */
+int session_late_ready(session_player *p, int *same);
+
+/* the host, after session_late_ready, each vertical blank it waits for
+ * the game on the joining player's side to end (card_wait 1: the card of
+ * the player who left is still in use there): 1 while the joining PC is
+ * still there, 0 when it has gone */
+int session_late_still(int card_wait);
+
+/* the host: the difference from the reference to its machine at the end
+ * of vertical blank frame (patch, n bytes: the session frees it) goes to
+ * the joining PC; card_in 1 when the joining player's card went into its
+ * unit. The session runs again from frame + 1 (session_frame), inputs from
+ * frame + 1 + delay. 0, or -1 when the joining PC has gone (patch freed) */
+int session_late_send(unsigned char *patch, size_t n, unsigned frame, int card_in);
+
+/* the host: the join cannot go on (why goes to the joining PC); the
+ * session is open again */
+void session_late_cancel(const char *why);
+
+/* the joining PC, after session_connect: 1 when it joins a game going on
+ * (session_connect's start is the session's start as it was; this PC's
+ * player is the one it sent), with the host's reference vertical blank */
+int session_late(unsigned *ref_frame);
+
+/* the joining PC, on the machine's thread, once it has its own snapshot
+ * at the reference (ref_frame, ref_size bytes, snap_hash ref_hash): waits
+ * for the host's difference. 0 with *patch (free it), *n, the vertical
+ * blank it was taken at and whether this PC's card went in; -1 when the
+ * session ended (session_status says why) */
+int session_late_get(unsigned ref_frame, size_t ref_size, unsigned long long ref_hash, unsigned char **patch,
+                     size_t *n, unsigned *frame, int *card_in);
+
+/* the joining PC: the host's machine could not be made or loaded here
+ * (why); the session ends and the host is told */
+void session_late_failed(const char *why);
+
+/* 1 while a PC is joining a game going on (both PCs), for the note */
+int session_joining(void);
+
+/* the host playing alone: 1 when another PC can join, with this PC's
+ * address to join in where (n bytes; "" when it has none) */
+int session_can_join(char *where, size_t n);
+
+/* The join code (docs/design.md section 50, secure.h). The host makes a
+ * code of six digits as it starts to wait, and again each time a player
+ * leaves; a joining PC must have typed it (the key exchange fails
+ * otherwise). A code works once. After three wrong codes typed for it, it
+ * no longer works, until the host's player asks for a new one (the game's
+ * menu, Join code).
+ *
+ * The joining PC: the code as typed (--code, or two-pc.txt), before
+ * session_connect. 0, or -1 when it is not six digits */
+int session_code_typed(const char *typed);
+
+/* the host: whether another PC can join now, and with what code
+ * (SESSION_CODE_SHOWN: "482 913" in buf; SESSION_CODE_GONE: three wrong
+ * codes were typed, so there is none until session_code_new) */
+enum { SESSION_CODE_NONE, SESSION_CODE_SHOWN, SESSION_CODE_GONE };
+int session_code(char *buf, size_t n);
+
+/* the host, while another PC can join: a new code (the old one no longer
+ * works) */
+void session_code_new(void);
 
 #endif

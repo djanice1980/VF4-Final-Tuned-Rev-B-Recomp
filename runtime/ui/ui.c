@@ -1497,7 +1497,8 @@ void ui_rows(float x, float y, float w, float h, float row_h, const ui_row *rows
             ui_icon(UI_I_CHEVRON, right - row_h * 0.2f, mid, row_h * 0.42f, arrow);
             break;
         case UI_ROW_TEXT:
-            ui_text_in(UI_REGULAR, vsize, x + w * 0.45f, mid, right - x - w * 0.45f, 2, 0, UI_MUTED, r->value);
+            ui_text_in(r->strong ? UI_MEDIUM : UI_REGULAR, vsize, x + w * 0.45f, mid, right - x - w * 0.45f, 2, 0,
+                       r->strong ? UI_TEXT : UI_MUTED, r->value);
             break;
         case UI_ROW_PAD:
         case UI_ROW_KEYS: {

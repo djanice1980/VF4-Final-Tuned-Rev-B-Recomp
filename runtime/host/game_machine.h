@@ -6,6 +6,8 @@
 #ifndef VF4FT_GAME_MACHINE_H
 #define VF4FT_GAME_MACHINE_H
 
+#include <stddef.h>
+
 #define GAME_PICTURE_W 640
 #define GAME_PICTURE_W_MAX 1280     /* the widest wide screen (game_machine_wide) */
 #define GAME_PICTURE_H 480
@@ -170,5 +172,26 @@ unsigned long long game_machine_hash(void);
  * return (the frame function is left, as the run goes on from the power-on
  * state) */
 void game_machine_restart(int coins, int net);
+
+/* Snapshots of the whole machine (docs/design.md section 48): another
+ * process of this build takes the machine as it is and goes on from there,
+ * the same run. From the frame function: the machine is saved at the end
+ * of this vertical blank, once its inputs have gone in. */
+void game_machine_snapshot_ask(void);
+
+/* on the machine's thread, after the vertical blank asked for: 1 with the
+ * snapshot in *data (*size bytes; the caller frees it with free) and its
+ * vertical blank in *frame; 0 when none is waiting; -1 when it could not be
+ * taken (the test program was running, or memory ran out) */
+int game_machine_snapshot_get(unsigned char **data, size_t *size, unsigned *frame);
+
+/* the machine from a snapshot of this build, and the run goes on from it,
+ * its next frame function at the vertical blank after the snapshot's.
+ * After game_machine_init and whatever goes in after it (backup, cards),
+ * before game_machine_run: 0. From the frame function while the game (not
+ * its test program) runs: does not return (the frame function is left, as
+ * game_machine_restart leaves it), so call it holding nothing. Else -1 with
+ * the reason in game_machine_why (the machine is as it was) */
+int game_machine_resume(const unsigned char *data, size_t size);
 
 #endif

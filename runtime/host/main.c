@@ -55,14 +55,21 @@
  *   --screen-hz HZ    for tests: the screen's refresh rate is HZ, not the one SDL reports
  *   --hash-every N    for tests: logs the machine's fingerprint (main RAM and the registers) every N
  *                     vertical blanks, to compare two runs (docs/design.md section 45)
- *   --host [PORT]     a two-PC game (session.h, docs/design.md sections 46 and 47): this PC hosts and
- *                     waits for the other on UDP port PORT (default 29404); the game starts when it
- *                     joins. Should the other PC leave, this PC's game goes on with its player alone
+ *   --snapshot-at N FILE  for tests: the whole machine at the end of vertical blank N into FILE
+ *                     (docs/design.md section 48)
+ *   --resume FILE     for tests: the run goes on from FILE's snapshot (made by this build), after
+ *                     the user's files are in
+ *   --host [PORT]     a two-PC game (session.h, docs/design.md sections 46, 47, 49 and 50): this PC
+ *                     hosts and waits for the other on UDP port PORT (default 29404), showing a join
+ *                     code; the game starts when it joins. Should the other PC leave, this PC's game
+ *                     goes on with its player alone, and another PC can join it (--join, as before,
+ *                     with the new code the note and the menu show) as the other player
  *   --host-player N   with --host: this PC's player, 1 (the default) or 2
  *   --join ADDRESS    a two-PC game: this PC joins the host at ADDRESS ("192.168.1.20", "pc-name",
- *                     "192.168.1.20:29404") as the player the host is not. The host's cabinet (backup,
- *                     coins, region, network, card units) is used; this PC's own files are not changed
- *                     but for its card. Its game stops when the host's leaves
+ *                     "192.168.1.20:29404") as the player the host is not, with --code. The host's
+ *                     cabinet (backup, coins, region, network, card units) is used; this PC's own files
+ *                     are not changed but for its card. Its game stops when the host's leaves
+ *   --code CODE       with --join: the six digits the host's game shows (each code works once)
  *   --delay N         with --host: the input delay in vertical blanks (default 2)
  *
  * Settings (M6): user/settings.txt (settings.h), written by the launcher's
@@ -104,6 +111,7 @@
 #include "menu.h"
 #include "options.h"
 #include "session.h"
+#include "snap_patch.h"
 #include "ui.h"
 #include "updates.h"
 
@@ -189,6 +197,7 @@ static int in_session;                  /* --host or --join */
 static int session_delay = SESSION_DELAY;
 static session_start sess_mine, sess;
 static SDL_AtomicInt window_quit;       /* the window is closing: a machine waiting for nothing goes on to its stop */
+static int session_stopped;             /* machine thread: session_frame said the session ended */
 static int session_alone;               /* machine thread: the host's game goes on alone */
 static SDL_AtomicInt alone_ms;          /* when it began (SDL_GetTicks, | 1; 0 not), for the window's note */
 static SDL_AtomicInt session_over;      /* the session ended and this PC's game stopped */
@@ -196,6 +205,20 @@ static char own_card[CARD_NAME_MAX];    /* this PC's player's card profile ("" n
 static unsigned char own_card_last[GAME_CARD_SIZE];     /* as written last (or put in) */
 static struct { unsigned frame; int have; unsigned char c[GAME_CARD_SIZE]; } own_snap[8];
 static unsigned own_card_done;          /* the check vertical blank written last */
+/* a PC joining a game going on (session.h, docs/design.md section 49): the machine at the end
+ * of the session's start-up, the reference, kept by the host and by a joining PC's copy */
+static int ref_step;                    /* 0 not yet, 1 asked for, 2 kept, 3 none */
+static unsigned char *ref_data;
+static size_t ref_size;
+static unsigned ref_frame;
+static unsigned long long ref_hash;
+static int late_join;                   /* this PC joins a game going on, until it has the host's machine */
+static int late_step;                   /* host: 0, 1 a PC is joining (the card), 2 the machine asked for */
+static session_player late_p;           /* host: the joining player */
+static int late_same;                   /* host: its copy is the reference */
+static int late_card_in;                /* the joining player's card went into its unit */
+static unsigned char *late_buf;         /* joining PC: the host's machine as loaded (freed the frame after) */
+static int late_loaded;                 /* joining PC: it has just been loaded */
 
 /* the picture in tex (w x h, RGBA) to a BMP file: waits for the GPU */
 /* reads a texture back (w x h, RGBA bytes): use gets its pixels, or NULL */
@@ -799,6 +822,7 @@ static int session_start_up(void)
     }
     if (session_connect(&sess_mine, &sess, session_hash))
         return -1;
+    late_join = session_late(NULL);
     if (sess.region < 0 || sess.region >= REGIONS)
         sess.region = REGION_JAPAN;
     sess.coins = sess.coins == COINS_ARCADE ? COINS_ARCADE : COINS_FREE_PLAY;
@@ -811,14 +835,18 @@ static int session_start_up(void)
     start_cfg.cards = sess.cards;
     if (!host)
         backup_ok = 0;          /* the host's cabinet: this PC's backup.bin is not written */
-    logf_("two-PC game: this PC is player %d; the host's cabinet: coins %s, region %s, network %s, card units %s, "
-          "%s; input delay %d", sess.side + 1, sess.coins == COINS_ARCADE ? "arcade" : "free play",
-          settings_region_text[sess.region], sess.network ? "on" : "off",
-          sess.cards ? "on" : "off", sess.backup ? "its backup" : "a blank backup", sess.delay);
+    logf_("two-PC game: this PC is player %d; the host's cabinet%s: coins %s, region %s, network %s, card units %s, "
+          "%s; input delay %d", sess.side + 1, late_join ? " as the session began (a game going on)" : "",
+          sess.coins == COINS_ARCADE ? "arcade" : "free play", settings_region_text[sess.region],
+          sess.network ? "on" : "off", sess.cards ? "on" : "off", sess.backup ? "its backup" : "a blank backup",
+          sess.delay);
     return 0;
 }
 
-/* after game_machine_init: the host's cabinet and both players' cards */
+/* after game_machine_init: the host's cabinet and both players' cards. A PC
+ * joining a game going on starts from the session's start as it was: both
+ * cards then are in memory only, and its own card comes with the host's
+ * game (late_after_load) */
 static void session_load(void)
 {
     backup_apply(sess.backup ? sess.backup_bytes : NULL, sess.coins, sess.network);
@@ -837,10 +865,11 @@ static void session_load(void)
         if (game_machine_card_put(side, p->card == SESSION_CARD_BYTES ? p->bytes : NULL))
             continue;
         logf_("player %d: %s (%s%s)", side + 1, p->name, p->card == SESSION_CARD_BYTES ? "its card" : "a card never used",
-              side == sess.side ? ", this PC's" : ", from the other PC: kept in memory only");
+              late_join ? ", as the session began: kept in memory only"
+              : side == sess.side ? ", this PC's" : ", from the other PC: kept in memory only");
     }
     const session_player *me = &sess.player[sess.side];
-    if (me->card != SESSION_CARD_NONE && me->name[0]) {
+    if (!late_join && me->card != SESSION_CARD_NONE && me->name[0]) {
         SDL_strlcpy(own_card, me->name, sizeof own_card);
         game_machine_card_peek(sess.side, own_card_last);
     }
@@ -880,6 +909,52 @@ static void audio_frame(int ahead)
 }
 static unsigned frames_max;
 static unsigned hash_every;             /* --hash-every: the machine's fingerprint every this many vertical blanks */
+static const char *snap_path;           /* --snapshot-at N FILE: the machine at vertical blank snap_at into FILE */
+static unsigned snap_at;
+static const char *resume_path;         /* --resume FILE: the run goes on from FILE's snapshot */
+
+/* --snapshot-at: the snapshot taken at the end of vertical blank snap_at into its file */
+static void snapshot_file(void)
+{
+    unsigned char *data;
+    size_t size;
+    unsigned frame;
+    int got = game_machine_snapshot_get(&data, &size, &frame);
+    if (!got)
+        return;
+    if (got < 0)
+        logf_("snapshot: the machine could not be saved at vertical blank %u", snap_at);
+    else {
+        char tmp[4300];
+        SDL_snprintf(tmp, sizeof tmp, "%s.new", snap_path);
+        if (SDL_SaveFile(tmp, data, size) && SDL_RenamePath(tmp, snap_path))
+            logf_("snapshot: the machine at the end of vertical blank %u into %s (%zu bytes)", frame, snap_path, size);
+        else
+            logf_("snapshot: cannot write %s: %s", snap_path, SDL_GetError());
+        free(data);
+    }
+    snap_path = NULL;
+}
+
+/* --resume: after the machine is made and the user's files are in */
+static int resume_file(void)
+{
+    size_t n = 0;
+    void *data = SDL_LoadFile(resume_path, &n);
+    if (!data) {
+        logf_("resume: cannot read %s: %s", resume_path, SDL_GetError());
+        return 1;
+    }
+    int bad = game_machine_resume(data, n);
+    SDL_free(data);
+    if (bad) {
+        logf_("resume: %s: %s", resume_path, game_machine_why());
+        return 1;
+    }
+    net_first = 0;          /* the machine's own backup came with it */
+    logf_("resume: the machine from %s (%zu bytes)", resume_path, n);
+    return 0;
+}
 static SDL_AtomicInt machine_state;     /* 0 starting, 1 running, 2 init failed, 3 stopped, 4 a two-PC game that
                                          * did not start (no machine) */
 static Uint32 machine_event;            /* an SDL event type: the machine has stopped */
@@ -887,6 +962,168 @@ static Uint32 machine_event;            /* an SDL event type: the machine has st
 /* pacing and how busy the machine is, logged every 10 seconds of frames */
 static Uint64 due, busy_since, busy_ns, busy_max_ns;
 static unsigned busy_frames, resyncs;
+
+/* ---- a PC joining a game going on (docs/design.md section 49) ---- */
+
+/* machine thread: the reference, the machine at the end of the first
+ * vertical blank after the start-up (the host, and a PC joining a game
+ * going on, whose copy reaches the same vertical blank the same) */
+static void session_reference(unsigned frame, int booting)
+{
+    if (ref_step == 0 && !booting && (session_role() == SESSION_HOST || late_join)) {
+        game_machine_snapshot_ask();
+        ref_step = 1;
+        return;
+    }
+    if (ref_step != 1)
+        return;
+    unsigned f;
+    int got = game_machine_snapshot_get(&ref_data, &ref_size, &f);
+    if (!got)
+        return;
+    if (got < 0) {
+        ref_step = 3;
+        logf_("vertical blank %u: this PC's machine could not be kept as the session's reference: %s", frame,
+              late_join ? "it cannot join the game going on" : "no other PC can join later");
+        if (late_join) {
+            late_join = 0;
+            session_late_failed("This PC could not keep its copy of the session's start.");
+        }
+        return;
+    }
+    ref_step = 2;
+    ref_frame = f;
+    Uint64 t0 = SDL_GetTicksNS();
+    ref_hash = snap_hash(ref_data, ref_size);
+    logf_("the session's reference: the machine at the end of vertical blank %u, %zu bytes, fingerprint %016llx "
+          "(%.1f ms)", f, ref_size, ref_hash, (SDL_GetTicksNS() - t0) / 1e6);
+}
+
+/* the joining PC, at the vertical blank after its reference: the host's
+ * machine, its difference from the reference, then the run goes on from
+ * it (this does not return); when it cannot, the session ends */
+static void late_take(void)
+{
+    unsigned char *patch, *snap;
+    size_t pn, sn;
+    unsigned f;
+    int card_in;
+    late_join = 0;
+    if (session_late_get(ref_frame, ref_size, ref_hash, &patch, &pn, &f, &card_in)) {
+        free(ref_data);             /* the session ended: session_frame says so */
+        ref_data = NULL;
+        ref_step = 3;
+        return;
+    }
+    Uint64 t0 = SDL_GetTicksNS();
+    int bad = snap_patch_apply(ref_data, ref_size, patch, pn, &snap, &sn);
+    free(patch);
+    free(ref_data);                 /* a joining PC never hosts: its reference has done its work */
+    ref_data = NULL;
+    ref_step = 3;
+    if (bad) {
+        logf_("the host's game came damaged (a difference of %zu bytes)", pn);
+        session_late_failed("The host's game came damaged.");
+        return;
+    }
+    logf_("the host's game: its machine at the end of vertical blank %u, %zu bytes from a difference of %zu "
+          "(%.0f ms); this PC's card %s", f, sn, pn, (SDL_GetTicksNS() - t0) / 1e6,
+          card_in ? "is in its unit" : "stays out");
+    late_buf = snap;
+    late_loaded = 1;
+    late_card_in = card_in;
+    due = 0;
+    busy_since = 0;
+    game_machine_resume(snap, sn);  /* the run goes on from it: does not return */
+    late_loaded = 0;
+    late_buf = NULL;
+    free(snap);
+    logf_("the host's game cannot run here: %s", game_machine_why());
+    session_late_failed("The host's game cannot run on this PC.");
+}
+
+/* the joining PC, at the first vertical blank of the host's game: its own
+ * player's card (when it went in) is written as the session agrees on it */
+static void late_after_load(unsigned frame)
+{
+    late_loaded = 0;
+    free(late_buf);
+    late_buf = NULL;
+    const session_player *me = &sess_mine.own;
+    sess.player[sess.side] = *me;
+    if (late_card_in && me->card != SESSION_CARD_NONE && me->name[0]) {
+        SDL_strlcpy(own_card, me->name, sizeof own_card);
+        game_machine_card_peek(sess.side, own_card_last);
+    }
+    logf_("vertical blank %u: the host's game runs here; this PC is player %d (card %s)", frame, sess.side + 1,
+          own_card[0] ? own_card : "none");
+}
+
+/* the host playing alone, each vertical blank: a joining PC's copy is at
+ * the reference; once the card unit of its side is free, the joining
+ * player's card goes in and the machine is taken at the end of this
+ * vertical blank; at the next its difference from the reference goes over
+ * and the session runs again from there */
+static void late_host(unsigned frame)
+{
+    int side = !sess.side;          /* the joining player's */
+    if (late_step == 0) {
+        if (!session_late_ready(&late_p, &late_same))
+            return;
+        late_step = 1;
+    }
+    if (late_step == 1) {
+        int held = sess.cards && game_machine_card_take(side);     /* the card of the player who left */
+        if (!session_late_still(held)) {
+            late_step = 0;
+            return;
+        }
+        if (held)
+            return;                 /* it leaves once the game on that side lets go of it */
+        late_card_in = sess.cards && late_p.card != SESSION_CARD_NONE &&
+                       !game_machine_card_put(side, late_p.card == SESSION_CARD_BYTES ? late_p.bytes : NULL);
+        game_machine_snapshot_ask();
+        late_step = 2;
+        return;
+    }
+    unsigned char *snap, *patch = NULL;
+    size_t sn, pn = 0;
+    unsigned f;
+    int got = game_machine_snapshot_get(&snap, &sn, &f);
+    if (!got)
+        return;
+    late_step = 0;
+    Uint64 t0 = SDL_GetTicksNS();
+    int bad = got < 0;
+    if (!bad) {
+        bad = snap_patch_make(late_same ? ref_data : NULL, late_same ? ref_size : 0, snap, sn, &patch, &pn);
+        free(snap);
+    }
+    if (bad) {
+        logf_("vertical blank %u: this game could not be copied for player %d's PC", frame, side + 1);
+        session_late_cancel("The host could not copy its game.");
+        if (late_card_in)
+            game_machine_card_take(side);
+        return;
+    }
+    logf_("vertical blank %u: this game at the end of vertical blank %u (%zu bytes) for player %d's PC: a "
+          "difference of %zu bytes from %s (%.0f ms)", frame, f, sn, side + 1, pn,
+          late_same ? "the reference" : "nothing", (SDL_GetTicksNS() - t0) / 1e6);
+    if (session_late_send(patch, pn, f, late_card_in)) {
+        logf_("player %d's PC has gone: this game goes on alone", side + 1);
+        if (late_card_in)
+            game_machine_card_take(side);
+        return;
+    }
+    sess.player[side] = late_p;
+    session_alone = 0;
+    session_stopped = 0;
+    SDL_SetAtomicInt(&alone_ms, 0);
+    due = 0;
+    busy_since = 0;
+    logf_("vertical blank %u: player %d joined the game going on (card %s); the two-PC game runs again from "
+          "vertical blank %u", frame, side + 1, late_card_in ? late_p.name : "none", f + 1);
+}
 
 /* machine thread, once per vertical blank (game_frame_fn) */
 static void on_frame(unsigned frame, const unsigned char *rgb, int w, int booting, game_input *in)
@@ -896,6 +1133,10 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
         unsigned long long h = game_machine_hash();
         logf_("state: vertical blank %u: %016llx (%.2f ms)", frame, h, (SDL_GetTicksNS() - t0) / 1e6);
     }
+    if (snap_path && frame == snap_at)
+        game_machine_snapshot_ask();
+    else if (snap_path && frame > snap_at)
+        snapshot_file();
     Uint64 now = SDL_GetTicksNS();
     if (busy_since) {
         Uint64 b = now - busy_since;
@@ -935,19 +1176,28 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
     /* a two-PC game: this PC's player is its player-1 controls (and --press's p1); the inputs of
      * this vertical blank are the session's, both players', the same on both PCs. Once it has
      * ended the host's game goes on alone (docs/design.md section 47): its player's controls,
-     * now with no input delay, the other player's none. The joining PC's machine waits until
-     * the window closes, its note saying why (a test run stops) */
+     * now with no input delay, the other player's none, and another PC can join it (section
+     * 49). The joining PC's machine waits until the window closes, its note saying why (a test
+     * run stops) */
     if (in_session) {
         game_input mine = *in;
-        static int over;
-        if (!over && session_frame(frame, booting, mine.player[0], (int)mine.coin[0], in)) {
-            over = 1;
+        if (late_loaded)
+            late_after_load(frame);
+        session_reference(frame, booting);
+        if (late_join && ref_step == 2)
+            late_take();                    /* does not return once the host's game is in */
+        if (session_alone)
+            late_host(frame);
+        if (!session_stopped && session_frame(frame, booting, mine.player[0], (int)mine.coin[0], in)) {
+            session_stopped = 1;
             backup_save();
             if (session_role() == SESSION_HOST && !SDL_GetAtomicInt(&window_quit)) {
                 session_alone = 1;
                 logf_("vertical blank %u: the two-PC game is over; this PC's game goes on alone (player %d)", frame,
                       sess.side + 1);
-                session_end();              /* the network thread stops, the other PC is told */
+                /* the other PC is told; another can join, or (no reference) the network thread stops */
+                if (ref_step != 2 || session_open(ref_frame, ref_size, ref_hash))
+                    session_end();
                 SDL_SetAtomicInt(&alone_ms, (int)((Uint32)SDL_GetTicks() | 1));
             } else {
                 logf_("vertical blank %u: the two-PC game is over", frame);
@@ -960,7 +1210,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
             in->coin[sess.side] = mine.coin[0];
             if (frame % SESSION_CHECK == 0)
                 own_card_alone(frame);
-        } else if (over) {
+        } else if (session_stopped) {
             memset(in, 0, sizeof *in);
             if (frames_max)
                 game_machine_stop();
@@ -1074,18 +1324,25 @@ static int SDLCALL machine_main(void *arg)
     }
     game_machine_cards(in_session ? sess.cards : cfg_.cards);
     game_machine_region(in_session ? sess.region : cfg_.region);
-    if (game_machine_init(image_path, dimm_path, dimm_key, in_session || !silent, on_frame)) {
-        SDL_SetAtomicInt(&machine_state, 2);
-    } else {
+    int made = !game_machine_init(image_path, dimm_path, dimm_key, in_session || !silent, on_frame);
+    if (made) {
         if (in_session) {
             session_load();
         } else {
             backup_load();
             cards_load();
         }
+        if (resume_path && resume_file())
+            made = 0;
+    }
+    if (!made) {
+        SDL_SetAtomicInt(&machine_state, 2);
+    } else {
         SDL_SetAtomicInt(&machine_state, 1);
         int bad = game_machine_run();
         logf_("machine stopped%s: %s", bad ? " by itself" : "", game_machine_why());
+        if (snap_path)
+            snapshot_file();
         backup_save();
         cards_save();
         if (session_alone)
@@ -1471,6 +1728,8 @@ static void menu_show_as(int notice)
     r.refresh = screen_refresh(main_win);
     r.deck = settings_steam_deck();
     r.session = in_session;
+    r.join_code = in_session && session_role() == SESSION_HOST ? session_code : NULL;    /* the same values */
+    r.join_code_new = session_code_new;
     session_paused(1);              /* the other PC waits, and says why */
     if (notice)
         menu_open_notice(&cfg_, &r, notice);
@@ -2107,6 +2366,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--deck-product") && v) settings_steam_deck_test(argv[++i]);
         else if (!strcmp(a, "--screen-hz") && v) screen_hz_test = (float)SDL_atof(argv[++i]);
         else if (!strcmp(a, "--hash-every") && v) hash_every = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--snapshot-at") && v && i + 2 < argc) {
+            snap_at = (unsigned)strtoul(argv[++i], NULL, 10);
+            snap_path = argv[++i];
+        }
+        else if (!strcmp(a, "--resume") && v) resume_path = argv[++i];
         else if (!strcmp(a, "--host")) {
             int port = 0;
             if (v && v[0] >= '0' && v[0] <= '9')
@@ -2119,6 +2383,9 @@ int main(int argc, char **argv)
             session_host_side(n - 1);
         }
         else if (!strcmp(a, "--join") && v) session_config(SESSION_GUEST, 0, argv[++i]);
+        else if (!strcmp(a, "--code") && v) {
+            if (session_code_typed(argv[++i])) { fprintf(stderr, "vf4ft: --code: the host's six digits\n"); return 2; }
+        }
         else if (!strcmp(a, "--delay") && v) {
             session_delay = atoi(argv[++i]);
             if (session_delay < 1 || session_delay > 30) { fprintf(stderr, "vf4ft: --delay: 1 to 30\n"); return 2; }
@@ -2212,10 +2479,10 @@ int main(int argc, char **argv)
     }
     if (!SDL_GetPathInfo(user_dir, NULL) && !SDL_CreateDirectory(user_dir))
         logf_("cannot make %s: %s", user_dir, SDL_GetError());
-    /* the launcher's Two PCs (docs/design.md sections 46 and 47): user/two-pc.txt asks for a
-     * two-PC game once ("host", "host 2" as player 2, or "join ADDRESS", then the time it was
-     * written), however the game is started (through Steam too). It is removed as it is read;
-     * one older than two minutes is not used */
+    /* the launcher's Two PCs (docs/design.md sections 46, 47 and 50): user/two-pc.txt asks for a
+     * two-PC game once ("host", "host 2" as player 2, or "join ADDRESS CODE", then the time it
+     * was written), however the game is started (through Steam too). It is removed as it is
+     * read; one older than two minutes is not used */
     if (session_role() == SESSION_OFF) {
         char rp[4300];
         SDL_snprintf(rp, sizeof rp, "%stwo-pc.txt", user_dir);
@@ -2233,21 +2500,35 @@ int main(int argc, char **argv)
             int join = !SDL_strncmp(what, "join ", 5) && what[5];
             int host = !SDL_strcmp(what, "host") || !SDL_strcmp(what, "host 1") ? 1
                        : !SDL_strcmp(what, "host 2") ? 2 : 0;
+            /* "join ADDRESS CODE": the code after the address (not logged: it is the joining
+             * player's to type) */
+            char *code_at = join ? SDL_strchr(what + 5, ' ') : NULL;
+            if (code_at)
+                *code_at++ = 0;
             if (age < 0 || age > 120)
                 logf_("two-pc.txt is %lld seconds old: not used (\"%s\")", age, what);
             else if (!host && !join)
-                logf_("two-pc.txt: \"%s\" is not \"host\", \"host 2\" or \"join ADDRESS\"", what);
+                logf_("two-pc.txt: \"%s\" is not \"host\", \"host 2\" or \"join ADDRESS CODE\"", what);
             else {
-                logf_("two-pc.txt (the launcher's Two PCs): \"%s\"", what);
+                logf_("two-pc.txt (the launcher's Two PCs): \"%s\"%s", what,
+                      join ? code_at ? ", with a code" : ", with no code" : "");
                 session_config(join ? SESSION_GUEST : SESSION_HOST, 0, join ? what + 5 : NULL);
                 if (host)
                     session_host_side(host - 1);
+                if (code_at && session_code_typed(code_at))
+                    logf_("two-pc.txt: the code is not six digits");
             }
+            if (code_at)
+                SDL_memset(code_at, 0, SDL_strlen(code_at));
             SDL_free(t);
         }
     }
     /* the notices pause the game: not in a two-PC game, where they would pause both PCs */
     in_session = session_role() != SESSION_OFF;
+    if (in_session && (snap_path || resume_path)) {     /* the session takes its own snapshots (section 49) */
+        fprintf(stderr, "vf4ft: --snapshot-at and --resume are not for a two-PC game\n");
+        return 2;
+    }
     kofi_setup(frames_max || nshots || presses || key_items || unpaced || in_session);
     refresh_setup(frames_max || nshots || presses || key_items || unpaced || in_session);
     {
@@ -2720,16 +3001,39 @@ int main(int argc, char **argv)
         refresh_turn(have_picture, now_ms);
         /* a two-PC game's note: waiting for the other player, or why it ended and what now (the
          * host's game going on alone: for 8 seconds) */
-        static char note[320];
+        static char note[320], said[320];
+        static Uint64 said_ms;          /* when the session's words last changed */
         if (in_session) {
             char now_note[320];
             session_status(now_note, sizeof now_note);
-            Uint32 alone = (Uint32)SDL_GetAtomicInt(&alone_ms);
-            if (alone && (Uint32)now_ms - alone > 8000)
+            if (strcmp(now_note, said)) {
+                SDL_strlcpy(said, now_note, sizeof said);
+                said_ms = now_ms;
+            }
+            /* a PC joining (section 49) is said until it has joined */
+            int alone = SDL_GetAtomicInt(&alone_ms) != 0, joining = session_joining();
+            char where[96];
+            if (!joining && alone && now_ms - said_ms > 8000) {
                 now_note[0] = 0;
-            else if (now_note[0] && (alone || SDL_GetAtomicInt(&session_over)))
-                SDL_strlcat(now_note, alone ? " Your game goes on: you play alone." : " The game stopped.",
-                            sizeof now_note);
+            } else if (!joining && now_note[0] && !alone && SDL_GetAtomicInt(&session_over)) {
+                SDL_strlcat(now_note, " The game stopped.", sizeof now_note);
+            } else if (!joining && now_note[0] && alone) {
+                /* section 50: the join code with the address */
+                char code[16];
+                int cs = session_code(code, sizeof code);
+                size_t l = SDL_strlen(now_note);
+                if (!session_can_join(where, sizeof where) || cs == SESSION_CODE_NONE)
+                    SDL_strlcat(now_note, " Your game goes on: you play alone.", sizeof now_note);
+                else if (cs == SESSION_CODE_GONE)
+                    SDL_strlcat(now_note, " Your game goes on: you play alone. For another PC to join, get a new "
+                                "code in the game's menu (Join code).", sizeof now_note);
+                else if (!where[0])
+                    SDL_snprintf(now_note + l, sizeof now_note - l, " Your game goes on: you play alone until another "
+                                 "PC joins, with the code %s.", code);
+                else
+                    SDL_snprintf(now_note + l, sizeof now_note - l, " Your game goes on: you play alone, and another "
+                                 "PC can join %s with the code %s.", where, code);
+            }
             if (strcmp(now_note, note)) {
                 SDL_strlcpy(note, now_note, sizeof note);
                 ov_dirty = 1;

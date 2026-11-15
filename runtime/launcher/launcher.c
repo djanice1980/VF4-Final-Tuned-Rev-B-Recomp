@@ -120,15 +120,16 @@ static const char *argv0 = "";
  * its menu, or a game that ended with an error. */
 #define GAME_EXIT_LAUNCHER 64
 static int play_direct;             /* the switch */
-/* Two PCs (docs/design.md sections 46 and 47): the game reads its
- * user/two-pc.txt ("host", "host 2" or "join ADDRESS", then the time)
+/* Two PCs (docs/design.md sections 46, 47 and 50): the game reads its
+ * user/two-pc.txt ("host", "host 2" or "join ADDRESS CODE", then the time)
  * however it starts, through Steam too, which passes no arguments */
 static char two_addr[64];           /* the host's address, typed */
+static char two_code[7];            /* the host's join code, typed (six digits; never kept: each works once) */
 static char two_last[64];           /* the address last joined (launcher-two-pc.txt) */
 enum { TWO_HOST1, TWO_HOST2, TWO_JOIN };
 static int two_choice;              /* the last chosen (launcher-two-pc.txt): the note's first button */
 static char two_req[80];            /* what Play asks the game for next: "" (a game alone), "host", "host 2",
-                                     * "join ADDRESS" */
+                                     * "join ADDRESS CODE" */
 static char two_written[1100];      /* the request file Play wrote, while its start may still fail */
 static int direct_run;              /* this run started the game directly (the window stays hidden) */
 static int game_close;              /* the game it started ended with 0 (Quit): close */
@@ -647,7 +648,7 @@ static void follow_fullscreen(const char *when);
 
 /* a note over the Play page (Add to Steam's, and Play's under plain Wine): only its buttons answer */
 enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE, POP_RENAME, POP_DELETE, POP_RINGNAME, POP_TWO,
-       POP_JOIN };
+       POP_JOIN, POP_CODE };
 static int pop;
 static int steam_proton;            /* the tool set Proton for the entry */
 static void pop_open(int kind);
@@ -1437,7 +1438,7 @@ enum {
     B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_USE_FOUND, B_GAME_DIR,
     B_DIRECT, B_POP_OK, B_POP_RETRY, B_POP_PLAY, B_POP_STEAM, B_POP_YES,
     B_CP_P1, B_CP_P2, B_CP_EDIT, B_CP_NEW, B_CP_COPY, B_CP_RENAME, B_CP_DELETE, B_ED_SAVE, B_ED_CANCEL,
-    B_TWO, B_POP_HOST, B_POP_HOST2, B_POP_JOIN, B_POP_JOIN_GO, B_COUNT
+    B_TWO, B_POP_HOST, B_POP_HOST2, B_POP_JOIN, B_POP_JOIN_GO, B_POP_CODE_GO, B_COUNT
 };
 static int focus = -1;
 #define HITS 24
@@ -1493,6 +1494,7 @@ static int enabled(int b)
     case B_UPDATE: return built && root[0] && !proc;
     case B_PLAY: case B_TWO: case B_POP_HOST: case B_POP_HOST2: case B_POP_JOIN: return built && !game_proc && !proc;
     case B_POP_JOIN_GO: return built && !game_proc && !proc && two_addr[0];
+    case B_POP_CODE_GO: return built && !game_proc && !proc && strlen(two_code) == 6;
     case B_STEAM: return built && root[0] && !proc && !built_linux;
     case B_CANCEL: return (proc || shot_working) && !cancel_at;
     case B_REBUILD: return root[0] && !proc;
@@ -1537,6 +1539,8 @@ static int page_buttons(int *ids)
         }
         if (pop == POP_JOIN)
             ids[n++] = B_POP_JOIN_GO;
+        if (pop == POP_CODE)
+            ids[n++] = B_POP_CODE_GO;
         ids[n++] = B_POP_OK;
         return n;
     }
@@ -2052,15 +2056,19 @@ static void cp_event(const SDL_Event *e)
 /* a note that takes a name: the typed text, Backspace, OK and Cancel */
 static int text_pop(void)
 {
-    return pop == POP_RENAME || pop == POP_RINGNAME || pop == POP_JOIN;
+    return pop == POP_RENAME || pop == POP_RINGNAME || pop == POP_JOIN || pop == POP_CODE;
 }
 
-/* the note's typed text: a name, or Two PCs' address */
+/* the note's typed text: a name, or Two PCs' address or code */
 static char *pop_field(size_t *n)
 {
     if (pop == POP_JOIN) {
         *n = sizeof two_addr;
         return two_addr;
+    }
+    if (pop == POP_CODE) {
+        *n = sizeof two_code;
+        return two_code;
     }
     *n = sizeof cp_text;
     return cp_text;
@@ -2093,6 +2101,7 @@ static void text_event(const SDL_Event *e)
             size_t cl = *s < 0x80 ? 1 : (*s & 0xe0) == 0xc0 ? 2 : (*s & 0xf0) == 0xe0 ? 3 : (*s & 0xf8) == 0xf0 ? 4 : 1;
             int ok = pop == POP_RINGNAME ? ced_name_char(*s, len)
                      : pop == POP_JOIN   ? len + 1 < size && two_addr_char(*s)
+                     : pop == POP_CODE   ? len + 1 < size && *s >= '0' && *s <= '9'
                                          : len + cl < size && (*s >= 0x20 && *s != 0x7f);
             for (size_t i = 1; i < cl; i++)
                 ok &= (s[i] & 0xc0) == 0x80;
@@ -2104,8 +2113,10 @@ static void text_event(const SDL_Event *e)
             for (size_t i = 0; i < cl && *s; i++)
                 s++;
         }
-        if (pop == POP_JOIN)        /* an address typed: Enter joins it */
+        if (pop == POP_JOIN)        /* an address typed: Enter goes on to the code */
             focus = B_POP_JOIN_GO;
+        if (pop == POP_CODE)        /* the code typed: Enter joins */
+            focus = B_POP_CODE_GO;
         return;
     }
     if (e->type != SDL_EVENT_KEY_DOWN && e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN)
@@ -2395,7 +2406,11 @@ static int two_write(void)
         return -1;
     }
     SDL_strlcpy(two_written, path, sizeof two_written);
-    say("Two PCs: \"%s\" in %s", two_req, path);
+    memset(t, 0, sizeof t);
+    /* the log has the request without the join code (the joining player's to type) */
+    const char *code_at = strncmp(two_req, "join ", 5) ? NULL : strchr(two_req + 5, ' ');
+    say("Two PCs: \"%.*s\"%s in %s", code_at ? (int)(code_at - two_req) : (int)strlen(two_req), two_req,
+        code_at ? " and a code" : "", path);
     return 0;
 }
 
@@ -2518,20 +2533,25 @@ static void press(int b)
             SDL_strlcpy(two_addr, two_last, sizeof two_addr);
         pop_open(POP_JOIN);
         break;
+    case B_POP_JOIN_GO:             /* the address typed: the code next (docs/design.md section 50) */
+        two_code[0] = 0;
+        pop_open(POP_CODE);
+        break;
     case B_POP_HOST:
     case B_POP_HOST2:
-    case B_POP_JOIN_GO: {
+    case B_POP_CODE_GO: {
         if (text_pop())
             SDL_StopTextInput(win);
         pop = POP_NONE;
         focus = B_TWO;
         two_choice = b == B_POP_HOST ? TWO_HOST1 : b == B_POP_HOST2 ? TWO_HOST2 : TWO_JOIN;
         two_save();
-        if (b == B_POP_JOIN_GO)
-            snprintf(two_req, sizeof two_req, "join %s", two_addr);
+        if (b == B_POP_CODE_GO)
+            snprintf(two_req, sizeof two_req, "join %s %s", two_addr, two_code);
         else
             SDL_strlcpy(two_req, two_choice_word[two_choice], sizeof two_req);
-        say("Two PCs: %s", b == B_POP_JOIN_GO ? "Join" : b == B_POP_HOST2 ? "Host as player 2" : "Host as player 1");
+        memset(two_code, 0, sizeof two_code);
+        say("Two PCs: %s", b == B_POP_CODE_GO ? "Join" : b == B_POP_HOST2 ? "Host as player 2" : "Host as player 1");
         press(B_PLAY);
         break;
     }
@@ -2570,6 +2590,11 @@ static void press(int b)
         if (pop == POP_JOIN) {      /* Back: Host or Join again */
             pop_open(POP_TWO);
             focus = B_POP_JOIN;
+            break;
+        }
+        if (pop == POP_CODE) {      /* Back: the address again */
+            memset(two_code, 0, sizeof two_code);
+            pop_open(POP_JOIN);
             break;
         }
         focus = pop == POP_WINE ? B_PLAY : pop == POP_RENAME ? B_CP_RENAME : pop == POP_DELETE ? B_CP_DELETE
@@ -3299,12 +3324,13 @@ static void pop_open(int kind)
               : kind == POP_RINGNAME    ? "card editor: the ring name"
               : kind == POP_TWO         ? "Two PCs: Host as player 1, Host as player 2, or Join"
               : kind == POP_JOIN        ? "Two PCs: Join's page, the host's address"
+              : kind == POP_CODE        ? "Two PCs: Join's page, the host's join code"
                                         : "Add to Steam: the note that it was added");
     pop = kind;
     focus = kind == POP_CLOSE_STEAM ? B_POP_RETRY : kind == POP_WINE ? B_POP_STEAM
           : kind == POP_RENAME || kind == POP_RINGNAME ? B_POP_YES
           : kind == POP_TWO ? (two_choice == TWO_HOST2 ? B_POP_HOST2 : two_choice == TWO_JOIN ? B_POP_JOIN : B_POP_HOST)
-          : kind == POP_JOIN ? B_POP_JOIN_GO : B_POP_OK;
+          : kind == POP_JOIN ? B_POP_JOIN_GO : kind == POP_CODE ? B_POP_CODE_GO : B_POP_OK;
     if (text_pop()) {
         cp_error[0] = 0;
         cp_fresh = 1;
@@ -3348,17 +3374,23 @@ static void draw_pop(void)
         t = "Rename the card";
         text = "Its new name, which is also its file's in user/cards (up to 31 characters).";
         break;
-    case POP_TWO:       /* docs/design.md sections 46 and 47 */
+    case POP_TWO:       /* docs/design.md sections 46, 47, 49 and 50 */
         t = "Two PCs";
         text = "Play against someone on another PC on your network. One PC hosts, as player 1 or player 2: its "
-               "game waits and shows that PC's address. The other PC joins that address as the other player. "
-               "Both need this same build of the game. The host's settings and saves are used; each player's "
-               "card stays on their own PC. If the joining player leaves, the host plays on alone. If Windows "
+               "game waits and shows that PC's address and a join code. The other PC joins that address with "
+               "that code, as the other player. Both need this same build of the game. The host's settings and "
+               "saves are used; each player's card stays on their own PC. If the joining player leaves, the host "
+               "plays on alone, and another PC can join that game the same way, with a new code. If Windows "
                "asks, allow the game through its firewall.";
         break;
     case POP_JOIN:
         t = "Join a host";
         text = "The host's address: its game shows it while it waits for you.";
+        break;
+    case POP_CODE:
+        t = "The join code";
+        text = "The six digits the host's game shows with its address (and in its menu, Join code). Each code "
+               "works once.";
         break;
     case POP_RINGNAME:
         t = "Ring name";
@@ -3429,8 +3461,13 @@ static void draw_pop(void)
     } else if (pop == POP_JOIN) {
         bx -= button_w("Back");
         button(B_POP_OK, bx, by, 0, BTN_H, "Back", 0, -1);
+        bx -= 14 + button_w("Next");
+        button(B_POP_JOIN_GO, bx, by, 0, BTN_H, "Next", 1, -1);
+    } else if (pop == POP_CODE) {
+        bx -= button_w("Back");
+        button(B_POP_OK, bx, by, 0, BTN_H, "Back", 0, -1);
         bx -= 14 + button_w("Join");
-        button(B_POP_JOIN_GO, bx, by, 0, BTN_H, "Join", 1, -1);
+        button(B_POP_CODE_GO, bx, by, 0, BTN_H, "Join", 1, -1);
     } else if (pop == POP_CLOSE_STEAM) {
         bx -= button_w("Close");
         button(B_POP_OK, bx, by, 0, BTN_H, "Close", 0, -1);
@@ -3892,19 +3929,22 @@ int main(int argc, char **argv)
             }
         /* the Play page under its notes: steam-started, steam-close, steam-added,
          * steam-added-plain (no pictures), wine-play, two-pc (Host as player 1,
-         * Host as player 2, Join...), two-pc-join (Join's page, an address typed) */
+         * Host as player 2, Join...), two-pc-join (Join's page, an address typed),
+         * two-pc-code (its next page, a code typed) */
         static const struct { const char *name; int kind; } pops[] = {
             {"steam-started", POP_FROM_STEAM}, {"steam-close", POP_CLOSE_STEAM}, {"steam-added", POP_ADDED},
             {"steam-added-plain", POP_ADDED}, {"wine-play", POP_WINE}, {"two-pc", POP_TWO},
-            {"two-pc-join", POP_JOIN},
+            {"two-pc-join", POP_JOIN}, {"two-pc-code", POP_CODE},
         };
         for (size_t i = 0; i < SDL_arraysize(pops); i++)
             if (!strcmp(shot_page, pops[i].name)) {
                 go(P_PLAY);
-                if (pops[i].kind == POP_TWO || pops[i].kind == POP_JOIN)
+                if (pops[i].kind == POP_TWO || pops[i].kind == POP_JOIN || pops[i].kind == POP_CODE)
                     two_load();     /* as Two PCs does */
-                if (pops[i].kind == POP_JOIN)
+                if (pops[i].kind == POP_JOIN || pops[i].kind == POP_CODE)
                     SDL_strlcpy(two_addr, "192.168.1.20", sizeof two_addr);
+                if (pops[i].kind == POP_CODE)
+                    SDL_strlcpy(two_code, "482913", sizeof two_code);
                 steam_proton = 1;
                 art_made = strcmp(shot_page, "steam-added-plain") != 0;
                 pop_open(pops[i].kind);

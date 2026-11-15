@@ -3200,3 +3200,367 @@ cards on, fingerprints every 500 vertical blanks):
   under Proton), for auto with `SteamDeck=1`, and after a game that turned
   Fullscreen on and gave the launcher back (exit 64); a 960 x 600 window
   for off, auto, and no settings file.
+
+## 48. The whole machine saved and resumed in another process (2026-11-15)
+
+The first step towards a second PC joining a game that is already going
+(the host playing alone, section 47): the joining PC cannot play the game
+from power on to catch up, so it has to take the machine as it is. This
+section shows that a machine saved part way through, loaded into a fresh
+process, goes on as the same run, on Linux and on Windows alike.
+
+**What a snapshot holds.** VF4debug's snapshots (runtime/machine/machine.c,
+used by its controller's sandbox): the processor, the hardware registers,
+the count of vertical blanks, the scheduled events (by their routines'
+registration order), the models' own state (maple, card units, graphics,
+sound and the sound chip, the cartridge, the DIMM board, the server
+stand-in, the inputs, the BIOS stand-in), and every memory area page by
+page (a page of zeros as one byte). A load checks the whole file before it
+changes anything, and refuses one whose parts have other sizes (another
+build).
+
+**What only the translated game keeps,** and how a resumed run gets it
+(`rt_native_load`, runtime/native/rt_native.c):
+
+- The blocks the game changed in its own code (section on code the game
+  changes): until the run starts, memory holds the program's own bytes, so
+  the load compares memory before and after and marks every block a
+  changed byte falls in, or whose compiled-in pool word it changes, as a
+  store would have. The game changes one block (0c149980) as it starts;
+  the resumed run marks it the same way.
+- The host's rounding mode for translated code: loaded from FPSCR as the
+  run starts (`rt_fpscr_loaded`); the interpreter sets its own before
+  every instruction.
+- The C frames of the routines the run was inside: there are none in the
+  new process. The run goes on from the saved PC with `rt_drive` in a loop:
+  it runs to a return at its level, and the next turn goes on in the code
+  after the call. That code runs on the interpreter (a routine's C cannot
+  start part way), but everything it calls runs as C again. The game's
+  main loop never returns, so its own few instructions stay interpreted:
+  measured, the resumed run was about 5 to 10% slower (5.0 to 5.6 ms a
+  vertical blank, unpaced, where the run from power on took 4.7 to 5.1). A
+  Restart or test mode goes back to the normal run from the power-on
+  state.
+- The test program's run is never saved (its tables are the other
+  program's); the save says it failed.
+- The exception depth dispatch.c counts is only the observer's, and the
+  renderer's state (the scenes it has taken from the graphics chip's
+  lists) is only what is drawn: neither is in a snapshot, and neither
+  changes the run. The resumed window has no picture until the game draws
+  its next frame.
+
+**Where it is taken.** At the end of the frame hook (`host_frame`), once
+the vertical blank's inputs have gone in: `game_machine_snapshot_ask` from
+the frame function, `game_machine_snapshot_get` at the next one. A resumed
+process makes its machine as usual (`game_machine_init`, the user's backup
+and cards), then `game_machine_resume`; its first frame function is at the
+vertical blank after the snapshot's. For tests: `--snapshot-at N FILE` and
+`--resume FILE`.
+
+**What was checked** (headless KWin, unpaced, sound chip on, cards off,
+presses: a game started at 3,400, a challenger at 9,000, fingerprints
+every 500 vertical blanks):
+
+- Run A from power on to vertical blank 20,000, saved at the end of 6,000
+  (the middle of the first round of stage 1). Run B, a new process with its
+  own empty user folder, resumed from that file with the same presses: all
+  28 fingerprints from 6,500 to 20,000 the same as A's, the same count of
+  instructions at the end (19,584,134,467), the same mode, and the pictures
+  at 6,060 and 9,000 the same to the pixel.
+- The same file resumed by the Windows build under Wine: the same 28
+  fingerprints, instruction count and pictures. The parts of a snapshot
+  have the same sizes in both builds (no `long`, no pointers).
+- A `--shot` asked for at 6,001 or 6,002 in the resumed run never
+  completes: the window has no picture yet, and the machine waits for the
+  picture to be saved. That is the test option's own limit (a shot needs a
+  picture already shown); the shots were moved to 6,060 and 9,000.
+
+**Its size.** 64,019,064 bytes at vertical blank 6,000: main RAM 27.8 MB
+of 32 (its program code among it), the ELAN geometry chip's RAM 20.1 MB,
+sound RAM 7.6 MB, the graphics chip's memory 6.0 MB, the models' state
+2.4 MB (1.7 of it the DIMM board's). zstd at level 1 makes 22.4 MB of it. A game booted to
+the title screen with no presses (vertical blank 5,900) already has 9,742 of
+those pages the same, so what differs is 24.1 MB, and `zstd --patch-from`
+that booted state makes 5.6 MB.
+
+**Next: joining a game that is going.** The plan this proves possible:
+the host, playing alone, keeps listening; a joining PC of the same build
+says hello; at the end of a vertical blank the host puts the joining
+player's card in that player's empty unit and takes a snapshot, then waits
+(its note: the other player is joining) while the snapshot goes over; the
+joining PC resumes it, and both go on in lockstep from the next vertical
+blank with the input delay, as section 46's start does. The size above
+decides how the snapshot is sent: whole and compressed, or as the
+difference from a game the joining PC boots by itself while it asks.
+
+## 49. Joining a game going on (2026-11-15)
+
+Once the joining player of a two-PC game leaves, the host's game goes on
+alone (section 47). Now another PC can join that game, as the player who
+left, and play on from where the game is. It joins the same way as at the
+start (Two PCs, Join…, the host's address); the host's note while it
+plays alone says that address.
+
+**What goes over.** The joining PC needs the host's whole machine (section
+48), about 64 MB. Most of it is the same as a machine that has only just
+started: the program's code, the graphics, the sound driver and its
+samples. So both PCs keep a snapshot of their machine at the end of the
+session's start-up, the reference, and the host sends only how its
+machine now differs from it:
+
+- The host takes its reference at the first vertical blank after the
+  start-up (`session_reference` in runtime/host/main.c) and keeps it all
+  session.
+- The joining PC makes the same reference itself. The host answers its
+  hello with the session's start as it was (a LATE in place of the
+  WELCOME): the cabinet's settings, the input delay, the backup as it was
+  then, both players' cards as they were then, and the reference's
+  vertical blank, size and fingerprint. The joining PC starts the game
+  from that, with no inputs, the boot fast-forwarded as always: the same
+  run, so the same machine at the same vertical blank (2,387 with a blank
+  backup and the network off). Both cards of that start are kept in
+  memory only; its own card file is not touched.
+- Once its copy is at the reference, it says so with the copy's
+  fingerprint (READY). The host compares it with its own. When they are
+  not the same (they always were in the tests), the difference is made
+  from nothing and is bigger, but the join still works.
+- The difference: runtime/host/snap_patch.c, a format made for this
+  program. The reference is indexed every 16 bytes; each position of the
+  machine now is looked up there, and in what came before it; the longer
+  match wins, and the rest are new bytes. It ends with the result's
+  fingerprint, which the joining PC checks. 13.5 MB for a machine at
+  vertical blank 10,386 (a game of stage 1 going on), 15 to 16 MB later in
+  the arcade run; made in 0.3 to 0.5 s, applied in 12 to 24 ms. zstd on top
+  saved only 15% (measured on section 48's pair of snapshots: 7.2 MB, 6.1
+  with zstd), so it is not used.
+
+**The join, step by step.** The host's machine thread does its part at the
+vertical blanks (`late_host`):
+
+1. A joining PC's copy is ready (`session_late_ready`).
+2. The card unit of the joining player's side: the card of the player who
+   left is taken out. If the game is still using it (that player left in
+   the middle of a game), it leaves only once that game is over; the join
+   waits, and both notes say so. Then the joining player's card goes in
+   (a card never used gets its number from the machine, as at the start).
+3. The machine is saved at the end of that vertical blank F.
+4. At the next vertical blank the difference is made and handed to the
+   session (`session_late_send`), and the session runs again from F + 1:
+   inputs from F + 1 + the delay, fingerprints every 60 vertical blanks,
+   exactly as section 46's start. The host's game runs its first
+   `delay` vertical blanks with no inputs and then waits for the joining
+   PC's, its note saying how much of the game has gone over.
+
+The joining PC, at the vertical blank after its reference, waits for the
+difference, makes the host's machine from it and loads it in the middle
+of its own run (`rt_native_load` from the frame hook: the C stack is left
+by `longjmp`, as a restart leaves it, and the changed code blocks are
+found again from the bytes, section 48). Its next frame function is at F +
+1, and its own card is now the one in its unit, written to its file as
+the two PCs agree on it.
+
+**The transfer.** 1,176-byte chunks (PATCH; 1,200 before section 50's
+seals), with the vertical blank F,
+the whole size and whether the card went in, so the first one to arrive
+says where the session goes on. The joining PC acknowledges every 16
+chunks and every 10 ms (all below a number, then a bit each for the next
+4,096); the host keeps at most 512 chunks on their way, sends one again
+when it is not acknowledged within 50 ms, and takes the joining PC's first
+INPUT as saying it has all of it. Both sockets ask for 4 MiB of buffer
+(udp.c), as a burst of 512 chunks is about 600 KB and Windows gives 64
+KiB.
+
+**After.** Each time the joining player leaves, the host is open again;
+the reference stays the one from the session's start. A PC that stops
+answering while it joins (15 s) or says it leaves is dropped and the host
+stays open. A PC that tries to join while a session runs is told "A game
+is going on there already"; while another is joining, "Another player is
+joining there now". Another build is refused as at the start.
+
+**What was checked** (headless KWin, unpaced, sound chip on, over
+loopback; A hosts, B joins at the start and leaves at vertical blank
+9,000; presses on every PC through the run; fingerprints every 500
+vertical blanks in each log):
+
+- Linux to Linux, cards off: C joined at 10,387; the difference, 13.5 MB in
+  11,242 datagrams, came in 68 ms; 427 session fingerprints agreed up to
+  36,000, and all 56 logged fingerprints of C (its own start-up from 500 to
+  2,000, then the host's game from 10,500) are A's.
+- Cards on, B leaving in the middle of a game: the join waited 10.7 s for
+  that game to end, then C's card went in. C left at 27,000 in the middle
+  of a game of its own and D joined (2.8 s wait for C's card). C's and D's
+  cards were written to their own files as the PCs agreed on them; 246 and
+  217 session fingerprints agreed; all logged fingerprints matched A's.
+- The Windows build under Wine joining a Linux host: 426 session
+  fingerprints agreed, all 56 logged ones matched. But the difference took
+  1.9 s, and 7,159 of its 11,239 chunks had to be sent again: the joining
+  socket's buffer was too small for the bursts over loopback. With the 4
+  MiB asked for (the system gave 4 MiB under Wine, 8 natively), the same
+  join took 150 ms with none sent again (Linux to Linux: 17 ms), and every
+  fingerprint still agreed.
+- A long game: the host played alone for an hour of the game's time
+  (217,282 vertical blanks) before C joined. The difference was 15.4 MB
+  (made in 307 ms; 12,829 datagrams in 25 ms, none sent again; applied in
+  12 ms), C's replay to the reference took 2.5 s as always, and the whole
+  join about 3 s; 79 session fingerprints agreed. The replay is only of
+  the start-up, so it takes as long after an hour as after a minute, and
+  the difference is the machine's changed memory, which does not grow
+  with time (13 to 16 MB in every run). Nothing of it is kept on disk:
+  the reference is in memory only (the joining PC frees its own once
+  used), and vf4ft.log starts again at each start of the game (about 36
+  KB of lines an hour while playing).
+
+**Not done.** The host can only be joined once a session has been played:
+a host that starts alone without waiting would need the reference taken
+the same way, which is a small step from here.
+
+## 50. The join code: only the PC told it joins (2026-11-15)
+
+Until now any PC that could reach the host's port could join, and one
+that wrote the joined PC's address on its datagrams could play as that
+player. Now the host's game shows a six-digit join code beside its
+address, and only a PC with that code joins; everything after is sealed
+with keys only the two PCs have.
+
+**The code.** Six digits from the system's random numbers (getrandom on
+Linux, BCryptGenRandom on Windows; 32 random bits, taken only below
+4,294,000,000 so each code is as likely). The host's note shows it while
+it waits for the other player and while its player plays alone, and the
+game's menu shows it in a row of its own, **Join code** (on the Game tab,
+in a two-PC game only). Each code works once: a PC that joins with it uses
+it up, and when that player leaves the host makes a new one. Three wrong
+codes and it stops working until the host's player chooses **Join code**
+in the menu for a new one; the note says a wrong code was typed and on
+which PC.
+
+A code that changed every 30 seconds was the first idea. It was not
+taken: a code an attacker can guess at forever, three tries each 30
+seconds, is weaker than one that stops after three, and with six digits
+three tries are 3 in 1,000,000. A new code needs the host's player.
+
+**Why no certificates.** A certificate says who is at the other end
+because someone both ends trust signed it. Two people on one network have
+no one to sign them; what they share is the code, read off one screen and
+typed on the other. A password-authenticated key exchange makes keys from
+just that. Certificates would come in with a server between PCs on the
+internet, which this does not have.
+
+**The exchange: CPace.** draft-irtf-cfrg-cpace-21, CPACE-X25519-SHA512.
+Each PC makes a point on Curve25519 from the code (the generator) and a
+random number of its own; each sends its point, and both make the same
+key only if they used the same code. Nothing that goes over tells the
+code: a PC that does not know it learns nothing it could test codes
+against afterwards, so each guess takes an exchange with the host, which
+counts it.
+
+1. The joining PC sends HELLO: the build (first, as before), 16 random
+   bytes (CPace's sid), its point Ya, and zeros up to the old HELLO's
+   size.
+2. The host answers CHALLENGE: its point Yb. The same HELLO again (the
+   CHALLENGE lost) gets the same CHALLENGE; a newer HELLO replaces the
+   try (one at a time). A point that gives the neutral element is not
+   answered.
+3. The joining PC makes the key and sends PROOF: its player (the card)
+   sealed with it. Only now does anything depend on the key; had the host
+   sent something sealed first, an attacker could take it away and test
+   every code against it.
+4. PROOF opens on the host: the code was right, the code is used up, and
+   the host sends WELCOME (or LATE, section 49) sealed. It does not open:
+   a wrong code, counted, and a REFUSE says so.
+
+The code is CPace's PRS; its channel words (CI) are "VF4FT two PCs: " and
+the build, so another build makes other keys too; ADa is "joining PC",
+ADb "host". The key (ISK, 64 bytes) gives one key for each direction
+(keyed BLAKE2b).
+
+**Monocypher.** runtime/crypto holds Monocypher 4.0.3 (X25519, Elligator 2,
+SHA-512, BLAKE2b, XChaCha20-Poly1305), unchanged from its release; see
+ORIGIN.md. It is used under CC0 1.0, one of the two licenses it offers.
+One difference from the draft is bridged in runtime/host/secure.c:
+Monocypher's Elligator map reads 254 bits of its number (its
+representatives keep the top two for padding), while CPace's
+decodeUCoordinate keeps 255. The map depends only on the number's square,
+so it is first reduced below p and, when 2^254 or more, replaced by p
+minus it (in constant time). The draft's own vectors need this: their
+generator's hash has bit 254 set.
+
+**Sealed datagrams.** Every datagram after the exchange, both ways
+(inputs, BYE, the backup's chunks, PATCH, their acknowledgements, LATE,
+WELCOME, REFUSE): the header stays clear (its kind gets bit 7) and is
+checked, an 8-byte counter follows (the nonce), then the body,
+encrypted, and a 16-byte tag; 24 bytes more in all. A datagram that does
+not open, or whose counter came before (a window of 2,048), is dropped
+without an answer, and it does not move the window. PATCH's chunks are
+1,176 bytes now, so a sealed one is 1,223 bytes: under the 1,232 an IPv6
+path always carries in one piece.
+
+**Other builds.** The HELLO keeps the build at the front and the old
+size, so a 0.5.6 host refuses a new PC as another build (and says so),
+and a new host refuses a 0.5.6 PC the same way.
+
+**Where the code is typed.** The launcher's Join… now has a second page,
+The join code (digits only; Join is pressed when there are six). The game
+takes `--code CODE` with `--join`, and two-pc.txt's line is `join ADDRESS
+CODE`; the launcher logs the request without the code, and the game wipes
+it once read. The host logs each code it makes ("the join code is now
+...") in its own vf4ft.log: the tests read it there, and it is no more
+than its own screen shows.
+
+**What PCs outside the session can make the host do.** Answer a HELLO of
+the full size (a REFUSE or a CHALLENGE, both shorter than the HELLO, so a
+forged sender's address gets no more than it sent; a shorter HELLO gets
+nothing), and log a line about it: 20 such lines while one code stands,
+then one saying the rest are not logged. Text that comes from another PC
+(its build, a REFUSE's words) goes into the log and the notes as
+printable ASCII only. They can still get in the way: a forged REFUSE
+before the keys exist ends a join, and three wrong codes stop the code.
+They cannot join or play as the player.
+
+**Tests.** tests/secure (`make -C tests/secure test`, 56 checks): the
+draft's vectors (B.1.1 to B.1.5: the generator, both points, the key from
+both sides) and its low-order points (B.1.10: those that give the neutral
+element are refused), the generator and the map against an independent
+Python version (tests/secure/reference.py; 40 generators of other lengths
+and 57 numbers, among them the edges of the reduction), the codes (each
+digit as likely; what is taken as typed), and the seals (any byte
+changed, a datagram again, out of order, the window's edges, the other
+direction's key, keys forgotten). With the reduction taken out, 7 of them
+fail. Over loopback (headless KWin, unpaced; the codes read from the
+host's log):
+
+- A hosts. X types a wrong code: "The host said no: The code is not
+  right." B joins with the code, plays to vertical blank 5,000 and leaves;
+  the host makes a new code. A script (poke.py) then sends from a port of
+  its own: an old build's HELLO (refused as another build), a HELLO cut
+  short (no answer), a point that gives the neutral element (no answer), a
+  random point (a CHALLENGE) and a PROOF of random bytes (refused, the code
+  not right), 300 datagrams of junk (answers only to its full-size HELLOs,
+  REFUSEs), and 60 HELLOs of other builds with control bytes in their
+  names (all answered; the log has 20 lines about PCs outside, one saying
+  the rest are not logged, and no byte that is not printable). C then
+  joins the game going on with the new code. All of B's and C's logged
+  fingerprints are A's (10 and 31).
+- Three wrong codes (X1 to X3; the third is told the code no longer
+  works), then Y with the right one: refused, "Three wrong codes were
+  typed...". The host's menu (Join code, chosen with `--keys`) makes a new
+  code and C joins with it: 12.96 MB in 11,023 datagrams, 37 ms, none sent
+  again; every fingerprint agrees.
+- The Windows build under Wine as the PC that joins the game going on:
+  12.04 MB in 132 ms, all 32 logged fingerprints A's.
+- The Windows build under Wine as the host (its codes and its points from
+  BCryptGenRandom), the same three wrong codes and new code: the same
+  answers, and C (Linux) took 12.96 MB in 120 ms, none sent again; every
+  fingerprint agrees.
+
+**Not covered.** The host's machine, as it comes to a joining PC (section
+49), is read with its layout checked to the last byte (sizes, the event
+list, every model's state and memory area), but what the models' state
+says is used as it comes: control.c takes its count of held buttons
+from it and walks an array of 32 with it. A host whose code a player
+typed could make the joining PC write outside that array. It is the
+other player's PC, which the code says it is; before the game goes past
+one network, each model's state should be checked when a snapshot is
+read (counts, positions, indices) and a fuzzer run over snapshots.
+When the host's REFUSE after a wrong code is lost, the joining PC sends
+its PROOF again, which the host does not answer, and it says after 60 s
+that the host did not take its code.

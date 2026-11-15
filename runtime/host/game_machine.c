@@ -18,6 +18,7 @@
 #include "tables.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 _Static_assert(GAME_PICTURE_W == VIEW_W && GAME_PICTURE_H == VIEW_H && GAME_PICTURE_W_MAX == VIEW_W_MAX,
@@ -44,6 +45,51 @@ static char why[700];
 /* control.c's "save" writes the harness's reports; the game has no script */
 void write_reports(void)
 {
+}
+
+/* game_machine_snapshot_ask: taken at the end of host_frame */
+static int snap_wanted, snap_state;     /* snap_state: 0 none waiting, 1 one, -1 it failed */
+static u8 *snap_data;
+static size_t snap_size;
+static unsigned snap_frame;
+
+void game_machine_snapshot_ask(void)
+{
+    snap_wanted = 1;
+}
+
+int game_machine_snapshot_get(unsigned char **data, size_t *size, unsigned *frame)
+{
+    int s = snap_state;
+    if (s == 1) {
+        *data = snap_data;
+        *size = snap_size;
+        *frame = snap_frame;
+        snap_data = NULL;
+    }
+    snap_state = 0;
+    return s;
+}
+
+static void snapshot_take(void)
+{
+    snap_wanted = 0;
+    free(snap_data);
+    snap_data = NULL;
+    snap_frame = machine_frame;
+    /* the test program's run is not resumed (rt_native_load) */
+    snap_state = rt_native_program() == PROGRAM_MAIN && !snapshot_save_mem(&snap_data, &snap_size) ? 1 : -1;
+    if (snap_state < 0)
+        snap_data = NULL;
+}
+
+int game_machine_resume(const unsigned char *data, size_t size)
+{
+    if (rt_native_load(data, size)) {
+        snprintf(why, sizeof why, "%s", snapshot_error);
+        return -1;
+    }
+    return 0;
 }
 
 /* machine_host_frame: after the controller's step of this vertical blank */
@@ -82,6 +128,8 @@ static void host_frame(sh4 *c)
             inputs.coins[ch]++;
         inputs.coin_switch[ch] = on;
     }
+    if (snap_wanted)
+        snapshot_take();
 }
 
 unsigned long long game_machine_hash(void)

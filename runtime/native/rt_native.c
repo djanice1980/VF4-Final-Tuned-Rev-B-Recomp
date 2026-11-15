@@ -80,6 +80,8 @@ enum { CODE_LIT = 1,        /* part of a pool word compiled in as a constant */
        CODE_START = 2 };    /* a block starts here (a delay slot can also start a block of its own) */
 static u8 *code_host;       /* the host address of 0x0c020000 */
 static u32 code_slots;      /* halfwords from 0x0c020000 the two tables cover */
+static u8 *code_orig;       /* the game's code as its run began (rt_native_init), for a snapshot's load */
+static u32 code_orig_len;
 static u32 rt_store_at;     /* the translated store being made (rt_io_write), else 0 */
 static sh4 *rt_cpu;
 
@@ -249,6 +251,7 @@ static int code_watch_init(const char *image)
 
 static jmp_buf rt_end;
 static int rt_end_code;
+static int rt_resumed;      /* rt_native_load: the run goes on from the snapshot's place (rt_native_run) */
 
 /* the tables of a program's translation, and the watch on its code; image:
  * the file it was translated from, or NULL when memory holds its bytes */
@@ -281,7 +284,18 @@ static int program_tables(int program, const char *image)
 
 int rt_native_init(const char *image)
 {
-    return program_tables(PROGRAM_MAIN, image);
+    if (program_tables(PROGRAM_MAIN, image))
+        return 1;
+    /* memory holds the program's own bytes until the run starts */
+    free(code_orig);
+    code_orig_len = 2 * code_slots;
+    code_orig = malloc(code_orig_len);
+    if (!code_orig) {
+        fprintf(stderr, "vf4ft: out of memory for the code tables\n");
+        return 1;
+    }
+    memcpy(code_orig, code_host, code_orig_len);
+    return 0;
 }
 
 /* the block starting at pc, run as C: only at the program's own (P0)
@@ -725,6 +739,54 @@ static void program_switch(sh4 *c, int program)
 
 /* ---- the run ---------------------------------------------------------------------- */
 
+/* A snapshot of a run of this build (snapshot_save_mem, taken in a frame
+ * hook): memory, the processor and the models as they were, part way into
+ * the game's code. What this file keeps that no snapshot holds is made to
+ * fit what was loaded:
+ *   - the blocks the game had changed: memory against the program's own
+ *     bytes, kept as the run began (rt_native_init);
+ *   - the host's rounding mode: rt_native_run loads it from FPSCR;
+ *   - the routines the run was inside of have no C frames here:
+ *     rt_native_run goes on from c->pc instead of the game's start.
+ * Before the run, the machine is loaded and the run starts from it. From
+ * the frame hook while the run goes on, the machine is loaded there and
+ * the run starts again from rt_native_run's frame, as a restart does (the
+ * call does not return). Only the game (main.bin) is loaded, never into the
+ * test program's run. -1 when it cannot be: the machine is as it was and
+ * snapshot_error says why. */
+#define RT_LOADED (-1)              /* rt_switch_to: a snapshot was loaded */
+
+static int code_refit(void)
+{
+    if (program_tables(PROGRAM_MAIN, NULL) || code_orig_len != 2 * code_slots)
+        return -1;
+    for (u32 off = 0; off < code_orig_len; off++)
+        if (code_orig[off] != code_host[off])
+            code_byte_changed(off);
+    rt_skip_entry = 0;
+    rt_resumed = 1;
+    return 0;
+}
+
+int rt_native_load(const u8 *data, size_t size)
+{
+    if (rt_program_now != PROGRAM_MAIN || !code_orig || (rt_cpu && !rt_restart_set)) {
+        snprintf(snapshot_error, sizeof snapshot_error, "the machine is not running the game");
+        return -1;
+    }
+    if (snapshot_load_mem(data, size))
+        return -1;
+    if (rt_restart_set) {
+        rt_switch_to = RT_LOADED;
+        longjmp(rt_restart, 1);
+    }
+    if (code_refit()) {
+        snprintf(snapshot_error, sizeof snapshot_error, "out of memory for the code tables");
+        return -1;
+    }
+    return 0;
+}
+
 int rt_native_run(sh4 *c)
 {
     rt_cpu = c;
@@ -735,11 +797,29 @@ int rt_native_run(sh4 *c)
     if (!control_next(c))
         return STOP_NONE;
     c->stop = 0;
-    if (setjmp(rt_restart))
-        program_switch(c, rt_switch_to);    /* test mode: the other program, from its start (or a restart) */
+    if (setjmp(rt_restart)) {
+        if (rt_switch_to == RT_LOADED) {    /* rt_native_load from the frame hook */
+            if (code_refit()) {
+                machine_stop(c, STOP_FATAL, "a snapshot was loaded, and the code tables cannot be made");
+                rt_finish(STOP_FATAL);
+            }
+            c->stop = 0;
+        } else {
+            program_switch(c, rt_switch_to);    /* test mode: the other program, from its start (or a restart) */
+            rt_resumed = 0;
+        }
+    }
     rt_restart_set = 1;
     rt_fpscr_loaded(c);
     rt_event(c, c->pc);
+    if (rt_resumed)
+        /* resumed (rt_native_load): rt_drive runs to a return at its level,
+         * and each one goes on into the code after the call, which runs on
+         * the interpreter (a routine's C cannot start part way) while what it
+         * calls runs as C again. The game's main loop never returns: this
+         * ends by a stop, as the run from the start does */
+        for (;;)
+            rt_drive(c);
     rt_drive(c);
     rt_host_fault(c, 103, c->pc, 0);
     return STOP_FATAL;

@@ -27,6 +27,9 @@ void udp_quit(void);
 udp_sock udp_open(int port, const udp_addr *like);
 void udp_close(udp_sock s);
 
+/* the socket's receive buffer in bytes as the system gave it (-1 unknown) */
+int udp_room(udp_sock s);
+
 /* "host", "host:port", "[v6]:port" or a bare IPv6 address into an address
  * (an IPv4 one when the name has both); default_port when the text names
  * none. 0, or -1 (udp_error) */

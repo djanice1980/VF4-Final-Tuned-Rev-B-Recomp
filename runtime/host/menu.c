@@ -13,14 +13,16 @@ enum { TAB_GAME, TAB_CARDS, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
 static const char *const tab_names[TABS] = { "Game", "Cards", "Picture", "Sound", "Controls" };
 
 /* a row: an option (options.h), one of these actions, or a control */
-enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_EDIT1, A_EDIT2, A_CONTROL };
+enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_EDIT1, A_EDIT2, A_CONTROL,
+       A_CODE };
 
-#define ROWS 11
+#define ROWS 12
 #define ROWS_X 70.0f        /* the rows' place on the panel (menu_draw), for the mouse */
 #define ROWS_W 640.0f
 #define ROW_H 39.0f
 static const int tab_rows[TABS][ROWS] = {
-    [TAB_GAME] = { A_RESUME, OPT_CREDITS, OPT_NETWORK, OPT_REGION, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, -1 },
+    [TAB_GAME] = { A_RESUME, A_CODE, OPT_CREDITS, OPT_NETWORK, OPT_REGION, A_TEST, A_RESTART, A_UPDATES, A_KOFI,
+                   A_LAUNCHER, A_QUIT, -1 },
     [TAB_CARDS] = { OPT_CARD1, A_EDIT1, OPT_CARD2, A_EDIT2, OPT_CARDS, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
@@ -72,6 +74,8 @@ void menu_open(settings *cfg, const menu_run *r)
              * units would change one of them only (the Cards tab keeps its Card units row) */
             if (run.session && (id == A_TEST || id == A_RESTART || id == OPT_CARD1 || id == OPT_CARD2 ||
                                 id == A_EDIT1 || id == A_EDIT2))
+                continue;
+            if (id == A_CODE && !run.join_code)     /* the host of a two-PC game only */
                 continue;
             if ((id != A_UPDATES || gu_state() != GU_OFF) && (id != A_LAUNCHER || gu_launcher()))
                 shown_rows[t][nshown[t]++] = id;
@@ -339,6 +343,10 @@ int menu_command(int cmd)
             return row_id(row) == A_RESTART ? MENU_RESTART : row_id(row) == A_LAUNCHER ? MENU_LAUNCHER : MENU_QUIT;
         case A_UPDATES: gu_press(); return MENU_STAY;
         case A_KOFI: return MENU_KOFI;
+        case A_CODE:
+            if (run.join_code && run.join_code(NULL, 0) != MENU_CODE_NONE)
+                run.join_code_new();
+            return MENU_STAY;
         case A_EDIT1:
         case A_EDIT2: editor_open(row_id(row) - A_EDIT1); return MENU_STAY;
         case A_CONTROL: return MENU_STAY;
@@ -709,6 +717,18 @@ static void about_of(int id, const char **title, const char **text, const char *
                     "checks. Then A is Test (it chooses) and X is Service (it moves), as F2 and F3 are.";
         }
         break;
+    case A_CODE: {
+        int st = run.join_code ? run.join_code(NULL, 0) : MENU_CODE_NONE;
+        *title = "Join code";
+        *text = "Another PC joins this game with this PC's address and this code (on the launcher's Join "
+                "page). A code works once, and a new one is made each time a player leaves. Choose this for a "
+                "new code: the one before no longer works.";
+        if (st == MENU_CODE_NONE)
+            *note = "No other PC can join now: a player is here, or joining.";
+        else if (st == MENU_CODE_GONE)
+            *note = "Three wrong codes were typed, so the code no longer works. Choose this for a new one.";
+        break;
+    }
     case A_RESTART:
         *title = "Restart the game";
         *text = "Off and on again, as the cabinet's power switch. Records and settings are kept.";
@@ -898,6 +918,15 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         case A_RESTART: w->label = armed == A_RESTART ? "Restart the game? Choose it again" : "Restart the game"; break;
         case A_QUIT: w->label = armed == A_QUIT ? "Quit? Choose it again" : "Quit"; break;
         case A_KOFI: w->label = "Support on Ko-fi"; break;
+        case A_CODE: {
+            static char code[16];
+            int st = run.join_code ? run.join_code(code, sizeof code) : MENU_CODE_NONE;
+            w->label = "Join code";
+            w->kind = UI_ROW_TEXT;
+            w->value = st == MENU_CODE_SHOWN ? code : st == MENU_CODE_GONE ? "None: choose for a new one" : "None now";
+            w->strong = st == MENU_CODE_SHOWN;
+            break;
+        }
         case A_EDIT1:
         case A_EDIT2: {
             int held;
@@ -935,8 +964,9 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
     /* 39 units a row: a release's Game tab (ten rows, with Network, Region,
      * Check for updates and Open the launcher) fits in rh = 394 without
      * scrolling; at 46 Quit was below the fold (nine rows then), at 43 the
-     * tenth was. An eleventh row there needs this looked at again. The
-     * Controls tab scrolls. */
+     * tenth was. An eleventh row there needs this looked at again (Join
+     * code shows only in a two-PC game, which has no Test or Restart: nine
+     * rows). The Controls tab scrolls. */
     float ry = Y + 150, rh = H - 150 - 76;
     ui_rows(ROWS_X, ry, ROWS_W, rh, ROW_H, rows, n, row, &top);
 

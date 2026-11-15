@@ -78,14 +78,21 @@ offers Add to Steam, Play anyway or Cancel.
 **Two players on two PCs** (on one network, from 0.5.6): both PCs need the
 same release. On the PC that hosts, press **Two PCs** on the Play page,
 then **Host as player 1** or **Host as player 2**: its game shows this
-PC's address while it waits. On the other PC press **Two PCs**, then
-**Join…**, type that address and press **Join**: it is the other player.
-The host's settings and saves are used; each player's card stays on their
-own PC. If the joining player leaves, the host's game goes on and its
-player plays alone. If Windows asks, allow the game through its firewall
-(it uses UDP port 29404).
+PC's address and (from 0.5.7) a six-digit join code while it waits. On the other PC
+press **Two PCs**, then **Join…**, type that address, press **Next**, type
+the code and press **Join**: it is the other player. Each code works once,
+and three wrong ones stop it working; the host's player gets a new one in
+the game's menu (**Join code**). The host's settings and saves are used;
+each player's card stays on their own PC. If the joining player leaves,
+the host's game goes on and its player plays alone; from 0.5.7 another PC
+can then join that game the same way, with the new code the host's game
+shows, and takes over the other player's side, its own card in. If
+Windows asks, allow the game through its firewall (it uses UDP port
+29404).
 ([How it works](docs/design.md#46-two-pcs-on-a-lan-the-link-the-start-the-checks-2026-11-14);
-[choosing a side, playing on alone](docs/design.md#47-two-pcs-the-hosts-side-and-the-host-playing-on-alone-2026-11-15).)
+[choosing a side, playing on alone](docs/design.md#47-two-pcs-the-hosts-side-and-the-host-playing-on-alone-2026-11-15);
+[joining a game going on](docs/design.md#49-joining-a-game-going-on-2026-11-15);
+[the join code](docs/design.md#50-the-join-code-only-the-pc-told-it-joins-2026-11-15).)
 
 ## Screenshots
 
@@ -592,10 +599,14 @@ after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `dimm.key` beside it), `--log FILE`, `--silent` (no sound chip: VF4debug's
 mailbox model, as in M3), `--user DIR`, `--host [PORT]` and
 `--join ADDRESS[:PORT]` (a game on two PCs, UDP port 29404 unless given)
-with `--host-player N` (the host's player, 1 by default, or 2) and
+with `--code CODE` (the joining PC: the six digits the host's game shows),
+`--host-player N` (the host's player, 1 by default, or 2) and
 `--delay N` (its input delay in vertical blanks, 2 by default), and
 for tests `--hash-every N` (the machine's fingerprint in the log every N
-vertical blanks), `--press LIST`
+vertical blanks), `--snapshot-at N FILE` (the whole machine at the end of
+vertical blank N into FILE) and `--resume FILE` (the run goes on from
+FILE, made by the same build; [design.md s48](docs/design.md#48-the-whole-machine-saved-and-resumed-in-another-process-2026-11-15);
+neither with `--host` or `--join`), `--press LIST`
 (buttons at given vertical blanks, as `6500:p1:start,6800:p1:p+g`),
 `--art DIR` (no window: Steam's pictures from the attract sequence into
 DIR, as Add to Steam makes them; [design.md s36](docs/design.md#36-steams-pictures-for-the-entry-from-the-players-own-build-2026-11-13)),
@@ -688,6 +699,10 @@ Others' work in it:
   domain or MIT, as its own end says.
 - SDL3, which the builder downloads and the Windows release carries as
   `SDL3.dll`: zlib license.
+- [Monocypher](runtime/crypto/ORIGIN.md) 4.0.3, the cryptography of the
+  two-PC game's join code: used under CC0 1.0, one of the two licenses its
+  [LICENCE.md](runtime/crypto/LICENCE.md) offers (the other is BSD
+  2-clause, whose notices are kept).
 - Ko-fi's "Support me on Ko-fi" button
   ([runtime/ui/kofi_badge.png](runtime/ui/kofi_badge.png)), which Ko-fi
   gives creators to link to their page: it links to this project's.

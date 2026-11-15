@@ -135,7 +135,8 @@ class Toolchain:
             self.cc = [os.path.join(llvm, "bin", "x86_64-w64-mingw32-clang" + exe)]
             self.sdl_cflags = ["-I" + os.path.join(sdl, "include")]
             self.link = ["-mwindows", "-static", os.path.join(sdl, "lib", "libSDL3.dll.a"), "-lm", "-lpthread",
-                         "-lws2_32"]       # Windows' own sockets (the two-PC game, runtime/host/udp.c)
+                         "-lws2_32",       # Windows' own sockets (the two-PC game, runtime/host/udp.c)
+                         "-lbcrypt"]       # and its random numbers (BCryptGenRandom, runtime/host/secure.c)
             self.program = "vf4ft.exe"
             self.extra_files = [os.path.join(sdl, "bin", "SDL3.dll")]
         elif target == "linux":

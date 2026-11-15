@@ -185,6 +185,7 @@ typedef struct ui_row {
     int warn;               /* the label in red (a choice that asks again) */
     int off;                /* greyed: does nothing now */
     int waiting;            /* PAD, KEYS: waits for its key or button */
+    int strong;             /* TEXT: the value as a setting's (bright), not a note's: one to read off */
 } ui_row;
 /* rows from y down, each row_h high; the list scrolls to keep sel in view
  * (*top: the first row shown, kept between calls) */
