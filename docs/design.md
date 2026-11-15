@@ -2831,3 +2831,67 @@ times, 854 x 480, 1024 x 576, 1068 x 600, 1280 x 720, 1366 x 768, saved
 as `window = 768`; Auto at 16:9 1708 x 960 (Wayland) and 1600 x 900
 (X11, room 1920 x 1052); 21:9 at 1080 on a 2560 x 1080 screen a 2560 x
 1080 window, the picture 2560 x 1072.
+
+## 44. The Steam Deck: its screen's shape and the OLED's refresh rate (2026-11-14)
+
+David asked for the game to know the Steam Deck and the Deck OLED and to
+fill their screens on its own. Fullscreen's Auto already went fullscreen
+on a Deck (Steam's `SteamDeck=1`, section 20); what was missing was the
+picture's shape and, on the OLED, the refresh rate.
+
+**Which Deck** (`settings_steam_deck`, settings.c): the firmware's
+product name, `/sys/class/dmi/id/product_name`: Valve's board names,
+`Jupiter` for the LCD Deck and `Galileo` for the OLED. The Windows game
+runs under Proton on a Deck, where the Linux files are on Wine's Z: drive,
+so it reads `Z:\sys\class\dmi\id\product_name`, but only under Wine
+(`WINEPREFIX` or `STEAM_COMPAT_DATA_PATH` set): on a real Windows PC a Z:
+drive is something else. Neither name and `SteamDeck=1`: a Deck whose model
+is not known. It is read once; the log says `device: Steam Deck OLED`.
+
+**The picture** (`settings_defaults_here`): both Decks are 1280 x 800,
+16:10, so on a Deck the default Picture is 16:10 (section 39) instead of
+4:3, and with Fullscreen's Auto the game fills the screen with no bars.
+It is only the default: a settings.txt that says a picture keeps it. The
+launcher's Settings page uses the same defaults; the Steam artwork
+(`--art`, section 36) stays 4:3. A Deck known only by `SteamDeck=1` gets
+16:10 too (other handhelds running Steam's Deck interface may be 16:9;
+their player changes Picture once).
+
+**The refresh rate.** The game shows 60 pictures a second, paced by its
+own timer (`FRAME_NS`), and the window presents with vsync. A screen
+refreshing at a multiple of 60 (60, 120, 240) shows each picture for
+the same number of refreshes; at 90 Hz (the OLED's top rate) pictures are
+shown for one or two refreshes in turn, at 144 Hz for two or three, and
+the motion judders. The game cannot set the screen's rate: on a Deck it
+is Steam's (the Quick Access button, Performance, Use per-game profile,
+Refresh rate), elsewhere the system's. So it says so, once:
+
+- `settings_refresh_uneven(hz)`: the rate is known and not within 1 Hz of
+  a multiple of 60 (59.94 and 120 are even; 90, 75, 144 and 165 are not).
+- Two seconds into the picture (after the Ko-fi notice, section 26, when
+  that shows), main.c reads the window's screen's rate
+  (`SDL_GetCurrentDisplayMode`, logged as `screen: 144.00 Hz`). When it
+  is uneven, or on a Deck OLED whatever it reports (the per-game rate is
+  Steam's, and what gamescope reports to the game is not known to follow
+  it), the menu opens as a notice (`MENU_NOTICE_REFRESH`): "Set the
+  screen to 60 Hz", the steps, and OK.
+- `user/refresh-notice` says what it was shown for, `Steam Deck OLED` or
+  the rate (`144 Hz`), on its first line: it shows again only for
+  another screen. Test runs (`--frames`, `--keys` and so on) show it only
+  with `--refresh-notice N` and write nothing; `--deck-product FILE` and
+  `--screen-hz HZ` stand in for the firmware's name and the rate.
+- The Picture tab's Fullscreen row says the same in its note, every
+  time, while it applies.
+
+Checked, in a headless KWin (its virtual screen reports 60 Hz whatever
+its configuration says, hence `--screen-hz`): Linux and the Windows game
+under Wine with no settings.txt and a `Galileo` product file: `device:
+Steam Deck OLED`, fullscreen, 16:10, the 1280 x 800 screen filled, the
+notice at 60 Hz, then the Fullscreen row's note; `Jupiter` at 60 Hz:
+16:10 and no notice; a settings.txt with `picture = 4:3` on the OLED
+keeps 4:3; another product name: 4:3 and no device line (also the
+Windows game reading this PC's own name through Z:, and Wine's `type`
+of that file shows the name); 144 and 90 Hz: the notice naming the rate;
+two normal starts at 144 Hz: the first shows it and writes `144 Hz`, the
+second logs that it was shown and shows nothing. The launcher with
+`SteamDeck=1` shows Picture 16:10, without it 4:3. Not yet on a real Deck.

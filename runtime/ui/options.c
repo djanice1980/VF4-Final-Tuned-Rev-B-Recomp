@@ -38,9 +38,9 @@ const option_info options[OPT_COUNT] = {
                      "the window's edges still resizes it.", 0 },
     [OPT_PICTURE] = { "Picture",
                       "4:3 is the cabinet's screen, with bars at the sides of a wide one. 16:10 (the Steam "
-                      "Deck), 16:9 and 21:9 are wide: the cabinet's screen in the middle, nothing stretched, "
-                      "and the camera's view goes on at the sides (the writing and the 2D screens stay 4:3). "
-                      "Stretch fills the screen with the 4:3 picture.", 0 },
+                      "Deck's, its default there), 16:9 and 21:9 are wide: the cabinet's screen in the middle, "
+                      "nothing stretched, and the camera's view goes on at the sides (the writing and the 2D "
+                      "screens stay 4:3). Stretch fills the screen with the 4:3 picture.", 0 },
     [OPT_FILTER] = { "Scaling",
                      "How the picture is scaled to the screen: Sharp keeps its pixels square, Smooth blends "
                      "them.", 0 },

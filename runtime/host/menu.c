@@ -31,7 +31,7 @@ static settings *s;
 static menu_run run;
 static settings before;     /* as it was when opened */
 static int tab, row, top, armed = -1; /* armed: Restart or Quit, chosen once (the second choice does it) */
-static int notice, notice_focus;    /* the first start's Ko-fi notice; its buttons: 0 Support on Ko-fi, 1 Close */
+static int notice, notice_focus;    /* MENU_NOTICE_* (0 none); the Ko-fi notice's buttons: 0 Support on Ko-fi, 1 Close */
 static int kofi_said = -1;          /* the Ko-fi page was opened (1) or not (0) since the menu opened */
 /* for the mouse: the last drawing's target (0 until it is drawn after
  * opening: the hit tests are its), the notice's buttons and Ko-fi's badge
@@ -72,11 +72,11 @@ void menu_open(settings *cfg, const menu_run *r)
     }
 }
 
-void menu_open_notice(settings *cfg, const menu_run *r)
+void menu_open_notice(settings *cfg, const menu_run *r, int kind)
 {
     menu_open(cfg, r);
-    notice = 1;
-    notice_focus = 1;       /* Close: a button pressed as the notice comes up opens no browser */
+    notice = kind;
+    notice_focus = 1;       /* Close (Ko-fi's): a button pressed as the notice comes up opens no browser */
 }
 
 void menu_kofi(int opened)
@@ -275,6 +275,15 @@ static int editor_command(int cmd)
 
 int menu_command(int cmd)
 {
+    if (notice == MENU_NOTICE_REFRESH) {    /* its one button, OK */
+        switch (cmd) {
+        case MENU_OK:
+        case MENU_BACK:
+        case MENU_ESCAPE:
+        case MENU_ERASE: return MENU_RESUME;
+        default: return MENU_STAY;
+        }
+    }
     if (notice) {
         switch (cmd) {
         case MENU_UP:
@@ -354,6 +363,14 @@ int menu_mouse(int what, float px, float py, int d)
     float x, y;
     ui_fit(1180, 680, drawn_w, drawn_h);      /* menu_draw's: the operator bar draws at its own scale */
     ui_to_logical(px, py, &x, &y);
+    if (notice == MENU_NOTICE_REFRESH) {
+        int b = inside(&notice_btn[0], x, y);
+        switch (what) {
+        case MENU_MOUSE_LEFT: return b ? MENU_RESUME : -1;
+        case MENU_MOUSE_RIGHT: return MENU_RESUME;
+        default: return -1;
+        }
+    }
     if (notice) {
         int b = inside(&notice_btn[0], x, y) || inside(&badge_at, x, y) ? 0 : inside(&notice_btn[1], x, y) ? 1 : -1;
         switch (what) {
@@ -502,9 +519,66 @@ static float notice_button(float x, float y, const char *label, int on)
     return w;
 }
 
+/* what the screen's refresh rate does to the game's motion, for the refresh
+ * notice and the Fullscreen row (docs/design.md section 44); NULL when it
+ * is even (or not known, off a Steam Deck OLED) */
+static const char *refresh_text(void)
+{
+    static char t[400];
+    if (run.deck == STEAM_DECK_OLED)
+        SDL_snprintf(t, sizeof t,
+                     "The game shows 60 pictures a second, and a Steam Deck OLED's screen can refresh 90 times a "
+                     "second: then the motion is uneven. Press the Quick Access button (the one with three dots), "
+                     "open Performance, turn on Use per-game profile, and set Refresh rate to 60. At 60 already, "
+                     "nothing needs to change.");
+    else if (settings_refresh_uneven(run.refresh))
+        SDL_snprintf(t, sizeof t,
+                     "The game shows 60 pictures a second, and this screen refreshes %.0f times a second: the "
+                     "motion is uneven. Set the screen to 60 Hz (or 120) in the system's display settings. "
+                     "FreeSync or G-Sync, where the screen has it, can smooth it in fullscreen too.",
+                     (double)run.refresh);
+    else
+        return NULL;
+    return t;
+}
+
+/* the refresh rate's notice (menu_open_notice: MENU_NOTICE_REFRESH), with OK */
+static void draw_refresh_notice(void)
+{
+    const char *t = refresh_text();
+    if (!t)
+        t = "";
+    const float W = 620, P = 34;
+    /* the text's lines from 84 down, the faint line, then the button and the hints (128 at the foot) */
+    const float H = 84 + 23 * (float)ui_wrap_lines(UI_REGULAR, 15.5f, W - 2 * P, t) + 58 + 128;
+    const float X = (1180 - W) / 2, Y = (680 - H) / 2;
+    ui_round_line(X, Y, W, H, 20, 1, UI_LINE, UI_PANEL);
+    ui_text(UI_BOLD, 21, X + P, Y + 44, UI_TEXT, "Set the screen to 60 Hz");
+    float y = Y + 84;
+    y += 23 * (float)ui_wrap(UI_REGULAR, 15.5f, X + P, y, W - 2 * P, 23, UI_MUTED, t);
+    ui_text_in(UI_REGULAR, 13.5f, X, y + 16, W, 1, 0, UI_FAINT,
+               "The Picture tab's Fullscreen row says it too. This notice won't show again.");
+    const char *l0 = "OK";
+    float w0 = ui_text_w(UI_MEDIUM, 16, l0) + 52 + 40;
+    float bx = X + (W - w0) / 2, by = Y + H - 62 - 66;
+    notice_btn[0] = (SDL_FRect){ bx, by, w0, 46 };
+    notice_btn[1] = (SDL_FRect){ 0, 0, 0, 0 };
+    ui_round(bx, by, w0, 46, 12, UI_ACCENT);
+    ui_text_in(UI_MEDIUM, 16, bx, by + 23, w0, 1, 0, UI_ON_ACCENT, l0);
+    ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
+    static const ui_hint hints[] = {
+        { "Close", { UI_IN_OK, UI_IN_NONE } },
+    };
+    ui_hints(X + W - 32, Y + H - 31, 26, hints, (int)SDL_arraysize(hints), 2);
+}
+
 /* the first start's notice (menu_open_notice), like the author's pcbview's */
 static void draw_notice(void)
 {
+    if (notice == MENU_NOTICE_REFRESH) {
+        draw_refresh_notice();
+        return;
+    }
     const float W = 620, H = 512, X = (1180 - W) / 2, Y = (680 - H) / 2, P = 34;
     ui_round_line(X, Y, W, H, 20, 1, UI_LINE, UI_PANEL);
     ui_text(UI_BOLD, 21, X + P, Y + 44, UI_TEXT, "Support this recomp");
@@ -597,6 +671,8 @@ static void about_of(int id, const char **title, const char **text, const char *
             *note = "Sound is off: turn it on below, for the next start.";
         else if (id == OPT_SCALE && s->renderer != RENDERER_GPU)
             *note = "The Software renderer does not use it.";
+        else if (id == OPT_FULLSCREEN && refresh_text())
+            *note = refresh_text();
         else if (options[id].at_start)
             *note = later(id) ? "Changed: applies the next time the game starts." : "Applies the next time the game starts.";
         return;

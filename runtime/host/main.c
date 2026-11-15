@@ -48,6 +48,11 @@
  *   --kofi-notice N   for tests: the first start's Ko-fi notice at vertical blank N, even when it
  *                     was shown before (test runs, with --frames, --shot, --press, --keys or
  *                     --unpaced, show it only so)
+ *   --refresh-notice N  for tests: the screen refresh notice (docs/design.md section 44) at
+ *                     vertical blank N when it is due, even when it was shown before
+ *   --deck-product FILE  for tests: the firmware's product name from FILE (Jupiter: a Steam
+ *                     Deck LCD; Galileo: the OLED) instead of /sys/class/dmi/id/product_name
+ *   --screen-hz HZ    for tests: the screen's refresh rate is HZ, not the one SDL reports
  *
  * Settings (M6): user/settings.txt (settings.h), written by the launcher's
  * Settings page: free play or coins, fullscreen, picture, sound, the card
@@ -1105,9 +1110,10 @@ static int to_launcher;                 /* the menu's Open the launcher: the gam
 
 static int fullscreen_wanted(void)
 {
-    const char *deck = SDL_getenv("SteamDeck"), *tenfoot = SDL_getenv("SteamTenfoot");
+    const char *tenfoot = SDL_getenv("SteamTenfoot");
     return cfg_.fullscreen == FULLSCREEN_ON ||
-           (cfg_.fullscreen == FULLSCREEN_AUTO && ((deck && atoi(deck)) || (tenfoot && atoi(tenfoot))));
+           (cfg_.fullscreen == FULLSCREEN_AUTO &&
+            (settings_steam_deck() != STEAM_DECK_NONE || (tenfoot && atoi(tenfoot))));
 }
 
 /* the room for the window's picture on w's screen (the primary one before
@@ -1171,7 +1177,19 @@ static void window_to_setting(SDL_Window *w, int move)
           cfg_.window == WINDOW_AUTO ? "Auto" : "set", room.w, room.h, room.density);
 }
 
-/* the menu, or (notice) the first start's Ko-fi notice in its place */
+static float screen_hz_test;        /* --screen-hz */
+
+/* the refresh rate of w's screen in Hz (0: not known) */
+static float screen_refresh(SDL_Window *w)
+{
+    if (screen_hz_test > 0)
+        return screen_hz_test;
+    SDL_DisplayID d = w ? SDL_GetDisplayForWindow(w) : 0;
+    const SDL_DisplayMode *m = d ? SDL_GetCurrentDisplayMode(d) : NULL;
+    return m && m->refresh_rate > 0 ? m->refresh_rate : 0;
+}
+
+/* the menu, or (notice: MENU_NOTICE_*) a notice in its place */
 static void menu_show_as(int notice)
 {
     /* the card profiles there now, for Player 1 card and Player 2 card */
@@ -1192,15 +1210,19 @@ static void menu_show_as(int notice)
     r.test_program = SDL_GetAtomicInt(&program_now);
     r.card_peek = card_peek;
     r.card_edit = card_edit_save;
+    r.refresh = screen_refresh(main_win);
+    r.deck = settings_steam_deck();
     if (notice)
-        menu_open_notice(&cfg_, &r);
+        menu_open_notice(&cfg_, &r, notice);
     else
         menu_open(&cfg_, &r);
     menu_on = ov_dirty = 1;
     SDL_SetAtomicInt(&menu_pause, 1);
     if (audio)
         SDL_PauseAudioStreamDevice(audio);
-    logf_("menu: %s at vertical blank %d", notice ? "the Ko-fi notice" : "open", SDL_GetAtomicInt(&frame_now));
+    logf_("menu: %s at vertical blank %d",
+          notice == MENU_NOTICE_KOFI ? "the Ko-fi notice" : notice == MENU_NOTICE_REFRESH ? "the refresh notice" : "open",
+          SDL_GetAtomicInt(&frame_now));
 }
 
 static void menu_show(void)
@@ -1257,7 +1279,99 @@ static void kofi_turn(int have_picture, Uint64 now_ms)
     kofi_due = 0;
     if (!kofi_frame)
         kofi_mark();
-    menu_show_as(1);
+    menu_show_as(MENU_NOTICE_KOFI);
+}
+
+/* ---- the screen's refresh rate notice (docs/design.md section 44) ----
+ * The game shows 60 pictures a second; a screen refreshing at a rate that
+ * is not a multiple of 60 (90 on a Steam Deck OLED, 144, 75) shows some of
+ * them longer than others. The game cannot change the screen's rate, so it
+ * says how, once for each screen it is shown for (user/refresh-notice holds
+ * which), after the Ko-fi notice. On a Steam Deck OLED it is shown whatever
+ * rate the screen reports, since the per-game Refresh rate is Steam's. */
+static unsigned refresh_frame;      /* --refresh-notice: at this vertical blank (a test: nothing is written) */
+static int refresh_due;             /* 1 until it is checked */
+static Uint64 refresh_after;        /* not before this (ms) */
+
+#define REFRESH_FILE "refresh-notice"
+
+/* what it is shown for: "Steam Deck OLED", or the screen's rate ("144 Hz") */
+static void refresh_key(float hz, char *key, size_t n)
+{
+    if (settings_steam_deck() == STEAM_DECK_OLED)
+        SDL_strlcpy(key, "Steam Deck OLED", n);
+    else
+        SDL_snprintf(key, n, "%.0f Hz", (double)hz);
+}
+
+/* 1 when user/refresh-notice says it was shown for key */
+static int refresh_seen(const char *key)
+{
+    char path[4200];
+    SDL_snprintf(path, sizeof path, "%s" REFRESH_FILE, user_dir);
+    size_t len = 0;
+    char *t = SDL_LoadFile(path, &len);
+    if (!t)
+        return 0;
+    size_t k = strlen(key);
+    int seen = len >= k && !memcmp(t, key, k) && (len == k || t[k] == '\n' || t[k] == '\r');
+    SDL_free(t);
+    return seen;
+}
+
+static void refresh_mark(const char *key)
+{
+    char path[4200];
+    SDL_snprintf(path, sizeof path, "%s" REFRESH_FILE, user_dir);
+    SDL_IOStream *f = SDL_IOFromFile(path, "wb");
+    if (!f) {
+        logf_("screen: cannot write %s: %s", path, SDL_GetError());
+        return;
+    }
+    SDL_IOprintf(f, "%s\nThe game showed its refresh rate notice for this screen. Remove this file to see it "
+                    "again at the next start.\n", key);
+    SDL_CloseIO(f);
+}
+
+/* whether this run checks: always, but never in a test run (test) unless asked */
+static void refresh_setup(int test)
+{
+    refresh_due = refresh_frame || !test;
+}
+
+/* called every turn of the window's loop, after kofi_turn: checks the
+ * screen's rate two seconds into the picture (or the Ko-fi notice's
+ * closing), and shows the notice when it is uneven */
+static void refresh_turn(int have_picture, Uint64 now_ms)
+{
+    if (!refresh_due || !have_picture || menu_on || kofi_due)
+        return;
+    if (refresh_frame) {
+        if ((unsigned)SDL_GetAtomicInt(&frame_now) < refresh_frame)
+            return;
+    } else {
+        if (!refresh_after)
+            refresh_after = now_ms + 2000;
+        if (now_ms < refresh_after)
+            return;
+    }
+    refresh_due = 0;
+    float hz = screen_refresh(main_win);
+    int deck = settings_steam_deck();
+    int uneven = settings_refresh_uneven(hz);
+    char key[48];
+    refresh_key(hz, key, sizeof key);
+    logf_("screen: %.2f Hz%s", (double)hz, hz <= 0 ? " (not known)" : uneven ? " (not a multiple of 60: uneven)" : "");
+    if (!uneven && deck != STEAM_DECK_OLED)
+        return;
+    if (!refresh_frame) {
+        if (refresh_seen(key)) {
+            logf_("screen: the refresh notice was shown for %s before", key);
+            return;
+        }
+        refresh_mark(key);
+    }
+    menu_show_as(MENU_NOTICE_REFRESH);
 }
 
 /* opens the Ko-fi page in the browser and tells the menu what it did */
@@ -1728,6 +1842,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--log") && v) log_path = argv[++i];
         else if (!strcmp(a, "--user") && v) user_arg = argv[++i];
         else if (!strcmp(a, "--kofi-notice") && v) kofi_frame = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--refresh-notice") && v) refresh_frame = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--deck-product") && v) settings_steam_deck_test(argv[++i]);
+        else if (!strcmp(a, "--screen-hz") && v) screen_hz_test = (float)SDL_atof(argv[++i]);
         else if (!strcmp(a, "--shot") && v && i + 2 < argc && nshots < 8) {
             shots[nshots].frame = (unsigned)strtoul(argv[++i], NULL, 10);
             shots[nshots++].path = argv[++i];
@@ -1783,6 +1900,10 @@ int main(int argc, char **argv)
     {
         const char *appid = SDL_getenv("SteamAppId"), *deck = SDL_getenv("SteamDeck");
         logf_("steam: SteamAppId=%s SteamDeck=%s", appid ? appid : "-", deck ? deck : "-");
+        int model = settings_steam_deck();
+        if (model != STEAM_DECK_NONE)
+            logf_("device: %s%s", settings_steam_deck_name[model],
+                  model == STEAM_DECK_UNKNOWN_MODEL ? " (SteamDeck=1; the model is not known)" : "");
     }
     gu_init(SDL_GetBasePath(), say_line);   /* the menu's Check for updates (updates.h) */
 
@@ -1813,10 +1934,11 @@ int main(int argc, char **argv)
     if (!SDL_GetPathInfo(user_dir, NULL) && !SDL_CreateDirectory(user_dir))
         logf_("cannot make %s: %s", user_dir, SDL_GetError());
     kofi_setup(frames_max || nshots || presses || key_items || unpaced);
+    refresh_setup(frames_max || nshots || presses || key_items || unpaced);
     {
         char *sp = settings_path;
         SDL_snprintf(sp, sizeof settings_path, "%ssettings.txt", user_dir);
-        settings_defaults(&cfg_);
+        settings_defaults_here(&cfg_);      /* a Steam Deck's 16:10 picture (section 44) */
         if (!SDL_GetPathInfo(sp, NULL))
             logf_("no %s: the defaults", sp);
         else if (!settings_load(&cfg_, sp, say_line))
@@ -2274,6 +2396,7 @@ int main(int argc, char **argv)
             shown_frame = frame;
         }
         kofi_turn(have_picture, now_ms);
+        refresh_turn(have_picture, now_ms);
         /* the menu (1) or the operator bar (2), drawn again when it changed;
          * the menu's first turn shows the picture alone and takes it (grab) */
         int ov = menu_on ? 1 : bar_on && now_ms < bar_until ? 2 : 0, grab = 0;

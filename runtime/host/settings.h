@@ -72,6 +72,28 @@ extern const char *const settings_action_text[ACT_COUNT];   /* "Up", "Guard", "T
 
 void settings_defaults(settings *s);
 
+/* The Steam Deck (docs/design.md section 44): STEAM_DECK_NONE, or a Deck:
+ * the LCD model (its firmware's product name Jupiter), the OLED (Galileo),
+ * or one whose model is not known (Steam's SteamDeck=1 alone). The product
+ * name is /sys/class/dmi/id/product_name, read under Proton through Wine's
+ * Z: drive; it is read once. */
+enum { STEAM_DECK_NONE, STEAM_DECK_UNKNOWN_MODEL, STEAM_DECK_LCD, STEAM_DECK_OLED };
+int settings_steam_deck(void);
+extern const char *const settings_steam_deck_name[4];  /* "", "Steam Deck", "Steam Deck LCD", "Steam Deck OLED" */
+/* for tests: the product name from this file instead (before the first
+ * settings_steam_deck) */
+void settings_steam_deck_test(const char *product_file);
+
+/* 1 when a screen refreshing hz times a second shows the game's 60
+ * pictures a second unevenly: hz known and not within 1 Hz of a multiple of
+ * 60 (90 on a Steam Deck OLED, 144, 75, 50; not 59.94, 120 or 240) */
+int settings_refresh_uneven(float hz);
+
+/* the defaults on this machine: settings_defaults, and on a Steam Deck the
+ * 16:10 picture, its screen's shape (the player's settings.txt says
+ * otherwise once written) */
+void settings_defaults_here(settings *s);
+
 /* reads path over the defaults; a missing file is no error. Messages (bad
  * lines) go to say, which may be NULL. 0, or -1 when the file is there and
  * cannot be read */

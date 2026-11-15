@@ -67,13 +67,17 @@ typedef struct menu_run {
      * never used or not made yet, which becomes a ready card) */
     int (*card_peek)(const char *name, Uint8 *card, int *held);
     void (*card_edit)(const char *name, const card_fields *from, const card_fields *to, int fresh);
+    float refresh;          /* the window's screen's refresh rate in Hz (0 not known; section 44) */
+    int deck;               /* settings_steam_deck() */
 } menu_run;
 
 /* opens it on s (the settings in use, changed in place) */
 void menu_open(settings *s, const menu_run *run);
-/* opens it as the first start's notice instead: Ko-fi, with Support on
- * Ko-fi and Close */
-void menu_open_notice(settings *s, const menu_run *run);
+/* opens it as a notice instead: MENU_NOTICE_KOFI, the first start's, with
+ * Support on Ko-fi and Close; MENU_NOTICE_REFRESH, the screen's refresh
+ * rate (docs/design.md section 44), with OK */
+enum { MENU_NOTICE_KOFI = 1, MENU_NOTICE_REFRESH };
+void menu_open_notice(settings *s, const menu_run *run, int kind);
 /* what opening the Ko-fi page did (1 opened, 0 not), for the menu to say */
 void menu_kofi(int opened);
 

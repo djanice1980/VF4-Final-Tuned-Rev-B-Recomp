@@ -50,6 +50,69 @@ int settings_card_name_ok(const char *name)
     return 1;
 }
 
+const char *const settings_steam_deck_name[4] = { "", "Steam Deck", "Steam Deck LCD", "Steam Deck OLED" };
+static const char *deck_test_file;
+
+void settings_steam_deck_test(const char *product_file)
+{
+    deck_test_file = product_file;
+}
+
+/* the model from the firmware's product name: Valve's names for the two
+ * boards, Jupiter (the LCD Deck) and Galileo (the OLED) */
+static int deck_model(const char *path)
+{
+    size_t n = 0;
+    char *text = path ? SDL_LoadFile(path, &n) : NULL;
+    int model = STEAM_DECK_NONE;
+    if (text) {
+        if (!SDL_strncmp(text, "Jupiter", 7))
+            model = STEAM_DECK_LCD;
+        else if (!SDL_strncmp(text, "Galileo", 7))
+            model = STEAM_DECK_OLED;
+        SDL_free(text);
+    }
+    return model;
+}
+
+int settings_steam_deck(void)
+{
+    static int known = -1;
+    if (known >= 0)
+        return known;
+    const char *path = "/sys/class/dmi/id/product_name";
+#ifdef _WIN32
+    /* under Proton the Linux files are on Wine's Z: drive; on a real Windows
+     * PC Z: is whatever it is, so it is only looked at under Wine */
+    path = SDL_getenv("WINEPREFIX") || SDL_getenv("STEAM_COMPAT_DATA_PATH") ? "Z:\\sys\\class\\dmi\\id\\product_name"
+                                                                            : NULL;
+#endif
+    if (deck_test_file)
+        path = deck_test_file;
+    known = deck_model(path);
+    const char *env = SDL_getenv("SteamDeck");
+    if (known == STEAM_DECK_NONE && env && atoi(env))
+        known = STEAM_DECK_UNKNOWN_MODEL;
+    return known;
+}
+
+int settings_refresh_uneven(float hz)
+{
+    if (!(hz > 0))
+        return 0;
+    float k = SDL_roundf(hz / 60.0f);
+    if (k < 1)
+        k = 1;
+    return SDL_fabsf(hz - 60.0f * k) > 1.0f;
+}
+
+void settings_defaults_here(settings *s)
+{
+    settings_defaults(s);
+    if (settings_steam_deck() != STEAM_DECK_NONE)
+        s->picture = PICTURE_16_10;     /* the Deck's own shape: the 3D fills its screen */
+}
+
 void settings_defaults(settings *s)
 {
     memset(s, 0, sizeof *s);
@@ -419,7 +482,8 @@ int settings_save(const settings *s, const char *path)
     PUT("                         # the screen) | 480 | 576 | 600 | 720 | 768 | 800 | 900 | 960 | 1050 |\n"
         "                         # 1080 | 1200 | 1440 | 1536 | 1600 | 1920 | 2160 (pixels; the width is\n"
         "                         # the picture's shape)\n");
-    PUT("picture = %s          # 4:3 | 16:10 | 16:9 | 21:9 (wide: the 3D fills the sides) | stretch\n",
+    PUT("picture = %s          # 4:3 | 16:10 | 16:9 | 21:9 (wide: the 3D fills the sides) | stretch\n"
+        "                         # (4:3 by default; 16:10, its screen's shape, on a Steam Deck)\n",
         settings_picture_name(s->picture));
     PUT("filter = %s           # smooth | sharp (how the picture is scaled to the window)\n", filter_names[s->filter]);
     PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture)\n", renderer_names[s->renderer]);

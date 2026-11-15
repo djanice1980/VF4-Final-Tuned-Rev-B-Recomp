@@ -2044,7 +2044,7 @@ static void text_event(const SDL_Event *e)
 static void settings_open(void)
 {
     snprintf(settings_path, sizeof settings_path, "%s/user/settings.txt", game);
-    settings_defaults(&st);
+    settings_defaults_here(&st);    /* the game's: a Steam Deck's 16:10 picture (docs/design.md section 44) */
     settings_load(&st, settings_path, NULL);
     st_tab = st_row = st_top = 0;
     capturing = 0;

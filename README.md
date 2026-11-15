@@ -288,6 +288,14 @@ Proton on a desktop PC.
    it). Settings is where controls, the coin setting, the internal
    resolution and the rest are changed.
 
+The game knows a Deck and which one (LCD or OLED) from its firmware, and
+on a Deck it starts fullscreen with the 16:10 picture, which fills the
+screen (Settings, Picture changes it). The OLED's screen can run at 90
+Hz, and the game's 60 pictures a second look uneven at that rate: the
+first start on an OLED says how to set 60 Hz for this game (the Quick
+Access button, Performance, Use per-game profile, Refresh rate 60). A PC
+whose screen runs at a rate like 144 or 75 Hz gets the same note once.
+
 On the Deck's controls the game's defaults are the PlayStation 2 versions'
 layout: X guard, Y and A punch, B kick, L1 throw (P+G), R1 P+K, L2 P+K+G,
 R2 K+G, Menu start, View coin (not needed with free play). Holding View + Menu for a second opens the game's menu (below,
@@ -535,7 +543,8 @@ with only a gamepad, the menu's Operator test menu does the same.
   arcade), `fullscreen` (auto | on | off; auto is on for the Steam Deck and
   Big Picture), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
   ones keep the cabinet's screen in the middle, unstretched, and draw what
-  the camera sees past its sides), `filter` (smooth | sharp),
+  the camera sees past its sides; default 4:3, and 16:10 on a Steam
+  Deck), `filter` (smooth | sharp),
   `renderer` (gpu | software), `scale` (1 to 4 times 640 x 480; default 2),
   `sound` (on | off), `volume` (0 to 100; default 100), `cards` (on |
   off), `network` (off | on; default off: the game's own NETWORK setting,
@@ -555,6 +564,8 @@ with only a gamepad, the menu's Operator test menu does the same.
   `settings.txt` say which is each player's (`none` by default; the
   game's menu also offers a new `p1` or `p2`, made the first time that
   player saves to it). Cards the launcher deletes go to `cards/Deleted/`.
+- `kofi-notice` and `refresh-notice`: the first start's Ko-fi notice and
+  the screen refresh notice were shown (remove one to see it again).
 
 **The GPU renderer** (`renderer = gpu`, the default) needs Vulkan: it is
 used natively, and under Proton through Proton's own Vulkan. Without
