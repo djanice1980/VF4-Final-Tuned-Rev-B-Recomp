@@ -18,7 +18,7 @@
  *   launcher-set.txt   the set folder last chosen
  *   launcher-game.txt  the install folder chosen (none: game/ beside the launcher)
  *   launcher-direct.txt  "1": Start the game directly (the Play page's switch)
- *   launcher-two-pc.txt  the host's address last joined (Two PCs)
+ *   launcher-two-pc.txt  Two PCs: the address last joined, then the player to host as (1 or 2)
  *   launcher.log       what it showed (Windows has no console for it)
  * On Linux, Python is the system's python3.
  *
@@ -120,11 +120,15 @@ static const char *argv0 = "";
  * its menu, or a game that ended with an error. */
 #define GAME_EXIT_LAUNCHER 64
 static int play_direct;             /* the switch */
-/* Two PCs (docs/design.md section 46): the game reads its user/two-pc.txt
- * ("host" or "join ADDRESS", then the time) however it starts, through Steam
- * too, which passes no arguments */
-static char two_addr[64];           /* the host's address, typed (launcher-two-pc.txt keeps the last joined) */
-static char two_req[80];            /* what Play asks the game for next: "" (a game alone), "host", "join ADDRESS" */
+/* Two PCs (docs/design.md sections 46 and 47): the game reads its
+ * user/two-pc.txt ("host", "host 2" or "join ADDRESS", then the time)
+ * however it starts, through Steam too, which passes no arguments */
+static char two_addr[64];           /* the host's address, typed */
+static char two_last[64];           /* the address last joined (launcher-two-pc.txt) */
+enum { TWO_HOST1, TWO_HOST2, TWO_JOIN };
+static int two_choice;              /* the last chosen (launcher-two-pc.txt): the note's first button */
+static char two_req[80];            /* what Play asks the game for next: "" (a game alone), "host", "host 2",
+                                     * "join ADDRESS" */
 static char two_written[1100];      /* the request file Play wrote, while its start may still fail */
 static int direct_run;              /* this run started the game directly (the window stays hidden) */
 static int game_close;              /* the game it started ended with 0 (Quit): close */
@@ -639,9 +643,11 @@ static int page;
 static void go(int p);
 static void press(int b);
 static void two_unwrite(void);
+static void follow_fullscreen(const char *when);
 
 /* a note over the Play page (Add to Steam's, and Play's under plain Wine): only its buttons answer */
-enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE, POP_RENAME, POP_DELETE, POP_RINGNAME, POP_TWO };
+enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE, POP_RENAME, POP_DELETE, POP_RINGNAME, POP_TWO,
+       POP_JOIN };
 static int pop;
 static int steam_proton;            /* the tool set Proton for the entry */
 static void pop_open(int kind);
@@ -986,6 +992,7 @@ static void watch_game(void)
                      "in the install folder.", code);
             say("%s", status_text);
         }
+        follow_fullscreen("the game ended");
         SDL_ShowWindow(win);
         SDL_RaiseWindow(win);
     }
@@ -1430,7 +1437,7 @@ enum {
     B_REBUILD, B_FILES, B_UPDATE, B_DONE, B_UPD_NOW, B_UPD_CLOSE, B_UPD_CANCEL, B_CHECK, B_USE_FOUND, B_GAME_DIR,
     B_DIRECT, B_POP_OK, B_POP_RETRY, B_POP_PLAY, B_POP_STEAM, B_POP_YES,
     B_CP_P1, B_CP_P2, B_CP_EDIT, B_CP_NEW, B_CP_COPY, B_CP_RENAME, B_CP_DELETE, B_ED_SAVE, B_ED_CANCEL,
-    B_TWO, B_POP_HOST, B_POP_JOIN, B_COUNT
+    B_TWO, B_POP_HOST, B_POP_HOST2, B_POP_JOIN, B_POP_JOIN_GO, B_COUNT
 };
 static int focus = -1;
 #define HITS 24
@@ -1484,8 +1491,8 @@ static int enabled(int b)
     case B_CONTINUE: return set_ok();
     case B_BUILD: return set_ok() && root[0] && !proc;
     case B_UPDATE: return built && root[0] && !proc;
-    case B_PLAY: case B_TWO: case B_POP_HOST: return built && !game_proc && !proc;
-    case B_POP_JOIN: return built && !game_proc && !proc && two_addr[0];
+    case B_PLAY: case B_TWO: case B_POP_HOST: case B_POP_HOST2: case B_POP_JOIN: return built && !game_proc && !proc;
+    case B_POP_JOIN_GO: return built && !game_proc && !proc && two_addr[0];
     case B_STEAM: return built && root[0] && !proc && !built_linux;
     case B_CANCEL: return (proc || shot_working) && !cancel_at;
     case B_REBUILD: return root[0] && !proc;
@@ -1525,8 +1532,11 @@ static int page_buttons(int *ids)
             ids[n++] = B_POP_YES;
         if (pop == POP_TWO) {
             ids[n++] = B_POP_HOST;
+            ids[n++] = B_POP_HOST2;
             ids[n++] = B_POP_JOIN;
         }
+        if (pop == POP_JOIN)
+            ids[n++] = B_POP_JOIN_GO;
         ids[n++] = B_POP_OK;
         return n;
     }
@@ -2042,13 +2052,13 @@ static void cp_event(const SDL_Event *e)
 /* a note that takes a name: the typed text, Backspace, OK and Cancel */
 static int text_pop(void)
 {
-    return pop == POP_RENAME || pop == POP_RINGNAME || pop == POP_TWO;
+    return pop == POP_RENAME || pop == POP_RINGNAME || pop == POP_JOIN;
 }
 
 /* the note's typed text: a name, or Two PCs' address */
 static char *pop_field(size_t *n)
 {
-    if (pop == POP_TWO) {
+    if (pop == POP_JOIN) {
         *n = sizeof two_addr;
         return two_addr;
     }
@@ -2082,7 +2092,7 @@ static void text_event(const SDL_Event *e)
         for (const unsigned char *s = (const unsigned char *)e->text.text; *s;) {
             size_t cl = *s < 0x80 ? 1 : (*s & 0xe0) == 0xc0 ? 2 : (*s & 0xf0) == 0xe0 ? 3 : (*s & 0xf8) == 0xf0 ? 4 : 1;
             int ok = pop == POP_RINGNAME ? ced_name_char(*s, len)
-                     : pop == POP_TWO    ? len + 1 < size && two_addr_char(*s)
+                     : pop == POP_JOIN   ? len + 1 < size && two_addr_char(*s)
                                          : len + cl < size && (*s >= 0x20 && *s != 0x7f);
             for (size_t i = 1; i < cl; i++)
                 ok &= (s[i] & 0xc0) == 0x80;
@@ -2094,8 +2104,8 @@ static void text_event(const SDL_Event *e)
             for (size_t i = 0; i < cl && *s; i++)
                 s++;
         }
-        if (pop == POP_TWO)         /* an address typed: Enter joins it */
-            focus = two_addr[0] ? B_POP_JOIN : B_POP_HOST;
+        if (pop == POP_JOIN)        /* an address typed: Enter joins it */
+            focus = B_POP_JOIN_GO;
         return;
     }
     if (e->type != SDL_EVENT_KEY_DOWN && e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN)
@@ -2110,8 +2120,6 @@ static void text_event(const SDL_Event *e)
             len--;
         text[cp_fresh ? 0 : len] = 0;
         cp_fresh = 0;
-        if (pop == POP_TWO && !two_addr[0] && focus == B_POP_JOIN)
-            focus = B_POP_HOST;
     } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || face == UI_IN_OK) {
         press(focus >= 0 ? focus : B_POP_YES);
     } else if (k == SDLK_ESCAPE || face == UI_IN_BACK) {
@@ -2146,6 +2154,31 @@ static void settings_store(void)
         say("settings saved: %s", settings_path);
 }
 
+/* The window fullscreen or not as the game's own is (its Fullscreen
+ * setting in the install folder's user/settings.txt: on, or auto on a Steam
+ * Deck or in Big Picture): as the launcher starts, as Settings closes, as the
+ * game ends (its menu changes the setting too) and when the install folder
+ * changes. A --shot picture keeps the page's own size */
+static void follow_fullscreen(const char *when)
+{
+    if (shot_mode || !win)
+        return;
+    static settings s;
+    char p[1100];
+    snprintf(p, sizeof p, "%s/user/settings.txt", game);
+    settings_defaults_here(&s);
+    if (exists(p))
+        settings_load(&s, p, NULL);
+    int want = settings_fullscreen_wanted(&s);
+    static int now = -1;
+    if (want == now)
+        return;
+    now = want;
+    say("window: %s (%s; the game's Fullscreen is %s)", want ? "fullscreen" : "a window", when,
+        s.fullscreen == FULLSCREEN_AUTO ? "auto" : s.fullscreen == FULLSCREEN_ON ? "on" : "off");
+    SDL_SetWindowFullscreen(win, want);
+}
+
 static int controls_tab(void)
 {
     return st_tab >= T_PAD;
@@ -2169,6 +2202,7 @@ static binding *tab_binding(int act)
 static void settings_close(void)
 {
     settings_store();
+    follow_fullscreen("Settings closed");
     capturing = 0;
     go(settings_from);
 }
@@ -2296,19 +2330,49 @@ static void two_last_path(char *p, size_t n)
     snprintf(p, n, "%slauncher-two-pc.txt", base);
 }
 
-/* the address last joined, when the note opens with none typed */
+static const char *const two_choice_word[] = { "host", "host 2", "join" };
+
+/* launcher-two-pc.txt, once: the address last joined (Join's page shows it
+ * when none is typed), then the last choice ("host", "host 2", "join"; an
+ * older file has the address alone) */
 static void two_load(void)
 {
+    static int loaded;
+    if (loaded)
+        return;
+    loaded = 1;
     char p[1100];
     two_last_path(p, sizeof p);
     char *t = exists(p) ? SDL_LoadFile(p, NULL) : NULL;
     if (!t)
         return;
     size_t n = 0;
-    for (const unsigned char *s = (const unsigned char *)t; *s && two_addr_char(*s) && n + 1 < sizeof two_addr; s++)
-        two_addr[n++] = (char)*s;
-    two_addr[n] = 0;
+    const unsigned char *s = (const unsigned char *)t;
+    for (; *s && two_addr_char(*s) && n + 1 < sizeof two_last; s++)
+        two_last[n++] = (char)*s;
+    two_last[n] = 0;
+    char *nl = SDL_strchr(t, '\n');
+    if (nl) {
+        nl++;
+        nl[strcspn(nl, "\r\n")] = 0;
+        for (int i = 0; i < (int)SDL_arraysize(two_choice_word); i++)
+            if (!strcmp(nl, two_choice_word[i]))
+                two_choice = i;
+    }
     SDL_free(t);
+}
+
+/* launcher-two-pc.txt with two_choice just made (TWO_JOIN: two_addr is the
+ * address last joined) */
+static void two_save(void)
+{
+    char p[1100], t[96];
+    if (two_choice == TWO_JOIN)
+        SDL_strlcpy(two_last, two_addr, sizeof two_last);
+    two_last_path(p, sizeof p);
+    int n = snprintf(t, sizeof t, "%s\n%s\n", two_last, two_choice_word[two_choice]);
+    if (!SDL_SaveFile(p, t, (size_t)n))
+        say("Two PCs: cannot write %s: %s", p, SDL_GetError());
 }
 
 /* user/two-pc.txt: the request, then the time (the game uses one written in
@@ -2446,26 +2510,28 @@ static void press(int b)
         break;
     }
     case B_TWO:
-        if (!two_addr[0])
-            two_load();
+        two_load();
         pop_open(POP_TWO);
         break;
+    case B_POP_JOIN:                /* the address only now: its own page */
+        if (!two_addr[0])
+            SDL_strlcpy(two_addr, two_last, sizeof two_addr);
+        pop_open(POP_JOIN);
+        break;
     case B_POP_HOST:
-    case B_POP_JOIN: {
-        SDL_StopTextInput(win);
+    case B_POP_HOST2:
+    case B_POP_JOIN_GO: {
+        if (text_pop())
+            SDL_StopTextInput(win);
         pop = POP_NONE;
         focus = B_TWO;
-        if (b == B_POP_JOIN) {
-            char p[1100];
-            two_last_path(p, sizeof p);
-            char t[80];
-            int n = snprintf(t, sizeof t, "%s\n", two_addr);
-            SDL_SaveFile(p, t, (size_t)n);
+        two_choice = b == B_POP_HOST ? TWO_HOST1 : b == B_POP_HOST2 ? TWO_HOST2 : TWO_JOIN;
+        two_save();
+        if (b == B_POP_JOIN_GO)
             snprintf(two_req, sizeof two_req, "join %s", two_addr);
-        } else {
-            SDL_strlcpy(two_req, "host", sizeof two_req);
-        }
-        say("Two PCs: %s", b == B_POP_JOIN ? "Join" : "Host");
+        else
+            SDL_strlcpy(two_req, two_choice_word[two_choice], sizeof two_req);
+        say("Two PCs: %s", b == B_POP_JOIN_GO ? "Join" : b == B_POP_HOST2 ? "Host as player 2" : "Host as player 1");
         press(B_PLAY);
         break;
     }
@@ -2501,6 +2567,11 @@ static void press(int b)
     case B_POP_OK:
         if (text_pop())
             SDL_StopTextInput(win);
+        if (pop == POP_JOIN) {      /* Back: Host or Join again */
+            pop_open(POP_TWO);
+            focus = B_POP_JOIN;
+            break;
+        }
         focus = pop == POP_WINE ? B_PLAY : pop == POP_RENAME ? B_CP_RENAME : pop == POP_DELETE ? B_CP_DELETE
               : pop == POP_RINGNAME ? -1 : pop == POP_TWO ? B_TWO : B_STEAM;
         if (pop == POP_WINE)
@@ -2948,7 +3019,7 @@ static void two_row(float y)
     float tx = CX + button(B_TWO, CX, y - 6, 96, 40, "Two PCs", 0, -1) + 18;   /* the switch's width, above */
     ui_text(UI_MEDIUM, 16, tx, y + 14, on ? UI_TEXT : UI_FAINT, "Play against someone on another PC");
     ui_text_in(UI_REGULAR, 14, tx, y + 40, CX + CW - tx, 0, 0, UI_MUTED,
-               "One PC hosts and is player 1; the other joins it over your network as player 2.");
+               "One PC hosts, as player 1 or 2; the other joins it over your network as the other player.");
 }
 
 static void draw_play(void)
@@ -3226,12 +3297,14 @@ static void pop_open(int kind)
               : kind == POP_RENAME      ? "Cards: Rename"
               : kind == POP_DELETE      ? "Cards: Delete (it asks first)"
               : kind == POP_RINGNAME    ? "card editor: the ring name"
-              : kind == POP_TWO         ? "Two PCs: Host, or Join an address"
+              : kind == POP_TWO         ? "Two PCs: Host as player 1, Host as player 2, or Join"
+              : kind == POP_JOIN        ? "Two PCs: Join's page, the host's address"
                                         : "Add to Steam: the note that it was added");
     pop = kind;
     focus = kind == POP_CLOSE_STEAM ? B_POP_RETRY : kind == POP_WINE ? B_POP_STEAM
           : kind == POP_RENAME || kind == POP_RINGNAME ? B_POP_YES
-          : kind == POP_TWO ? (two_addr[0] ? B_POP_JOIN : B_POP_HOST) : B_POP_OK;
+          : kind == POP_TWO ? (two_choice == TWO_HOST2 ? B_POP_HOST2 : two_choice == TWO_JOIN ? B_POP_JOIN : B_POP_HOST)
+          : kind == POP_JOIN ? B_POP_JOIN_GO : B_POP_OK;
     if (text_pop()) {
         cp_error[0] = 0;
         cp_fresh = 1;
@@ -3275,13 +3348,17 @@ static void draw_pop(void)
         t = "Rename the card";
         text = "Its new name, which is also its file's in user/cards (up to 31 characters).";
         break;
-    case POP_TWO:       /* docs/design.md section 46 */
+    case POP_TWO:       /* docs/design.md sections 46 and 47 */
         t = "Two PCs";
-        text = "Play against someone on another PC on your network. One PC hosts and is player 1: its game "
-               "waits and shows that PC's address. The other PC joins that address and is player 2. Both need "
-               "this same build of the game. The host's settings and saves are used; each player's card stays "
-               "on their own PC. If Windows asks, allow the game through its firewall.\n"
-               "To join, type the host's address:";
+        text = "Play against someone on another PC on your network. One PC hosts, as player 1 or player 2: its "
+               "game waits and shows that PC's address. The other PC joins that address as the other player. "
+               "Both need this same build of the game. The host's settings and saves are used; each player's "
+               "card stays on their own PC. If the joining player leaves, the host plays on alone. If Windows "
+               "asks, allow the game through its firewall.";
+        break;
+    case POP_JOIN:
+        t = "Join a host";
+        text = "The host's address: its game shows it while it waits for you.";
         break;
     case POP_RINGNAME:
         t = "Ring name";
@@ -3307,7 +3384,7 @@ static void draw_pop(void)
     SDL_SetRenderDrawColor(ren, 6, 7, 10, 210);
     SDL_RenderFillRect(ren, NULL);
     int typing = text_pop();
-    float w = pop == POP_WINE ? 760 : pop == POP_TWO ? 680 : 620, tw = w - 72;
+    float w = pop == POP_WINE || pop == POP_TWO ? 760 : 620, tw = w - 72;
     float text_h = pop_text(0, 0, tw, text, 0);
     float field_h = typing ? 24 + 48 + 12 + 22 + 22 : 0;     /* the field, the error line, the keyboard's line */
     float h = 88 + text_h + field_h + 28 + BTN_H + 36;
@@ -3340,13 +3417,20 @@ static void draw_pop(void)
         button(B_POP_OK, bx, by, 0, BTN_H, "Cancel", 0, -1);
         bx -= 14 + button_w(yes);
         button(B_POP_YES, bx, by, 0, BTN_H, yes, pop == POP_DELETE ? 0 : 1, -1);
-    } else if (pop == POP_TWO) {
+    } else if (pop == POP_TWO) {     /* the last choice is the primary button */
         bx -= button_w("Cancel");
         button(B_POP_OK, bx, by, 0, BTN_H, "Cancel", 0, -1);
+        bx -= 14 + button_w("Join\xE2\x80\xA6");
+        button(B_POP_JOIN, bx, by, 0, BTN_H, "Join\xE2\x80\xA6", two_choice == TWO_JOIN, -1);
+        bx -= 14 + button_w("Host as player 2");
+        button(B_POP_HOST2, bx, by, 0, BTN_H, "Host as player 2", two_choice == TWO_HOST2, -1);
+        bx -= 14 + button_w("Host as player 1");
+        button(B_POP_HOST, bx, by, 0, BTN_H, "Host as player 1", two_choice == TWO_HOST1, -1);
+    } else if (pop == POP_JOIN) {
+        bx -= button_w("Back");
+        button(B_POP_OK, bx, by, 0, BTN_H, "Back", 0, -1);
         bx -= 14 + button_w("Join");
-        button(B_POP_JOIN, bx, by, 0, BTN_H, "Join", two_addr[0] ? 1 : 0, -1);
-        bx -= 14 + button_w("Host");
-        button(B_POP_HOST, bx, by, 0, BTN_H, "Host", two_addr[0] ? 0 : 1, -1);
+        button(B_POP_JOIN_GO, bx, by, 0, BTN_H, "Join", 1, -1);
     } else if (pop == POP_CLOSE_STEAM) {
         bx -= button_w("Close");
         button(B_POP_OK, bx, by, 0, BTN_H, "Close", 0, -1);
@@ -3670,11 +3754,12 @@ int main(int argc, char **argv)
         direct_path(p, sizeof p);
         play_direct = exists(p);
     }
-    /* the switch on: the window stays hidden unless the launcher is needed */
+    /* the switch on: the window stays hidden unless the launcher is needed. Otherwise it is shown
+     * once the install folder is known: fullscreen when the game's window is (follow_fullscreen) */
     int want_direct = play_direct && !shot_page && !opt_show && !after_game && !opt_do && !opt_pick_game;
     if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", win_w, win_h,
                                      SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                         (want_direct ? SDL_WINDOW_HIDDEN : 0),
+                                         (!shot_page ? SDL_WINDOW_HIDDEN : 0),
                                      &win, &ren)) {
         SDL_Log("window: %s", SDL_GetError());
         return 1;
@@ -3709,6 +3794,11 @@ int main(int argc, char **argv)
         say("window: %d x %d to start (display scale %.2f, usable area %d x %d)", win_w, win_h, win_scale,
             win_usable.w, win_usable.h);
     say("install folder: %s", game);
+    if (!shot_page) {
+        follow_fullscreen("the launcher starts");
+        if (!want_direct)
+            SDL_ShowWindow(win);
+    }
     steam_setup();
     upd_startup();
     if (!shot_page)
@@ -3801,15 +3891,19 @@ int main(int argc, char **argv)
                 focus = default_focus();
             }
         /* the Play page under its notes: steam-started, steam-close, steam-added,
-         * steam-added-plain (no pictures), wine-play, two-pc (an address typed) */
+         * steam-added-plain (no pictures), wine-play, two-pc (Host as player 1,
+         * Host as player 2, Join...), two-pc-join (Join's page, an address typed) */
         static const struct { const char *name; int kind; } pops[] = {
             {"steam-started", POP_FROM_STEAM}, {"steam-close", POP_CLOSE_STEAM}, {"steam-added", POP_ADDED},
             {"steam-added-plain", POP_ADDED}, {"wine-play", POP_WINE}, {"two-pc", POP_TWO},
+            {"two-pc-join", POP_JOIN},
         };
         for (size_t i = 0; i < SDL_arraysize(pops); i++)
             if (!strcmp(shot_page, pops[i].name)) {
                 go(P_PLAY);
-                if (pops[i].kind == POP_TWO)
+                if (pops[i].kind == POP_TWO || pops[i].kind == POP_JOIN)
+                    two_load();     /* as Two PCs does */
+                if (pops[i].kind == POP_JOIN)
                     SDL_strlcpy(two_addr, "192.168.1.20", sizeof two_addr);
                 steam_proton = 1;
                 art_made = strcmp(shot_page, "steam-added-plain") != 0;
@@ -3878,6 +3972,8 @@ int main(int argc, char **argv)
                 if (++sizes <= 12)
                     say("window: %d x %d pixels%s", (int)e.window.data1, (int)e.window.data2,
                         sizes == 12 ? " (no more of these)" : "");
+            } else if (e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN || e.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+                say("window: %s", e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ? "now fullscreen" : "no longer fullscreen");
             }
             if (e.type == SDL_EVENT_QUIT)
                 running = 0;

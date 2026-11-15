@@ -77,12 +77,15 @@ offers Add to Steam, Play anyway or Cancel.
 
 **Two players on two PCs** (on one network, from 0.5.6): both PCs need the
 same release. On the PC that hosts, press **Two PCs** on the Play page,
-then **Host**: it is player 1, and its game shows this PC's address while
-it waits. On the other PC press **Two PCs**, type that address and press
-**Join**: it is player 2. The host's settings and saves are used; each
-player's card stays on their own PC. If Windows asks, allow the game
-through its firewall (it uses UDP port 29404).
-([How it works](docs/design.md#46-two-pcs-on-a-lan-the-link-the-start-the-checks-2026-11-14).)
+then **Host as player 1** or **Host as player 2**: its game shows this
+PC's address while it waits. On the other PC press **Two PCs**, then
+**Join…**, type that address and press **Join**: it is the other player.
+The host's settings and saves are used; each player's card stays on their
+own PC. If the joining player leaves, the host's game goes on and its
+player plays alone. If Windows asks, allow the game through its firewall
+(it uses UDP port 29404).
+([How it works](docs/design.md#46-two-pcs-on-a-lan-the-link-the-start-the-checks-2026-11-14);
+[choosing a side, playing on alone](docs/design.md#47-two-pcs-the-hosts-side-and-the-host-playing-on-alone-2026-11-15).)
 
 ## Screenshots
 
@@ -551,7 +554,7 @@ with only a gamepad, the menu's Operator test menu does the same.
 - `settings.txt`: what the launcher's Settings page writes, and the game
   reads when it starts. One "name = value" a line: `coins` (free play |
   arcade), `fullscreen` (auto | on | off; auto is on for the Steam Deck and
-  Big Picture), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
+  Big Picture; the launcher's window follows it too), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
   ones keep the cabinet's screen in the middle, unstretched, and draw what
   the camera sees past its sides; default 4:3, and 16:10 on a Steam
   Deck), `filter` (smooth | sharp),
@@ -589,7 +592,8 @@ after N vertical blanks), `--unpaced` (no waiting, for measuring),
 `dimm.key` beside it), `--log FILE`, `--silent` (no sound chip: VF4debug's
 mailbox model, as in M3), `--user DIR`, `--host [PORT]` and
 `--join ADDRESS[:PORT]` (a game on two PCs, UDP port 29404 unless given)
-with `--delay N` (its input delay in vertical blanks, 2 by default), and
+with `--host-player N` (the host's player, 1 by default, or 2) and
+`--delay N` (its input delay in vertical blanks, 2 by default), and
 for tests `--hash-every N` (the machine's fingerprint in the log every N
 vertical blanks), `--press LIST`
 (buttons at given vertical blanks, as `6500:p1:start,6800:p1:p+g`),

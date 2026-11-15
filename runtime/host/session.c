@@ -6,8 +6,8 @@
  *            joining player's card
  *   REFUSE   host -> joining: why (another build, a game going on)
  *   WELCOME  host -> joining: the session's number, the cabinet's settings,
- *            the input delay, the host player's card, whether a backup
- *            follows
+ *            the input delay, whether a backup follows, which player the
+ *            host is, its player's card
  *   CHUNK    host -> joining: 1,024 bytes of the backup, sent again until
  *            all are acknowledged
  *   CHUNKS   joining -> host: which chunks have come (a bit each)
@@ -153,6 +153,18 @@ void session_config(int r, int port, const char *addr)
     SDL_strlcpy(cfg_addr, addr ? addr : "", sizeof cfg_addr);
 }
 
+static int host_side;               /* the host's player (session_host_side) */
+
+void session_host_side(int s)
+{
+    host_side = s == 1;
+}
+
+int session_host_side_get(void)
+{
+    return host_side;
+}
+
 int session_role(void)
 {
     return role;
@@ -176,7 +188,7 @@ static void compare(unsigned frame)
         return;
     if (my_hash[i].h != their_hash[i].h) {
         char why[200];
-        SDL_snprintf(why, sizeof why, "The two games went apart at vertical blank %u, so the game stopped. "
+        SDL_snprintf(why, sizeof why, "The two games went apart at vertical blank %u. "
                      "(This PC %016llx, the other %016llx.)", frame, (unsigned long long)my_hash[i].h,
                      (unsigned long long)their_hash[i].h);
         end_locked(why);
@@ -396,7 +408,7 @@ static int SDLCALL session_thread(void *arg)
         }
         SDL_LockMutex(lock);
         if (!ended && now - heard_ms > QUIET_MS)
-            end_locked("The other PC stopped answering, so the game stopped.");
+            end_locked("The other PC stopped answering.");
         SDL_UnlockMutex(lock);
     }
     return 0;
@@ -430,10 +442,12 @@ static int fail(const char *fmt, ...)
 static int host_wait(const session_start *mine_s, session_start *out)
 {
     char ip[64], text[96];
+    int h = host_side;
     udp_local_ip(ip, sizeof ip);
-    set_status("Hosting: waiting for player 2. On the other PC, join %s (port %d).",
+    set_status("Hosting as player %d: waiting for player %d. On the other PC, join %s (port %d).", h + 1, 2 - h,
                ip[0] ? ip : "this PC's address", cfg_port);
-    say("hosting on port %d; this PC's address %s; build %s", cfg_port, ip[0] ? ip : "(no network)", BUILD_ID);
+    say("hosting on port %d as player %d; this PC's address %s; build %s", cfg_port, h + 1,
+        ip[0] ? ip : "(no network)", BUILD_ID);
     unsigned char b[2048];
     while (!SDL_GetAtomicInt(&cancelled)) {
         udp_addr from;
@@ -455,8 +469,9 @@ static int host_wait(const session_start *mine_s, session_start *out)
             continue;
         }
         *out = *mine_s;
-        get_player(b + HDR + BUILD_MAX, &out->player[1]);
-        out->side = 0;
+        out->player[h] = mine_s->own;
+        get_player(b + HDR + BUILD_MAX, &out->player[!h]);
+        out->side = h;
         peer = from;
         sid = (Uint32)(SDL_GetPerformanceCounter() ^ (SDL_GetTicksNS() << 7)) | 1;
         /* WELCOME */
@@ -468,17 +483,18 @@ static int host_wait(const session_start *mine_s, session_start *out)
         w[m++] = (unsigned char)out->cards;
         w[m++] = (unsigned char)out->delay;
         w[m++] = (unsigned char)out->backup;
-        m += put_player(w + m, &out->player[0]);
+        w[m++] = (unsigned char)h;          /* the host's player: the joining PC is the other */
+        m += put_player(w + m, &out->player[h]);
         welcome_len = m;
         udp_send(sock, &peer, w, (size_t)m);
-        say("player 2 joined from %s (card %s)", text,
-            out->player[1].card == SESSION_CARD_NONE ? "none" : out->player[1].name);
+        say("player %d joined from %s (card %s)", 2 - h, text,
+            out->player[!h].card == SESSION_CARD_NONE ? "none" : out->player[!h].name);
         backup_src = out->backup_bytes;
         memset(chunk_have, 0, sizeof chunk_have);
         backup_going = out->backup;
         if (backup_going)
             send_chunks();
-        set_status("Player 2 joined from %s.", text);
+        set_status("Player %d joined from %s.", 2 - h, text);
         return 0;
     }
     return fail("Hosting was cancelled.");
@@ -496,7 +512,7 @@ static int guest_join(const session_start *mine_s, session_start *out)
     memset(hello + n, 0, BUILD_MAX);
     SDL_strlcpy((char *)hello + n, BUILD_ID, BUILD_MAX);
     n += BUILD_MAX;
-    n += put_player(hello + n, &mine_s->player[1]);
+    n += put_player(hello + n, &mine_s->own);
     Uint64 t0 = SDL_GetTicks(), next = 0;
     int welcomed = 0, backup = 0;
     while (!SDL_GetAtomicInt(&cancelled)) {
@@ -522,7 +538,7 @@ static int guest_join(const session_start *mine_s, session_start *out)
             why[l] = 0;
             return fail("The host said no: %s", why);
         }
-        if (k == P_WELCOME && !welcomed && r >= HDR + 6 + PLAYER_BYTES) {
+        if (k == P_WELCOME && !welcomed && r >= HDR + 7 + PLAYER_BYTES) {
             const unsigned char *p = b + HDR;
             sid = get32(b + 6);
             *out = *mine_s;
@@ -532,13 +548,16 @@ static int guest_join(const session_start *mine_s, session_start *out)
             out->cards = p[3];
             out->delay = p[4] ? p[4] : SESSION_DELAY;
             out->backup = p[5];
-            get_player(p + 6, &out->player[0]);
-            out->side = 1;
+            int h = p[6] == 1;              /* the host's player */
+            get_player(p + 7, &out->player[h]);
+            out->player[!h] = mine_s->own;
+            out->side = !h;
             welcomed = 1;
             backup = out->backup;
             memset(chunk_have, 0, sizeof chunk_have);
-            say("welcomed by %s: coins %d, region %d, network %d, cards %d, delay %d, %s", text, out->coins,
-                out->region, out->network, out->cards, out->delay, backup ? "its backup follows" : "a blank cabinet");
+            say("welcomed by %s as player %d: coins %d, region %d, network %d, cards %d, delay %d, %s", text, 2 - h,
+                out->coins, out->region, out->network, out->cards, out->delay,
+                backup ? "its backup follows" : "a blank cabinet");
             set_status("Joined %s: getting its cabinet.", text);
             if (!backup)
                 return 0;

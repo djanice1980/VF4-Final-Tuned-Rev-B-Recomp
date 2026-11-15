@@ -3103,3 +3103,100 @@ a host listening on IPv6 (it listens on IPv4; a joining PC can reach an
 IPv6 host only once it does); the internet (phase 2: a forwarded port or a
 relay, and rollback); Restart in a session; a test on two real PCs and on
 real Windows (its firewall's question when the game first hosts).
+
+## 47. Two PCs: the host's side, and the host playing on alone (2026-11-15)
+
+Two things after section 46: the host chooses whether it is player 1 or
+player 2, and when the joining player quits, the host keeps playing as a
+game for one. Also: the launcher asks for an address only once Join is
+chosen.
+
+**The launcher.** Two PCs' note now has **Host as player 1**, **Host as
+player 2**, **Join…** and **Cancel**, and no address field. Join… opens
+a second page, "Join a host", with the address field (the address last
+joined is filled in), **Join** and **Back**; Escape or a gamepad's back
+button goes back to the first page. The last choice is the note's first
+button next time (and drawn as the main one). `launcher-two-pc.txt` holds
+the address last joined, then that choice (`host`, `host 2` or `join`);
+one written by 0.5.6, the address alone, still reads. The note is drawn
+in the launcher's 960 x 600 units like every page, so it scales with the
+screen as they do (checked at 1x and 2x). The Play page's line says "One
+PC hosts, as player 1 or 2; the other joins it over your network as the
+other player."
+
+**The request and the command line.** `user/two-pc.txt` may say
+`host 2` as well as `host` (and `host 1`). From the command line,
+`--host-player 2` with `--host`. The joining PC needs nothing new: it is
+the player the host is not.
+
+**The protocol.** WELCOME gains one byte after the backup flag: which
+player the host is. HELLO is unchanged, and a joining PC of another build
+is refused before any WELCOME (section 46's build check), so the
+protocol's version stays 1. Each PC's own player is still its settings'
+card1 and its player-1 controls, whichever player it is in the game;
+`session_start` now has `own` (this PC's player's card, both roles) and
+`player[2]` by player, and the session puts each card in its unit.
+
+**Playing on alone.** When the session ends on the host for any reason
+but its own window closing (the other PC left, stopped answering for 15
+seconds, or the two runs went apart), the host's machine does not stop:
+
+- It saves the backup, ends the session (the network thread stops, BYE
+  is sent) and logs "vertical blank N: the two-PC game is over; this PC's
+  game goes on alone (player N)".
+- From that vertical blank on, its player's controls go straight in, with
+  no input delay, as that player; the other player's are none, so the
+  game goes on as a game with one player (the other's character stands
+  until the round ends; then it is the arcade game against the computer).
+- Its note shows why, then "Your game goes on: you play alone." for 8
+  seconds.
+- Its own card is written as it is, every 60 vertical blanks when it
+  changed and once more when the machine stops. The other player's card
+  is still never written: it stays in memory only.
+- The menu stays as it was in the session (no test mode, Restart or card
+  rows) until the game is closed.
+
+On the joining PC nothing changes: its game stops with the reason, now
+followed by "The game stopped.", and keeps its window until it is closed.
+The window titles say which player each PC is: the host's from the start,
+"(player N, hosting)"; the joining PC's "(joining)" until the start is
+agreed, then "(player N)".
+
+**The launcher follows Fullscreen.** It used to open as a window whatever
+the game's Fullscreen setting said. Now its window is fullscreen when the
+game's would be (`settings_fullscreen_wanted`, shared with the game: on,
+or auto on a Steam Deck or in Big Picture), read from the install
+folder's `user/settings.txt`. The window is made hidden and shown once the
+install folder is known, already fullscreen, so it never opens as a window
+first. It follows the setting again when Settings closes and when the game
+ends (the game's menu changes it too). Its page stays 960 x 600 units,
+letterboxed into the screen. `--shot` pictures keep the page's own size.
+Window size stays the game's alone: the launcher's window is sized for its
+page and the screen's scale.
+
+**What was checked** (headless KWin, both games over loopback, unpaced,
+cards on, fingerprints every 500 vertical blanks):
+
+- The host as player 2 through `user/two-pc.txt` ("host 2") on both PCs:
+  the joining PC was welcomed as player 1; all 40 fingerprints the same on
+  both PCs and the same as one game alone with the host's presses as player
+  2's and the other's as player 1's, moved on by the input delay; each PC's
+  card the same bytes as the game alone wrote.
+- The host as player 2 by `--host-player 2`, the joining game quitting at
+  vertical blank 8,000: the host went on alone from vertical blank 8,003
+  to 20,000, and all 40 of its fingerprints were the same as one game alone
+  with the host's presses moved on by the input delay before 8,003 and not
+  after. Its card was written alone at 12,000, 12,060 and 18,240 and was
+  the same bytes as the game alone's; the other player's card was not
+  written on the host.
+- The launcher, offscreen with `--shot-keys`: Host as player 1, Host as
+  player 2, Join… then an address, Join… then Back then Host as player 2,
+  a remembered `host 2` (the address last joined kept), a remembered
+  `join` (Join's page filled in), a 0.5.6 file (the address alone), and
+  Join's page left empty then Back and Cancel: each asked the stand-in
+  game for what was chosen, or started nothing.
+- The launcher's window, as KWin measured it on a 1280 x 800 screen:
+  fullscreen for Fullscreen on (Wayland, X11, and the Windows launcher
+  under Proton), for auto with `SteamDeck=1`, and after a game that turned
+  Fullscreen on and gave the launcher back (exit 64); a 960 x 600 window
+  for off, auto, and no settings file.

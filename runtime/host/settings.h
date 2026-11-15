@@ -84,6 +84,11 @@ extern const char *const settings_steam_deck_name[4];  /* "", "Steam Deck", "Ste
  * settings_steam_deck) */
 void settings_steam_deck_test(const char *product_file);
 
+/* 1 when the window is to be fullscreen: Fullscreen on, or auto on a Steam
+ * Deck or in Steam's Big Picture (SteamTenfoot=1). The game's window and the
+ * launcher's both follow it */
+int settings_fullscreen_wanted(const settings *s);
+
 /* 1 when a screen refreshing hz times a second shows the game's 60
  * pictures a second unevenly: hz known and not within 1 Hz of a multiple of
  * 60 (90 on a Steam Deck OLED, 144, 75, 50; not 59.94, 120 or 240) */

@@ -96,6 +96,14 @@ int settings_steam_deck(void)
     return known;
 }
 
+int settings_fullscreen_wanted(const settings *s)
+{
+    const char *tenfoot = SDL_getenv("SteamTenfoot");
+    return s->fullscreen == FULLSCREEN_ON ||
+           (s->fullscreen == FULLSCREEN_AUTO &&
+            (settings_steam_deck() != STEAM_DECK_NONE || (tenfoot && atoi(tenfoot))));
+}
+
 int settings_refresh_uneven(float hz)
 {
     if (!(hz > 0))

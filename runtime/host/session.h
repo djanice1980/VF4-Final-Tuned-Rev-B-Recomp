@@ -1,7 +1,9 @@
 /* Two players on two PCs (docs/design.md sections 45 and 46): each PC runs
  * the whole machine, the same run, and the two send each other only their
  * player's controls for each vertical blank, a few vertical blanks ahead
- * (the input delay). One PC hosts (player 1), the other joins (player 2).
+ * (the input delay). One PC hosts, as player 1 or player 2 (its choice),
+ * the other joins as the other player. When the session ends, the host's
+ * game can go on alone (the caller's choice); the joining PC's stops.
  *
  * The start: the joining PC says which build it is and sends its player's
  * card; the host answers with the cabinet (its backup, coins, region,
@@ -16,7 +18,7 @@
  * both PCs send a fingerprint of their machine (the caller's hash); a
  * difference ends the session at once (the two runs went apart).
  *
- * Over UDP (net.h), one socket a PC. */
+ * Over UDP (udp.h), one socket a PC. */
 #ifndef VF4FT_SESSION_H
 #define VF4FT_SESSION_H
 
@@ -42,22 +44,28 @@ typedef struct session_start {
     int coins, region, network, cards;  /* the host's settings (settings.h's COINS_*, REGION_*; 0/1) */
     int backup;                         /* 1: backup_bytes is the host's backup.bin; 0: a blank cabinet */
     unsigned char backup_bytes[GAME_BACKUP_SIZE];
-    session_player player[2];           /* player 1 is the host's, player 2 the joining PC's */
+    session_player own;                 /* mine: this PC's player's card (both roles) */
+    session_player player[2];           /* out: player 1's and player 2's */
     int delay;                          /* vertical blanks from a press to its frame */
-    int side;                           /* this PC's player: 0 (host) or 1 */
+    int side;                           /* out: this PC's player, 0 (player 1) or 1 */
 } session_start;
 
 /* from the command line, before anything else: SESSION_HOST on port (0:
- * NET_PORT), or SESSION_GUEST to addr ("host[:port]") */
+ * UDP_PORT), or SESSION_GUEST to addr ("host[:port]") */
 void session_config(int role, int port, const char *addr);
 int session_role(void);
+
+/* the host's player: 0 (player 1, the default) or 1 (player 2); the joining
+ * PC is the other */
+void session_host_side(int side);
+int session_host_side_get(void);
 
 /* where the session's log lines go (any thread) */
 void session_logger(void (*fn)(const char *line));
 
 /* The connection, on the machine's thread before the machine starts. The
- * host gives everything in mine but player[1]; the joining PC only
- * player[1]. out is the start both agreed on. hash is called at every
+ * host gives the cabinet's fields and own; the joining PC only own. out is
+ * the start both agreed on (player[] by player, side this PC's). hash is called at every
  * check vertical blank (from session_frame) for the machine's fingerprint.
  * Blocks until the two have agreed (0), or the connection failed or was
  * cancelled (session_cancel) (-1, with session_status saying why) */
