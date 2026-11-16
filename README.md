@@ -236,7 +236,9 @@ and any other folder gets a `VF4 Final Tuned` folder of its own inside it
 saves and settings into the new folder at the next build; the old folder
 stays as it was. The Windows release runs on Windows and, on Linux and
 the Steam Deck, under Proton (Steam, or `umu-run`); plain Wine is not
-supported ([why](docs/design.md#27-install-folder-set-choice-and-plain-wine-2026-11-13)). To build the launcher from this
+supported ([why](docs/design.md#27-install-folder-set-choice-and-plain-wine-2026-11-13)). Under Proton and Wine the
+launcher draws with Vulkan when it can ([why](docs/design.md#52-the-launchers-loop-waits-for-work-vulkan-first-under-wine-2026-11-15));
+`SDL_RENDER_DRIVER` picks another of SDL's renderers. To build the launcher from this
 repository: `cmake --build build/linux --target vf4ft-launcher` (it needs no
 translated code), then `build/linux/vf4ft-launcher`. A release folder is put
 together by `tools/package_release.py` (its usage is at its top).

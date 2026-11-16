@@ -3731,3 +3731,132 @@ the launcher's Picture tab with --shot offscreen:
 Not tested: the loader filter (step 2) on two separate cards of one kind,
 which this PC does not have; a real monitor unplugged while the game runs
 (the virtual outputs cannot be).
+
+## 52. The launcher's loop waits for work; Vulkan first under Wine (2026-11-15)
+
+Reported against 0.5.7: under Proton, after the launcher's window was
+dragged bigger, the page stayed at its old size in the top-left corner,
+black around it, and clicks landed in the wrong places. Plain Wine did the
+same (section 27 saw it there and left it: plain Wine is not supported).
+
+**Where the fault is: not the launcher.** On the machine it was reported
+on (an AMD Radeon 8060S with RADV, and an NVIDIA card in an eGPU):
+
+- The NVIDIA card alone (`VK_DRIVER_FILES` naming only its driver): the
+  launcher resizes correctly. The Radeon alone: it breaks, both with
+  Proton's Direct3D 11 (DXVK) and with Wine's own Direct3D 12.
+- A 100-line SDL program with nothing of the launcher in it, an 8-pixel
+  red border drawn on the picture's edges, breaks the same way on the
+  Radeon: the border stays where the old size ended, while SDL reports,
+  every frame, an output size equal to the window's, and no error.
+- The same program with SDL's Vulkan renderer (`SDL_RENDER_DRIVER=vulkan`
+  under Wine) on the same Radeon follows the window, and so does native
+  `vkcube` there.
+- SDL's Direct3D renderers present with `DXGI_SCALING_NONE`, so a picture
+  left at the old size means the buffers that reach the screen never grew.
+
+So the fault is in the Direct3D-over-Vulkan layers on RADV: Wine's own
+Direct3D 12 swapchain and DXVK's. The real fix is theirs, and the test
+program is the case to report with (not reported yet).
+
+**The workaround: Vulkan first under Wine.** A launcher that finds
+`wine_get_version` in ntdll (plain Wine and Proton both have it) asks SDL
+for its renderers in the order
+`vulkan,direct3d11,direct3d12,direct3d,opengl,opengles2,gpu,software`:
+SDL's own Windows order with Vulkan moved to the front. SDL tries them in
+turn, so a system without a Vulkan driver gets the next one that starts.
+`SDL_RENDER_DRIVER`, when it is set, still decides (an environment
+variable outranks `SDL_SetHint`). `launcher.log` says which, as in
+`window: SDL 3.4.20, renderer vulkan (Vulkan asked for first under Wine),
+video windows`. Windows itself keeps SDL's order. This reverses section
+27's choice to keep SDL's order, which was made when only plain Wine's
+Direct3D 12 was seen to fail; Proton's DXVK now fails the same way on
+the Radeon. The game is not touched: its SDL_GPU already takes Vulkan
+under Proton (section 20).
+
+**The loop no longer counts on VSync.** The launcher's loop used to poll
+its events, draw and present with VSync on, so the present's wait for
+the screen was its only pause. Two faults came with that, both ours:
+
+- A renderer whose VSync does not wait made it spin. SDL's Direct3D 12
+  makes its swapchain with a frame-latency waitable object and never
+  waits on it: the test program drew about 17,700 frames a second under
+  Wine's Direct3D 12, and section 27 saw the launcher use 60% of a core.
+- Where VSync does wait, the page was drawn at the screen's rate (60,
+  144, or whatever VRR gives) when nothing on it changed.
+
+Now the loop sleeps in `SDL_WaitEventTimeout` until something needs it,
+and draws once each time it wakes:
+
+- an event: input, the window, a pad, or a folder picker's answer (the
+  picker's thread pushes an event of the launcher's own);
+- a build or an update check running: its output read every 50 ms, as
+  before;
+- the game running: watched every 100 ms. The window is hidden then, and
+  SDL's wait with no window shown wakes every millisecond, so the loop
+  uses `SDL_Delay` and a poll instead;
+- something on the page that moves by itself: a bar of unknown length
+  asks for the screen's next frame, a text cursor for its next blink
+  (530 ms). A hidden or minimized window asks for neither;
+- otherwise once a second.
+
+Two frames start at least 9/10 of the screen's frame apart (`frame_gap`),
+so a mouse moving or a held key draws no faster than the screen shows,
+whatever the renderer's VSync does. VSync stays on, only to keep the
+picture from tearing. With a pad open, SDL's own wait wakes each
+millisecond to read it (`EVENT_POLL_INTERVAL_NS` in SDL_events.c) and
+goes back to sleep without returning: that is SDL reading the pad, with no
+drawing.
+
+**Checked** in a headless KWin (a 1920 x 1080 virtual screen at 60 Hz;
+nothing reaches the real desktop). CPU is the launcher process's own
+(its /proc times over 10 s, as a share of one core). Frames were counted
+by a test-only `SDL_RenderPresent` wrapper (LD_PRELOAD) for the Linux
+launcher, and for the Windows one by a test-only copy of the source that
+logs its wakes and frames every 5 s; the same wrappers turned VSync off,
+as a renderer whose VSync does not wait.
+
+| Launcher, idle on the Play page | Renderer | Frames a second | CPU |
+|---|---|---|---|
+| Linux, before, VSync on (X11) | opengl | 60 | 3.6 to 5.5% |
+| Linux, before, VSync off | opengl | about 5,300 | 99% |
+| Linux, now, VSync on or off (X11) | opengl | 1 | 0.0 to 0.2% |
+| Linux, before (Wayland) | opengl | | 4.0 to 4.4% |
+| Linux, now (Wayland) | opengl | | 0.1 to 0.2% |
+| Windows 0.5.7 under plain Wine | direct3d | | 4.8 to 7.8% |
+| Windows, now, plain Wine, Vulkan on lavapipe | vulkan | 1 | 0.6 to 1.0% |
+| the same, no Vulkan driver at all | direct3d | | 0.1 to 0.3% |
+| the same, `SDL_RENDER_DRIVER=direct3d` | direct3d | | 0.1 to 0.2% |
+
+(In that session plain Wine's Direct3D 11 does not start and its Direct3D
+12 does not start on lavapipe, so SDL took Direct3D 9, `direct3d`, both for
+0.5.7 and as the fallback.) With Vulkan on lavapipe the rest of the CPU is
+lavapipe's and Wine's threads: the loop itself woke 5 times in each 5 s.
+
+- **The pointer moving** 500 times a second over the window (Wine's
+  `SendInput`, 10 s): 60 frames a second with VSync on, and 66.8 with it
+  off, which is `frame_gap`'s limit at 60 Hz (the Linux runs could not
+  move the pointer: XTEST's moves do not reach the nested session's
+  windows). Back to 1 a second when it stops.
+- **Resizes** (three, by a KWin script): a few frames for the size changes,
+  then 1 a second. Clicks on Check for updates before and after them land
+  (each logs a new check), and the pictures at 1:1 fill the new size.
+- **Renderer choice:** under plain Wine the log says `renderer vulkan
+  (Vulkan asked for first under Wine)`; with no Vulkan driver SDL went on
+  to `direct3d`, and the launcher worked the same; with
+  `SDL_RENDER_DRIVER=direct3d` the log says `renderer direct3d
+  (SDL_RENDER_DRIVER)`. The Linux launcher's order is SDL's own (opengl).
+- **Builds** under plain Wine with Vulkan on lavapipe, from an empty
+  install folder: `--do build --exit` built the game in 75 s (the first
+  download of llvm-mingw included) and ended with 0; `--cancel-after 20`
+  pressed Cancel at 20.4 s during translation, the builder stopped in the
+  same second, and the launcher ended with 1. The build page drew its step,
+  bar, elapsed time and log as before. While a build runs the launcher
+  draws at the screen's rate when its bar's length is unknown, and every
+  50 ms otherwise (its output is read then); on lavapipe that drawing is
+  the 15 to 35% of a core the launcher used, which a GPU does instead.
+
+**Not covered.** Proton itself on the Radeon (the reported case: to be
+tried on that machine), VRR, a folder picker's answer (no picker in the
+headless runs; without the wake the loop still reads it within a second),
+a text cursor's blink, and a pad connected.

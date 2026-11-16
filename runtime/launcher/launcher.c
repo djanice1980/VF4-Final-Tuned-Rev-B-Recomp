@@ -611,6 +611,20 @@ static void steam_setup(void)
 #endif
 }
 
+/* the Windows launcher under Wine or Proton (Wine's ntdll has wine_get_version) */
+static int under_wine(void)
+{
+#ifdef _WIN32
+    SDL_SharedObject *nt = SDL_LoadObject("ntdll.dll");
+    int wine = nt && SDL_LoadFunction(nt, "wine_get_version");
+    if (nt)
+        SDL_UnloadObject(nt);
+    return wine;
+#else
+    return 0;
+#endif
+}
+
 static void program_path(char *out, size_t n)
 {
 #ifdef _WIN32
@@ -1406,6 +1420,76 @@ static int restart_launcher(const char *opt_game, int opt_exit)
     return 0;
 }
 
+/* ---- when the main loop wakes (docs/design.md section 52) ----
+ * The loop sleeps until something needs it and draws once each time it
+ * wakes: an event (input, the window, a pad, a folder picker's answer), a
+ * running build, update check or game (their output read every 50 ms, the
+ * game watched every 100 ms), or the next change of something that moves by
+ * itself (a bar of unknown length: the screen's next frame; a text cursor:
+ * its next blink). With none of these, once a second. VSync only keeps the
+ * picture from tearing: the loop never counts on it to wait, so the screen's
+ * rate (60 Hz, 144 Hz, VRR) and a renderer whose VSync does not block (Wine's
+ * own D3D12) change nothing */
+static Uint32 wake_event;           /* pushed by a folder picker's thread with its answer (0: none) */
+static Uint64 draw_t0;              /* when the frame being drawn started (SDL_GetTicksNS) */
+static Uint64 wake_due = 1;         /* after the last frame: when the page changes by itself (0: never; 1: at once) */
+
+static void wake_at(Uint64 ns)
+{
+    if (!wake_due || ns < wake_due)
+        wake_due = ns;
+}
+
+/* a frame of the screen the window is on (60 Hz if SDL does not know) */
+static Uint64 frame_ns(void)
+{
+    const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+    double hz = m && m->refresh_rate >= 1 ? m->refresh_rate : 60.0;
+    return (Uint64)(1e9 / hz);
+}
+
+/* something moving: the screen's next frame */
+static void wake_next_frame(void)
+{
+    wake_at(draw_t0 + frame_ns());
+}
+
+/* input (a mouse moving, a held key) draws no faster than the screen shows,
+ * whatever the renderer's VSync does: at least 9/10 of a frame between the
+ * starts of two frames (a VSync that waits ends a frame later anyway) */
+static void frame_gap(void)
+{
+    Uint64 soonest = draw_t0 + frame_ns() * 9 / 10, now = SDL_GetTicksNS();
+    if (now < soonest)
+        SDL_DelayNS(soonest - now);     /* one sleep: a little late does no harm */
+}
+
+/* how long the loop may sleep, in milliseconds */
+static Sint32 loop_wait_ms(void)
+{
+    Uint64 now = SDL_GetTicksNS(), due = now + SDL_MS_TO_NS(1000);
+    if (proc || uproc)
+        due = SDL_min(due, now + SDL_MS_TO_NS(50));
+    if (game_proc)
+        due = SDL_min(due, now + SDL_MS_TO_NS(100));
+    /* hidden or minimized, nothing moving is seen (and the game's run skips draw(), which would
+     * have moved wake_due on); shown again, SDL's event about it wakes the loop */
+    if (wake_due && !(SDL_GetWindowFlags(win) & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)))
+        due = SDL_min(due, wake_due);
+    return due <= now ? 0 : (Sint32)((due - now + 999999) / 1000000);
+}
+
+/* from another thread: the loop wakes now */
+static void wake_loop(void)
+{
+    if (!wake_event)
+        return;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = wake_event;
+    SDL_PushEvent(&e);
+}
+
 static void SDLCALL on_folder(void *ud, const char *const *files, int filter)
 {
     (void)ud;
@@ -1413,6 +1497,7 @@ static void SDLCALL on_folder(void *ud, const char *const *files, int filter)
     if (files && files[0]) {
         SDL_strlcpy(picked_path, files[0], sizeof picked_path);
         SDL_SetAtomicInt(&picked, 1);
+        wake_loop();
     }
 }
 
@@ -1423,6 +1508,7 @@ static void SDLCALL on_game_folder(void *ud, const char *const *files, int filte
     if (files && files[0]) {
         SDL_strlcpy(picked_game_path, files[0], sizeof picked_game_path);
         SDL_SetAtomicInt(&picked_game, 1);
+        wake_loop();
     }
 }
 
@@ -2900,6 +2986,8 @@ static void draw_work(void)
     }
     double t = shot_elapsed >= 0 ? shot_elapsed : (double)(SDL_GetTicks() - proc_t0) / 1000.0;
     ui_bar(CX + 28, 290, CW - 56, 8, stage_pct >= 0 ? (float)stage_pct / 100 : -1, t);
+    if (stage_pct < 0)
+        wake_next_frame();      /* the bar's piece moves */
     char el[48];
     int secs = (int)t;
     snprintf(el, sizeof el, "%d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60);
@@ -2997,6 +3085,8 @@ static float draw_update_card(float y)
     if (bar) {
         ui_bar(CX + 24, y + 52, tw, 6, upd_pct >= 0 ? (float)upd_pct / 100 : -1,
                (double)(SDL_GetTicks() - upd_t0) / 1000.0);
+        if (upd_pct < 0)
+            wake_next_frame();
         ui_text_in(UI_REGULAR, 14, CX + 24, y + 76, tw, 0, 0, UI_MUTED, s);
     } else {
         ui_wrap(UI_REGULAR, 14, CX + 24, y + 56, tw, 19, UI_MUTED, s);
@@ -3473,6 +3563,8 @@ static void draw_pop(void)
         float cw = ui_text(UI_MEDIUM, 18, x0 + 52, fy + 24, UI_TEXT, field);
         if (SDL_GetTicks() / 530 % 2 == 0 || shot_mode)
             ui_fill(x0 + 52 + cw + 2, fy + 12, 2, 24, UI_ACCENT);
+        Uint64 ms = draw_t0 / 1000000;
+        wake_at(SDL_MS_TO_NS(ms - ms % 530 + 530));     /* the cursor's next blink */
         if (pop == POP_RENAME)
             cp_text_ok();
         if (cp_error[0])
@@ -3526,6 +3618,8 @@ static void draw_pop(void)
 
 static void draw(void)
 {
+    draw_t0 = SDL_GetTicksNS();
+    wake_due = 0;       /* what moves on the page asks for its next frame while it is drawn */
     int pw = 0, ph = 0;
     SDL_GetRenderOutputSize(ren, &pw, &ph);
     SDL_SetRenderDrawColor(ren, UI_BG.r, UI_BG.g, UI_BG.b, 255);
@@ -3824,6 +3918,7 @@ int main(int argc, char **argv)
         SDL_Log("SDL_Init: %s", SDL_GetError());
         return 1;
     }
+    wake_event = SDL_RegisterEvents(1);
     ui_pad_logger(say_line);    /* which pad is left out: Steam Input's twins (ui.h) */
     if (!shot_page || shot_scale < 1 || shot_scale > 4)
         shot_scale = 1;     /* --shot-scale: the window made K times as big, as on a high-DPI screen */
@@ -3838,6 +3933,15 @@ int main(int argc, char **argv)
     /* the switch on: the window stays hidden unless the launcher is needed. Otherwise it is shown
      * once the install folder is known: fullscreen when the game's window is (follow_fullscreen) */
     int want_direct = play_direct && !shot_page && !opt_show && !after_game && !opt_do && !opt_pick_game;
+    /* WORKAROUND (docs/design.md section 52), not a fix of ours: under Wine and Proton, SDL's
+     * Vulkan renderer first. On an AMD Radeon (RADV), Proton's D3D11 (DXVK) and Wine's own D3D12
+     * keep the picture at its old size when the window is resized, with no error, in any SDL
+     * program; SDL's Vulkan renderer on the same GPU follows the window. The rest is SDL's own
+     * order, tried in turn if Vulkan cannot start. SDL_RENDER_DRIVER, if set, still wins (an
+     * environment variable beats SDL_SetHint) */
+    int vulkan_first = under_wine() &&
+                       SDL_SetHint(SDL_HINT_RENDER_DRIVER,
+                                   "vulkan,direct3d11,direct3d12,direct3d,opengl,opengles2,gpu,software");
     if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", win_w, win_h,
                                      SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
                                          (!shot_page ? SDL_WINDOW_HIDDEN : 0),
@@ -3868,9 +3972,13 @@ int main(int argc, char **argv)
     for (int i = 0; i < nunknown; i++)
         say("not an option: %s (ignored)", unknown[i]);
     say("builder files: %s", root[0] ? root : "(not found)");
-    say("window: SDL %d.%d.%d, renderer %s, video %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
+    say("window: SDL %d.%d.%d, renderer %s%s, video %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MINOR(SDL_GetVersion()), SDL_VERSIONNUM_MICRO(SDL_GetVersion()),
-        SDL_GetRendererName(ren), SDL_GetCurrentVideoDriver());
+        SDL_GetRendererName(ren),
+        vulkan_first                    ? " (Vulkan asked for first under Wine)"
+        : SDL_getenv("SDL_RENDER_DRIVER") ? " (SDL_RENDER_DRIVER)"
+                                          : "",
+        SDL_GetCurrentVideoDriver());
     if (!shot_page)
         say("window: %d x %d to start (display scale %.2f, usable area %d x %d)", win_w, win_h, win_scale,
             win_usable.w, win_usable.h);
@@ -4041,8 +4149,20 @@ int main(int argc, char **argv)
         upd_start(1);       /* the check at every start: a line on GitHub's API, no download */
     int running = 1, result = do_failed, restarting = 0;
     while (running) {
+        /* asleep until something needs the loop (loop_wait_ms). A hidden window (the game
+         * running, Play directly): SDL's own wait would wake every millisecond then */
         SDL_Event e;
-        while (SDL_PollEvent(&e)) {
+        Sint32 wait = loop_wait_ms();
+        bool have;
+        if (SDL_GetWindowFlags(win) & SDL_WINDOW_HIDDEN) {
+            SDL_Delay((Uint32)wait);
+            have = SDL_PollEvent(&e);
+        } else {
+            have = SDL_WaitEventTimeout(&e, wait);
+        }
+        for (; have; have = SDL_PollEvent(&e)) {
+            if (e.type == wake_event)
+                continue;       /* a folder picker answered: read below */
             if (ui_pad_event_hidden(&e))
                 continue;       /* the real pad behind a Steam Input pad: its presses are that pad's too */
             ui_note_event(&e);
@@ -4095,10 +4215,8 @@ int main(int argc, char **argv)
             continue;
         }
         upd_pump();
-        if (game_proc) {
-            SDL_Delay(100);           /* hidden while the game runs: nothing to draw */
-            continue;
-        }
+        if (game_proc)
+            continue;           /* hidden while the game runs: nothing to draw (watched every 100 ms) */
         if (was && !proc) {
             result = code == 0 ? 0 : 1;
             if (opt_exit)
@@ -4151,6 +4269,7 @@ int main(int argc, char **argv)
             result = auto_upd == 3 && upd != U_CHECK_FAILED ? 0 : 1;
             running = 0;
         }
+        frame_gap();
         draw();
     }
     if (proc) {
