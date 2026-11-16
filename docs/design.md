@@ -2468,6 +2468,23 @@ others that cross the screen are zooming pictures much wider than it,
 left alone. The game's own fades (the white-out between rounds, the
 title's white) are in its 3D and fill the sides already.
 
+**The library's placeholder (2026-11-15).** Every wide picture had one
+black pixel just left of the 4:3 picture's top-left corner, on both
+renderers and every GPU (0.5.8 and before). The Naomi 2 library puts a
+placeholder in each of its lists every frame (`dummy_tri_link_on_lists`):
+sprites from (-1, -1) to (-0.1, 1) at depth 0.1, and in the
+modifier-volume lists triangles there, left of the screen so that on the
+chip they cover no pixel. `keep_left` kept them; the translucent list's
+copy blends with both factors zero, so the pixel was black. A temporary log
+in `scene_draw` (removed) found them the only triangles at that spot.
+`chip_vertex` now drops them, matched by the library's own words corner for
+corner and by their header (`list_placeholder`), so nothing else the game
+draws can match. At 4:3 they were never drawn. Checked (`--shot`, the
+headless KWin, the attract sequence at seven moments, before and after the
+change): 4:3 is pixel for pixel the same on both renderers; at 16:9 the one
+pixel, (106, 0), is the only one changed, from black to the scene's colour,
+on both.
+
 **The window.** The picture keeps its shape: the window letterboxes or
 pillarboxes it as before, at the picture's width over 480 rather than
 4:3. A wide picture's window started 720 tall at its shape (1,719 x 720

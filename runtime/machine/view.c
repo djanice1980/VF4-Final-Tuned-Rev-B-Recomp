@@ -1987,10 +1987,27 @@ static void chip_header(const u32 *w, int para)
     }
 }
 
+/* recomp: the placeholder the Naomi 2 library puts in every list each frame
+ * (dummy_tri_link_on_lists): a sprite, or in a modifier-volume list a
+ * triangle, from (-1, -1) to (-0.1, 1) at depth 0.1, just left of the screen,
+ * so that on the chip it covers no pixel. The wide screen keeps what lies left
+ * of the game's x = 0 (keep_left) and drew it: one black pixel left of the 4:3
+ * picture's top-left corner (section 39). Found by the library's own words,
+ * corner for corner (`corners` 4: a sprite, 3: a volume's triangle). */
+static int list_placeholder(const u32 *w, int corners)
+{
+    static const u32 at[11] = { 0xbf800000u, 0xbf800000u, 0x3dcccccdu, 0xbf800000u, 0x3f800000u, 0x3dcccccdu,
+                                0xbdcccccdu, 0x3f800000u, 0x3dcccccdu, 0xbdcccccdu, 0xbf800000u };
+    return es.st.isp == 0xe1000000u && es.st.tsp == 0x00800440u && !es.st.textured &&
+           memcmp(w + 1, at, (corners == 4 ? 11 : 9) * sizeof(u32)) == 0;
+}
+
 static void chip_vertex(const u32 *w)
 {
     u32 pcw = es.pcw;
     int txd = pcw >> 3 & 1, col = pcw >> 4 & 3, uv_short = pcw & 1, two = pcw >> 6 & 1, ofs = pcw >> 2 & 1;
+    if ((es.kind == 2 || es.kind == 3) && list_placeholder(w, es.kind == 2 ? 4 : 3))
+        return;
     if (es.kind == 3) {
         /* a modifier volume's triangle, three corners; the header's top bits close the volume */
         int which = es.list == 3, kind = es.st.isp >> 29 & 3;
