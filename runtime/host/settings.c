@@ -525,10 +525,13 @@ int settings_save(const settings *s, const char *path)
         "                         # (4:3 by default; 16:10, its screen's shape, on a Steam Deck)\n",
         settings_picture_name(s->picture));
     PUT("filter = %s           # smooth | sharp (how the picture is scaled to the window)\n", filter_names[s->filter]);
-    PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture)\n", renderer_names[s->renderer]);
-    PUT("gpu = %s              # the GPU renderer's GPU: auto (SDL's choice, a separate graphics card first) or\n"
-        "                         # a GPU's name as Vulkan gives it (the game's menu and the launcher list them);\n"
-        "                         # one not there at the start: auto for that run\n",
+    PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture); the launcher's\n"
+        "                         # window follows it too, and software is used when no GPU can draw\n",
+        renderer_names[s->renderer]);
+    PUT("gpu = %s              # the GPU the game and the launcher draw on: auto (the first in the list\n"
+        "                         # that works) or a GPU's name as Vulkan gives it (the game's menu and the\n"
+        "                         # launcher list them); one not there or that cannot draw: the first that\n"
+        "                         # works instead (the setting is kept)\n",
         s->gpu[0] ? s->gpu : "auto");
     PUT("display = %s          # the display the game opens on, windowed or fullscreen: auto (where the\n"
         "                         # system puts it) or a display's name (listed as for gpu); one not connected:\n"

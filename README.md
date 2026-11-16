@@ -236,8 +236,11 @@ and any other folder gets a `VF4 Final Tuned` folder of its own inside it
 saves and settings into the new folder at the next build; the old folder
 stays as it was. The Windows release runs on Windows and, on Linux and
 the Steam Deck, under Proton (Steam, or `umu-run`); plain Wine is not
-supported ([why](docs/design.md#27-install-folder-set-choice-and-plain-wine-2026-11-13)). Under Proton and Wine the
-launcher draws with Vulkan when it can ([why](docs/design.md#52-the-launchers-loop-waits-for-work-vulkan-first-under-wine-2026-11-15));
+supported ([why](docs/design.md#27-install-folder-set-choice-and-plain-wine-2026-11-13)). The launcher's
+window draws as the game's Renderer and GPU settings say, and changes with them
+([how](docs/design.md#53-renderer-and-gpu-an-order-to-fall-back-on-changed-at-once-2026-11-15));
+when no GPU can draw it, SDL's own order is used, Vulkan first under Proton and Wine
+([why](docs/design.md#52-the-launchers-loop-waits-for-work-vulkan-first-under-wine-2026-11-15)).
 `SDL_RENDER_DRIVER` picks another of SDL's renderers. To build the launcher from this
 repository: `cmake --build build/linux --target vf4ft-launcher` (it needs no
 translated code), then `build/linux/vf4ft-launcher`. A release folder is put
@@ -494,9 +497,9 @@ shape, in the usual screens' sizes from 640 x 480 to 5120 x 2160 (21:9 at
 the ultrawide screens' own widths; Auto is the largest of the sizes that
 leaves a tenth of the screen free); Internal resolution is the size the GPU renderer draws at, before
 the picture is scaled to the window or the screen. Picture, window size,
-scaling, fullscreen and volume change at once; renderer, internal
-resolution and the card units are kept for the next start (marked with a
-dot until then),
+scaling, fullscreen, display, renderer, GPU, internal resolution and volume
+change at once (the launcher's window follows Renderer and GPU too); the
+card units are kept for the next start (marked with a dot until then),
 and credits (free play or arcade coins), Network and Region apply at the
 next restart. Network is the game's own network setting, off by default: off,
 the game skips its network check as it starts (there is no network
@@ -568,7 +571,9 @@ with only a gamepad, the menu's Operator test menu does the same.
   ones keep the cabinet's screen in the middle, unstretched, and draw what
   the camera sees past its sides; default 4:3, and 16:10 on a Steam
   Deck), `filter` (smooth | sharp),
-  `renderer` (gpu | software), `scale` (1 to 4 times 640 x 480; default 2),
+  `renderer` (gpu | software), `gpu` (auto | a GPU's name, as the menu
+  lists it), `display` (auto | a display's name), `scale` (1 to 4 times
+  640 x 480; default 2),
   `sound` (on | off), `volume` (0 to 100; default 100), `cards` (on |
   off), `network` (off | on; default off: the game's own NETWORK setting,
   written into its settings record as it starts, so it skips its network
@@ -591,9 +596,14 @@ with only a gamepad, the menu's Operator test menu does the same.
   the screen refresh notice were shown (remove one to see it again).
 
 **The GPU renderer** (`renderer = gpu`, the default) needs Vulkan: it is
-used natively, and under Proton through Proton's own Vulkan. Without
-Vulkan, or with `--gpu direct3d12`, the game shows the software picture
-at 640 x 480, as in M3. `vf4ft.log` says which renderer it used.
+used natively, and under Proton through Proton's own Vulkan. It draws on
+the GPU chosen in the Picture tab's GPU row. A chosen GPU that is not
+there (an external one unplugged) or cannot draw is passed over for the
+first in the row's list that works, and Auto (the default) takes the
+first that works; the list is in Vulkan's order, which usually puts the
+GPU your screen is on first. When no GPU works, or with `--gpu
+direct3d12`, the game shows the software picture at 640 x 480, as in M3.
+`vf4ft.log` says which renderer and GPU it used, and why.
 
 Options: `--fullscreen`, `--gpu direct3d12|vulkan`, `--frames N` (quit
 after N vertical blanks), `--unpaced` (no waiting, for measuring),

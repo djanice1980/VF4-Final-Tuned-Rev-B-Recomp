@@ -181,6 +181,8 @@ static SDL_AtomicInt shot_pause;        /* 1 + the shot the machine waits for at
 
 /* the menu (menu.c): what this thread asks of the machine's */
 static SDL_AtomicInt menu_pause;        /* 1: the machine waits at its vertical blank */
+static SDL_AtomicInt gpu_path;          /* 1: the machine is to hand its passes to the GPU renderer (video_open) */
+static int machine_path = -1;           /* the machine's thread's: what it does now (-1: not set yet) */
 static SDL_AtomicInt test_frames;       /* vertical blanks the menu holds the Test switch for */
 static SDL_AtomicInt restart_req;       /* GAME_COINS_*: the game starts again from power on, with it (and
                                          * start_cfg's network) */
@@ -1154,7 +1156,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
     }
     audio_frame((booting && !real_boot) || unpaced);
     SDL_LockMutex(shared.lock);
-    if (rgb && w >= PIC_W && w <= PIC_W_MAX) {
+    if (rgb && machine_path != 1 && w >= PIC_W && w <= PIC_W_MAX) {     /* the GPU renderer's: not this */
         memcpy(shared.pic, rgb, (size_t)w * PIC_H * 3);
         shared.pic_w = w;
         shared.pic_frame = frame;
@@ -1261,6 +1263,16 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
         while (SDL_GetAtomicInt(&menu_pause))
             SDL_Delay(5);
         due = 0;
+    }
+    /* the renderer the window's thread has now (section 53): its passes to
+     * the GPU renderer, or the software picture, from the next one on */
+    int path = SDL_GetAtomicInt(&gpu_path);
+    if (path != machine_path) {
+        game_machine_gpu(path ? gpu_render_submit : NULL);
+        if (machine_path >= 0)
+            logf_("vertical blank %u: the machine draws for the %s from now on", frame,
+                  path ? "GPU renderer" : "software picture");
+        machine_path = path;
     }
     cards_edits(0);         /* the menu's card edits, then its card choices */
     cards_swap();
@@ -1659,18 +1671,16 @@ static void gpus_need(void)
         logf_("GPUs: none listed (%s)", why);
 }
 
-static int gpu_chosen;     /* the device open is the GPU setting's choice (not Auto's) */
-
 /* SDL_GPU's Vulkan device, with low power preferred or not */
 static SDL_GPUDevice *gpu_open(int lowpower)
 {
     if (!lowpower)
-        return SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, "vulkan");     /* Auto: as before */
+        return SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, "vulkan");     /* SDL's own choice */
     SDL_PropertiesID p = SDL_CreateProperties();
     SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
     SDL_SetStringProperty(p, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
     SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, true);
-    SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);    /* as Auto's (it defaults to on) */
+    SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);    /* as the other's (it defaults to on) */
     SDL_GPUDevice *d = SDL_CreateGPUDeviceWithProperties(p);
     SDL_DestroyProperties(p);
     return d;
@@ -1684,61 +1694,275 @@ static const char *gpu_name_of(SDL_GPUDevice *d, char *buf, size_t n)
     return buf;
 }
 
-/* The GPU renderer's Vulkan device (docs/design.md section 51): SDL's
- * choice for Auto, else the GPU setting's. SDL 3.4 takes no device name or
- * number: it ranks the GPUs by kind, a separate one first, or one in the
- * processor first when low power is preferred. So a GPU in the processor
- * is asked for with low power preferred and any other without; and when
- * SDL still opens another (two separate GPUs), Vulkan's loader is told to
- * list that one only (VK_LOADER_DEVICE_ID_FILTER, read by the Linux and
- * Windows loaders; under Wine the Linux loader cannot see it). The name of
- * the device SDL opened says which it is. A GPU that is not here, or that
- * cannot be had: Auto, logged. NULL: no Vulkan device (SDL_GetError) */
-static SDL_GPUDevice *gpu_device_open(void)
+/* The GPU g as SDL_GPU's Vulkan device, or NULL (logged). SDL 3.4 takes no
+ * device name or number: it ranks the GPUs by kind, a separate one first,
+ * or one in the processor first when low power is preferred. So a GPU in
+ * the processor is asked for with low power preferred and any other
+ * without; and when SDL still opens another (two separate GPUs), Vulkan's
+ * loader is told to list that one only (VK_LOADER_DEVICE_ID_FILTER, read by
+ * the Linux and Windows loaders; under Wine the Linux loader cannot see
+ * it). The name of the device SDL opened says which it is. */
+static SDL_GPUDevice *gpu_open_named(const gpu_info *g)
 {
     char name[GPU_NAME_MAX];
-    if (cfg_.gpu[0]) {
+    int lowpower = g->type == GPU_INTEGRATED;
+    SDL_GPUDevice *d = gpu_open(lowpower);
+    if (d && !SDL_strcasecmp(gpu_name_of(d, name, sizeof name), g->name))
+        return d;
+    if (d)
+        SDL_DestroyGPUDevice(d);
+    char id[16], old[64];
+    const char *was = SDL_getenv("VK_LOADER_DEVICE_ID_FILTER");
+    SDL_strlcpy(old, was ? was : "", sizeof old);
+    SDL_snprintf(id, sizeof id, "0x%04x", (unsigned)g->device);
+    SDL_setenv_unsafe("VK_LOADER_DEVICE_ID_FILTER", id, 1);
+    d = gpu_open(lowpower);
+    if (was)
+        SDL_setenv_unsafe("VK_LOADER_DEVICE_ID_FILTER", old, 1);
+    else
+        SDL_unsetenv_unsafe("VK_LOADER_DEVICE_ID_FILTER");
+    if (d && !SDL_strcasecmp(gpu_name_of(d, name, sizeof name), g->name)) {
+        logf_("GPU: %s through Vulkan's loader (SDL opens another first)", g->name);
+        return d;
+    }
+    logf_("GPU: %s cannot be had (SDL opens %s for it)", g->name, d ? name : "no device");
+    if (d)
+        SDL_DestroyGPUDevice(d);
+    return NULL;
+}
+
+/* ---- the window's device and renderer (docs/design.md section 53) ---- */
+
+static const char *gpu_driver;          /* --gpu: SDL_GPU's driver (NULL: Vulkan, else SDL's choice) */
+static SDL_GPUDevice *gpu;              /* the window's device */
+static int use_gpu;                     /* the GPU renderer draws on it; else the software picture is shown */
+static SDL_GPUTexture *pic_tex;         /* the software picture, uploaded */
+static SDL_GPUTransferBuffer *upload;
+static SDL_GPUTexture *shot_tex;        /* --keys shot=: the window as shown */
+static Uint32 shot_w, shot_h;
+static struct {
+    int renderer, scale;
+    char gpu[GPU_NAME_MAX];
+} video_for;                            /* the settings the device and the renderer were made for */
+static int video_redo;                  /* the menu changed them: made again before the next frame */
+
+static void ovl_free(SDL_GPUDevice *dev);
+static void ovl_gpu_free(SDL_GPUDevice *dev);
+static int ovl_gpu_make(SDL_GPUDevice *dev);
+
+/* the window for device d (--art has none: true) */
+static int video_claim(SDL_GPUDevice *d)
+{
+    return !main_win || SDL_ClaimWindowForGPUDevice(d, main_win);
+}
+
+/* The device for the window and the renderer on it, by Renderer and GPU:
+ * the GPU chosen, then the others in the list's order (Vulkan's; Auto
+ * starts at its top), then a device SDL opens itself (a GPU not listed:
+ * one that draws on the processor). The first that opens, shows the window
+ * and starts the GPU renderer is taken. If the GPU renderer starts on none,
+ * the software picture is shown through the first that showed the window.
+ * Software passes the GPU setting by: the first in the list that shows the
+ * window. Last, for the software picture, any device SDL_GPU has (Direct3D
+ * 12 on Windows without Vulkan; --gpu names one). Sets gpu, use_gpu,
+ * gpu_now, pic_tex and upload, the window claimed; 0, or -1 when nothing
+ * can show the window */
+static int video_open(void)
+{
+    SDL_Window *win = main_win;
+    char name[GPU_NAME_MAX];
+    int want_gpu = cfg_.renderer == RENDERER_GPU && !(gpu_driver && SDL_strcasecmp(gpu_driver, "vulkan"));
+    SDL_GPUDevice *keep = NULL;     /* the first that showed the window, where the GPU renderer did not start */
+    const char *why = "";
+    gpu = NULL;
+    use_gpu = 0;
+    gpu_now[0] = 0;
+    video_for.renderer = cfg_.renderer;
+    video_for.scale = cfg_.scale;
+    SDL_strlcpy(video_for.gpu, cfg_.gpu, sizeof video_for.gpu);
+    if (!gpu_driver || !SDL_strcasecmp(gpu_driver, "vulkan")) {
         gpus_need();
-        const gpu_info *g = gpus_find(gpus, gpus_n, cfg_.gpu);
-        if (!g) {
-            logf_("settings: GPU \"%s\" is not here: Auto for this run (it is kept for the next)", cfg_.gpu);
-        } else {
-            int lowpower = g->type == GPU_INTEGRATED;
-            SDL_GPUDevice *d = gpu_open(lowpower);
-            if (d && !SDL_strcasecmp(gpu_name_of(d, name, sizeof name), g->name)) {
-                logf_("GPU: %s, as the settings ask (SDL's choice with low power %s)", g->name,
-                      lowpower ? "preferred" : "not preferred");
-                gpu_chosen = 1;
-                return d;
+        const gpu_info *chosen = want_gpu && cfg_.gpu[0] ? gpus_find(gpus, gpus_n, cfg_.gpu) : NULL;
+        if (want_gpu && cfg_.gpu[0] && !chosen)
+            logf_("settings: GPU \"%s\" is not here: the first that works instead (the setting is kept)", cfg_.gpu);
+        const gpu_info *order[GPUS_MAX + 1];
+        int n = 0;
+        if (chosen)
+            order[n++] = chosen;
+        for (int i = 0; i < gpus_n; i++)
+            if (&gpus[i] != chosen)
+                order[n++] = &gpus[i];
+        order[n++] = NULL;          /* SDL's own choice */
+        for (int i = 0; i < n && !gpu; i++) {
+            SDL_GPUDevice *d = order[i] ? gpu_open_named(order[i]) : gpu_open(0);
+            if (!d) {
+                if (!order[i])
+                    logf_("GPU: SDL opens no Vulkan device (%s)", SDL_GetError());
+                continue;
             }
-            logf_("GPU: SDL chose %s, not %s: asking Vulkan's loader for that one only",
-                  d ? name : "no device", g->name);
-            if (d)
+            gpu_name_of(d, name, sizeof name);
+            if (!order[i] && gpus_find(gpus, gpus_n, name)) {
+                SDL_DestroyGPUDevice(d);        /* one of the list's, tried already */
+                continue;
+            }
+            if (!video_claim(d)) {
+                /* on X11 (and Proton) the X server draws on one GPU and takes
+                 * another's pictures only as that GPU's driver allows (Mesa's
+                 * swapchain on the Radeon when Xwayland is on an NVIDIA card fails so) */
+                logf_("GPU: %s cannot show the window (%s)", name, SDL_GetError());
                 SDL_DestroyGPUDevice(d);
-            char id[16], old[64];
-            const char *was = SDL_getenv("VK_LOADER_DEVICE_ID_FILTER");
-            SDL_strlcpy(old, was ? was : "", sizeof old);
-            SDL_snprintf(id, sizeof id, "0x%04x", (unsigned)g->device);
-            SDL_setenv_unsafe("VK_LOADER_DEVICE_ID_FILTER", id, 1);
-            d = gpu_open(lowpower);
-            if (was)
-                SDL_setenv_unsafe("VK_LOADER_DEVICE_ID_FILTER", old, 1);
-            else
-                SDL_unsetenv_unsafe("VK_LOADER_DEVICE_ID_FILTER");
-            if (d && !SDL_strcasecmp(gpu_name_of(d, name, sizeof name), g->name)) {
-                logf_("GPU: %s, as the settings ask (through Vulkan's loader)", g->name);
-                gpu_chosen = 1;
-                return d;
+                continue;
             }
-            logf_("GPU: %s cannot be had (SDL chose %s): Auto for this run", g->name, d ? name : "no device");
-            if (d)
+            if (!want_gpu) {
+                gpu = d;
+                break;
+            }
+            if (gpu_render_init(d, cfg_.scale) == 0) {
+                gpu = d;
+                use_gpu = 1;
+                why = chosen && order[i] == chosen ? " (the GPU chosen)"
+                      : chosen                     ? " (the GPU chosen could not be used)"
+                      : cfg_.gpu[0]                ? " (the first that works: the GPU chosen is not here)"
+                                                   : " (Auto: the first that works)";
+                break;
+            }
+            logf_("GPU: the GPU renderer cannot start on %s (%s)", name, SDL_GetError());
+            gpu_render_quit();
+            if (win)
+                SDL_ReleaseWindowFromGPUDevice(d, win);
+            if (!keep)
+                keep = d;
+            else
                 SDL_DestroyGPUDevice(d);
         }
     }
-    SDL_GPUDevice *d = gpu_open(0);
-    if (d)
-        logf_("GPU: %s (Auto: SDL's choice)", gpu_name_of(d, name, sizeof name));
-    return d;
+    if (!gpu && keep) {
+        if (video_claim(keep)) {
+            gpu = keep;
+            keep = NULL;
+        } else {
+            logf_("GPU: %s cannot show the window again (%s)", gpu_name_of(keep, name, sizeof name), SDL_GetError());
+        }
+    }
+    if (keep)
+        SDL_DestroyGPUDevice(keep);
+    if (!gpu) {
+        SDL_GPUDevice *d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_driver);
+        if (!d)
+            logf_("SDL_CreateGPUDevice(%s) failed: %s", gpu_driver ? gpu_driver : "any", SDL_GetError());
+        else if (!video_claim(d)) {
+            logf_("claim window failed: %s", SDL_GetError());
+            SDL_DestroyGPUDevice(d);
+        } else {
+            gpu = d;
+        }
+    }
+    if (!gpu)
+        return -1;
+    logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
+    int shown_w = art_dir ? PIC_W : settings_picture_width(cfg_.picture);
+    if (use_gpu) {
+        gpu_name_of(gpu, gpu_now, sizeof gpu_now);
+        logf_("renderer: GPU, %d x %d, on %s%s", shown_w * cfg_.scale, PIC_H * cfg_.scale, gpu_now, why);
+    } else {
+        logf_("renderer: software, %d x %d, shown through %s%s", shown_w, PIC_H, gpu_name_of(gpu, name, sizeof name),
+              want_gpu ? " (the GPU renderer could not start on any GPU)" : "");
+    }
+
+    SDL_SetAtomicInt(&gpu_path, use_gpu);
+    if (art_dir)
+        return 0;                       /* no window: art_loop takes the GPU renderer's pictures */
+    /* the software picture: uploaded into a texture whenever a new one is
+     * there, then blitted to the window, scaled */
+    SDL_GPUTextureCreateInfo ti;
+    SDL_zero(ti);
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.width = PIC_W_MAX;               /* room for a wide screen */
+    ti.height = PIC_H;
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
+    pic_tex = SDL_CreateGPUTexture(gpu, &ti);
+    SDL_GPUTransferBufferCreateInfo bi;
+    SDL_zero(bi);
+    bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    bi.size = PIC_W_MAX * PIC_H * 4;
+    upload = SDL_CreateGPUTransferBuffer(gpu, &bi);
+    if (!pic_tex || !upload) {
+        logf_("picture texture: %s", SDL_GetError());
+        return -1;
+    }
+    return 0;
+}
+
+/* everything on the device, and the device: the window is free for another */
+static void video_close(void)
+{
+    if (!gpu)
+        return;
+    if (use_gpu)
+        gpu_render_quit();
+    use_gpu = 0;
+    if (pic_tex)
+        SDL_ReleaseGPUTexture(gpu, pic_tex);
+    if (upload)
+        SDL_ReleaseGPUTransferBuffer(gpu, upload);
+    if (shot_tex)
+        SDL_ReleaseGPUTexture(gpu, shot_tex);
+    pic_tex = shot_tex = NULL;
+    upload = NULL;
+    shot_w = shot_h = 0;
+    ovl_gpu_free(gpu);
+    if (main_win)
+        SDL_ReleaseWindowFromGPUDevice(gpu, main_win);
+    SDL_DestroyGPUDevice(gpu);
+    gpu = NULL;
+    gpu_now[0] = 0;
+}
+
+/* Renderer, GPU or Internal resolution changed in the menu (the machine
+ * waits while it is open): the renderer starts again, at once. A new
+ * Internal resolution alone starts it again on the same device; anything
+ * else makes the device again by video_open's order. The machine takes the
+ * GPU renderer or the software picture at its next vertical blank
+ * (on_frame). 0, or -1 when nothing can show the window any more */
+static int video_switch(void)
+{
+    logf_("menu: Renderer %s, GPU %s, Internal resolution %dx: the renderer starts again",
+          cfg_.renderer == RENDERER_GPU ? "GPU" : "Software", cfg_.gpu[0] ? cfg_.gpu : "Auto", cfg_.scale);
+    if (use_gpu && cfg_.renderer == RENDERER_GPU && video_for.renderer == RENDERER_GPU &&
+        !SDL_strcasecmp(cfg_.gpu, video_for.gpu)) {
+        gpu_render_quit();
+        if (gpu_render_init(gpu, cfg_.scale) == 0) {
+            video_for.scale = cfg_.scale;
+            int shown_w = settings_picture_width(cfg_.picture);
+            logf_("renderer: GPU, %d x %d, on %s", shown_w * cfg_.scale, PIC_H * cfg_.scale, gpu_now);
+            return 0;
+        }
+        logf_("GPU: the GPU renderer cannot start again on %s (%s)", gpu_now, SDL_GetError());
+        gpu_render_quit();
+        use_gpu = 0;
+    }
+    video_close();
+    if (video_open()) {
+        logf_("no GPU device can show the window: the game ends");
+        return -1;
+    }
+    if (ovl.surf && ovl_gpu_make(gpu)) {
+        logf_("the menu's drawing: %s", SDL_GetError());
+        ovl_free(gpu);
+    }
+    ov_dirty = 1;
+    return 0;
+}
+
+/* the menu's change: does the renderer start again for it? */
+static int video_changed(void)
+{
+    if (cfg_.renderer != video_for.renderer)
+        return 1;
+    return cfg_.renderer == RENDERER_GPU && (cfg_.scale != video_for.scale || SDL_strcasecmp(cfg_.gpu, video_for.gpu));
 }
 
 /* the displays as last listed: their names and ids, for the menu's Display
@@ -1934,7 +2158,7 @@ static void menu_show_as(int notice)
     r.card_peek = card_peek;
     r.card_edit = card_edit_save;
     r.refresh = screen_refresh(main_win);
-    r.gpu_now = gpu_now[0] ? gpu_now : NULL;
+    r.gpu_now = gpu_now;                /* as it is now: video_switch changes it while the menu is open */
     r.deck = settings_steam_deck();
     r.session = in_session;
     r.join_code = in_session && session_role() == SESSION_HOST ? session_code : NULL;    /* the same values */
@@ -2163,6 +2387,8 @@ static int menu_do(int a)
         }
         if (audio)
             SDL_SetAudioStreamGain(audio, cfg_.volume / 100.0f);
+        if (video_changed())
+            video_redo = 1;     /* in the main loop, before the next frame */
         ov_dirty = 1;
         return 1;
     case MENU_RESUME:
@@ -2215,7 +2441,46 @@ static int menu_do(int a)
 }
 
 
-static void ovl_free(SDL_GPUDevice *gpu)
+/* the overlay's textures on the device; its drawing on the processor (the
+ * surface, ui's renderer, the backdrop) stays, for another device
+ * (video_switch) */
+static void ovl_gpu_free(SDL_GPUDevice *dev)
+{
+    if (ovl.tex)
+        SDL_ReleaseGPUTexture(dev, ovl.tex);
+    if (ovl.up)
+        SDL_ReleaseGPUTransferBuffer(dev, ovl.up);
+    if (ovl.grab)
+        SDL_ReleaseGPUTexture(dev, ovl.grab);
+    ovl.tex = NULL;
+    ovl.up = NULL;
+    ovl.grab = NULL;
+    ovl.grab_w = ovl.grab_h = 0;
+    ovl.ready = 0;
+}
+
+/* the overlay's textures at its size (ovl.w x ovl.h); 0 or -1 */
+static int ovl_gpu_make(SDL_GPUDevice *dev)
+{
+    SDL_GPUTextureCreateInfo ti;
+    SDL_zero(ti);
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.width = (Uint32)ovl.w;
+    ti.height = (Uint32)ovl.h;
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
+    ovl.tex = SDL_CreateGPUTexture(dev, &ti);
+    SDL_GPUTransferBufferCreateInfo bi;
+    SDL_zero(bi);
+    bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    bi.size = (Uint32)ovl.w * (Uint32)ovl.h * 4;
+    ovl.up = SDL_CreateGPUTransferBuffer(dev, &bi);
+    return ovl.tex && ovl.up ? 0 : -1;
+}
+
+static void ovl_free(SDL_GPUDevice *dev)
 {
     if (ovl.ren) {
         ui_quit();
@@ -2224,43 +2489,23 @@ static void ovl_free(SDL_GPUDevice *gpu)
         SDL_DestroyRenderer(ovl.ren);
     }
     SDL_DestroySurface(ovl.surf);
-    if (ovl.tex)
-        SDL_ReleaseGPUTexture(gpu, ovl.tex);
-    if (ovl.up)
-        SDL_ReleaseGPUTransferBuffer(gpu, ovl.up);
-    if (ovl.grab)
-        SDL_ReleaseGPUTexture(gpu, ovl.grab);
+    ovl_gpu_free(dev);
     SDL_zero(ovl);
 }
 
 /* made again at the window's size, w x h pixels; 0 or -1 */
-static int ovl_size(SDL_GPUDevice *gpu, int w, int h)
+static int ovl_size(SDL_GPUDevice *dev, int w, int h)
 {
-    ovl_free(gpu);
-    ovl.surf = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_ABGR8888);
-    ovl.ren = ovl.surf ? SDL_CreateSoftwareRenderer(ovl.surf) : NULL;
-    SDL_GPUTextureCreateInfo ti;
-    SDL_zero(ti);
-    ti.type = SDL_GPU_TEXTURETYPE_2D;
-    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ti.width = (Uint32)w;
-    ti.height = (Uint32)h;
-    ti.layer_count_or_depth = 1;
-    ti.num_levels = 1;
-    ovl.tex = SDL_CreateGPUTexture(gpu, &ti);
-    SDL_GPUTransferBufferCreateInfo bi;
-    SDL_zero(bi);
-    bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    bi.size = (Uint32)w * (Uint32)h * 4;
-    ovl.up = SDL_CreateGPUTransferBuffer(gpu, &bi);
-    if (!ovl.ren || !ovl.tex || !ovl.up || ui_init(ovl.ren)) {
-        logf_("the menu's drawing at %dx%d: %s", w, h, SDL_GetError());
-        ovl_free(gpu);
-        return -1;
-    }
+    ovl_free(dev);
     ovl.w = w;
     ovl.h = h;
+    ovl.surf = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_ABGR8888);
+    ovl.ren = ovl.surf ? SDL_CreateSoftwareRenderer(ovl.surf) : NULL;
+    if (!ovl.ren || ovl_gpu_make(dev) || ui_init(ovl.ren)) {
+        logf_("the menu's drawing at %dx%d: %s", w, h, SDL_GetError());
+        ovl_free(dev);
+        return -1;
+    }
     return 0;
 }
 
@@ -2558,7 +2803,7 @@ static const char *beside_exe(char *buf, size_t n, const char *name)
 
 int main(int argc, char **argv)
 {
-    const char *gpu_name = NULL, *log_path = NULL, *user_arg = NULL;
+    const char *log_path = NULL, *user_arg = NULL;
     int fullscreen = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -2570,8 +2815,8 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--silent")) silent = 1;
         else if (!strcmp(a, "--fullscreen")) fullscreen = 1;
         else if (!strcmp(a, "--gpu") && v) {
-            gpu_name = argv[++i];
-            if (!SDL_strcasecmp(gpu_name, "d3d12")) gpu_name = "direct3d12";   /* SDL's name for it */
+            gpu_driver = argv[++i];
+            if (!SDL_strcasecmp(gpu_driver, "d3d12")) gpu_driver = "direct3d12";   /* SDL's name for it */
         }
         else if (!strcmp(a, "--log") && v) log_path = argv[++i];
         else if (!strcmp(a, "--user") && v) user_arg = argv[++i];
@@ -2863,53 +3108,15 @@ int main(int argc, char **argv)
             }
         }
     }
-    /* The GPU renderer's shaders are SPIR-V: a Vulkan device (natively, or
-     * Proton's winevulkan). Without one the software picture is shown, on
-     * whatever device SDL picks. */
-    SDL_GPUDevice *gpu = NULL;
-    int use_gpu = cfg_.renderer == RENDERER_GPU && !(gpu_name && SDL_strcasecmp(gpu_name, "vulkan"));
-    if (use_gpu) {
-        gpu = gpu_device_open();
-        if (!gpu) {
-            logf_("no Vulkan device (%s): the software picture instead", SDL_GetError());
-            use_gpu = 0;
-        }
+    /* The device and the renderer on it (video_open, docs/design.md section
+     * 53). The GPU renderer's shaders are SPIR-V: a Vulkan device (natively,
+     * or Proton's winevulkan) */
+    if (video_open()) {
+        logf_("no GPU device can show the window");
+        return 1;
     }
-    if (!gpu)
-        gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_name);
-    if (!gpu) { logf_("SDL_CreateGPUDevice(%s) failed: %s", gpu_name ? gpu_name : "default", SDL_GetError()); return 1; }
-    logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
-    int claimed = !win || SDL_ClaimWindowForGPUDevice(gpu, win);
-    if (!claimed && gpu_chosen) {
-        /* the GPU setting's choice cannot show in this window: on X11 (and
-         * Proton) the X server draws on one GPU and takes another's pictures
-         * only as that GPU's driver allows (Mesa's swapchain on the Radeon
-         * when Xwayland is on an NVIDIA card fails so). Auto, as for a GPU
-         * that is not there */
-        char was[GPU_NAME_MAX];
-        logf_("GPU: %s cannot show the window (%s): Auto for this run", gpu_name_of(gpu, was, sizeof was),
-              SDL_GetError());
-        SDL_DestroyGPUDevice(gpu);
-        gpu_chosen = 0;
-        gpu = gpu_open(0);
-        if (!gpu) { logf_("SDL_CreateGPUDevice(vulkan) failed: %s", SDL_GetError()); return 1; }
-        logf_("GPU: %s (Auto: SDL's choice)", gpu_name_of(gpu, was, sizeof was));
-        claimed = SDL_ClaimWindowForGPUDevice(gpu, win);
-    }
-    if (!claimed) { logf_("claim window failed: %s", SDL_GetError()); return 1; }
-    if (use_gpu && gpu_render_init(gpu, cfg_.scale)) {
-        logf_("the GPU renderer cannot start (%s): the software picture instead", SDL_GetError());
-        gpu_render_quit();
-        use_gpu = 0;
-    }
-    int shown_w = art_dir ? PIC_W : settings_picture_width(cfg_.picture);
-    if (use_gpu) {
+    if (use_gpu)
         game_machine_gpu(gpu_render_submit);
-        gpu_name_of(gpu, gpu_now, sizeof gpu_now);
-        logf_("renderer: GPU, %d x %d, on %s", shown_w * cfg_.scale, PIC_H * cfg_.scale, gpu_now);
-    } else {
-        logf_("renderer: software, %d x %d", shown_w, PIC_H);
-    }
     if (art_dir && !use_gpu) {
         logf_("art: no GPU renderer, so no artwork");
         return 3;
@@ -2931,29 +3138,20 @@ int main(int argc, char **argv)
         return art_loop(gpu, machine);
 
 
-    /* the picture: uploaded into a texture whenever a new one is there, then
-     * blitted to the window, scaled */
+    /* the picture (video_open's pic_tex) is blitted to the window, scaled;
+     * the menu's backdrop and --keys shot= take the window into textures of
+     * this kind */
     SDL_GPUTextureCreateInfo ti;
     SDL_zero(ti);
     ti.type = SDL_GPU_TEXTURETYPE_2D;
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ti.width = PIC_W_MAX;               /* room for a wide screen */
+    ti.width = PIC_W_MAX;
     ti.height = PIC_H;
     ti.layer_count_or_depth = 1;
     ti.num_levels = 1;
-    SDL_GPUTexture *pic_tex = SDL_CreateGPUTexture(gpu, &ti);
-    SDL_GPUTransferBufferCreateInfo bi;
-    SDL_zero(bi);
-    bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    bi.size = PIC_W_MAX * PIC_H * 4;
-    SDL_GPUTransferBuffer *upload = SDL_CreateGPUTransferBuffer(gpu, &bi);
-    if (!pic_tex || !upload) { logf_("picture texture: %s", SDL_GetError()); return 1; }
     static unsigned char rgb[PIC_W_MAX * PIC_H * 3];
     int rgb_w = PIC_W;                  /* the software picture's width */
-
-    SDL_GPUTexture *shot_tex = NULL;    /* --keys shot=: the window as shown */
-    Uint32 shot_w = 0, shot_h = 0;
 
     Uint64 t0 = SDL_GetTicksNS(), chord_since = 0, dir_next = 0;
     unsigned shown_frame = 0, pictures = 0, presents = 0;
@@ -3264,6 +3462,20 @@ int main(int argc, char **argv)
             }
         }
 
+        /* the menu changed Renderer, GPU or Internal resolution: the renderer
+         * starts again before this frame (section 53); no picture until the
+         * next one comes, from the renderer now in use */
+        if (video_redo && running) {
+            video_redo = 0;
+            if (video_switch()) {
+                running = 0;
+                break;
+            }
+            have_picture = 0;
+            SDL_LockMutex(shared.lock);
+            shown_frame = shared.pic_frame;
+            SDL_UnlockMutex(shared.lock);
+        }
         unsigned frame;
         SDL_LockMutex(shared.lock);
         shared.in = in;
@@ -3496,25 +3708,20 @@ int main(int argc, char **argv)
               audio_level / 44.1);
         SDL_DestroyAudioStream(audio);
     }
-    if (use_gpu) {
+    {
         unsigned gf, gt, gv;
         gpu_render_stats(&gf, &gt, &gv);
-        logf_("GPU renderer: %u frames drawn, at most %u triangles; %u frames had translucent volumes (not drawn)",
-              gf, gt, gv);
-        gpu_render_quit();
+        if (use_gpu || gf)
+            logf_("GPU renderer: %u frames drawn, at most %u triangles; %u frames had translucent volumes (not drawn)",
+                  gf, gt, gv);
     }
-    SDL_ReleaseGPUTransferBuffer(gpu, upload);
-    SDL_ReleaseGPUTexture(gpu, pic_tex);
     ovl_free(gpu);
-    if (shot_tex)
-        SDL_ReleaseGPUTexture(gpu, shot_tex);
     if (vpad) {
         SDL_JoystickID id = SDL_GetJoystickID(vpad);
         SDL_CloseJoystick(vpad);
         SDL_DetachVirtualJoystick(id);
     }
-    SDL_ReleaseWindowFromGPUDevice(gpu, win);
-    SDL_DestroyGPUDevice(gpu);
+    video_close();
     SDL_DestroyWindow(win);
     SDL_DestroyMutex(shared.lock);
     gu_quit();      /* the records are saved: an update asked for in the menu goes to the launcher */

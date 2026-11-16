@@ -33,6 +33,42 @@ int gpus_list(gpu_info *out, int max, char *why, size_t n);
 /* the GPU of that name in list (n of them), or NULL */
 const gpu_info *gpus_find(const gpu_info *list, int n, const char *name);
 
+/* SDL's Vulkan renderer on a GPU of our choosing (the launcher: docs/design.md
+ * section 53). SDL picks the first GPU that can show the window and takes
+ * no name, but it takes an instance, a surface and a GPU made elsewhere:
+ * this is them. The instance is made with SDL's Vulkan library and the
+ * extensions SDL's renderer asks for; the window's surface is on it; the
+ * GPUs are the ones that can draw and show the window (a queue for
+ * drawing, one that presents to the surface, VK_KHR_swapchain), in
+ * Vulkan's order, without those that draw on the processor (as gpus_list).
+ * The renderer does not destroy what it is given: vk_window_close, after
+ * SDL_DestroyRenderer. */
+typedef struct vk_gpu {
+    char name[GPU_NAME_MAX];    /* as gpus_list names it */
+    void *physical;             /* VkPhysicalDevice */
+    Uint32 graphics, present;   /* the queue families */
+} vk_gpu;
+typedef struct vk_window {
+    void *instance;             /* VkInstance; NULL: not open */
+    Uint64 surface;             /* VkSurfaceKHR */
+    vk_gpu gpu[GPUS_MAX];
+    int n;
+} vk_window;
+
+/* 0, or -1 with why (n bytes) saying what failed. Opening it may turn the
+ * window into a Vulkan one (SDL_WINDOW_VULKAN): the window must have no
+ * renderer then */
+int vk_window_open(SDL_Window *win, vk_window *v, char *why, size_t n);
+void vk_window_close(vk_window *v);
+
+/* the create properties of SDL's Vulkan renderer on v's GPU i
+ * (SDL_CreateRendererWithProperties); destroy them after */
+SDL_PropertiesID vk_window_props(const vk_window *v, int i, SDL_Window *win);
+
+/* the GPU that renderer r draws on when it is SDL's Vulkan renderer, as
+ * gpus_list names it, in buf (n bytes); NULL when it is another */
+const char *vk_renderer_gpu(SDL_Renderer *r, char *buf, size_t n);
+
 #define DISPLAYS_MAX 16
 /* The displays SDL lists now, in its order: their number (at most max),
  * each one's name in names and its id in ids (ids may be NULL). A name is

@@ -50,7 +50,10 @@ void game_machine_wide(int width);
 
 /* The GPU renderer (runtime/host/gpu_render.c): set before game_machine_init,
  * a pass to the screen goes to fn (view.h, view_gpu_frame) instead of the
- * software picture, which then stays NULL */
+ * software picture, which then stays as it was. After game_machine_init it
+ * changes the renderer as the game runs (docs/design.md section 53), and
+ * only on the machine's thread, between passes (from the game_frame_fn):
+ * NULL, the software picture from the next pass on */
 struct view_gpu_frame;
 typedef void (*game_gpu_fn)(const struct view_gpu_frame *f);
 void game_machine_gpu(game_gpu_fn fn);

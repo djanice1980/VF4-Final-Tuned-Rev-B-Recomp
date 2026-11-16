@@ -48,7 +48,14 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <unistd.h>
+#endif
 
 #include "card_editor.h"
 #include "cards.h"
@@ -68,6 +75,7 @@
 
 static SDL_Window *win;
 static SDL_Renderer *ren;
+static void follow_renderer(const char *when);     /* the renderer as the settings ask (section 53) */
 static char base[896], root[1024], game[1024], python[1024], set_path[1024], set_file[1024];
 
 /* a path as shown: under the home folder as ~/... (not on Windows) */
@@ -414,6 +422,7 @@ static void choose_game_dir(const char *pick)
     SDL_SaveFile(game_file, game, strlen(game));
     say("install folder: %s (chosen)", game);
     load_install();
+    follow_renderer("another install folder");
 }
 
 /* recursive copy of src's files into dst (made); 0 when all went */
@@ -1009,6 +1018,7 @@ static void watch_game(void)
             say("%s", status_text);
         }
         follow_fullscreen("the game ended");
+        follow_renderer("the game ended");
         SDL_ShowWindow(win);
         SDL_RaiseWindow(win);
     }
@@ -1462,6 +1472,156 @@ static void frame_gap(void)
     Uint64 soonest = draw_t0 + frame_ns() * 9 / 10, now = SDL_GetTicksNS();
     if (now < soonest)
         SDL_DelayNS(soonest - now);     /* one sleep: a little late does no harm */
+}
+
+/* ---- the compositor going away (docs/design.md section 53) ----
+ * When the Wayland compositor ends, the launcher closes: SDL sends its quit
+ * when its event pump finds the connection gone, and display_gone stops the
+ * loop drawing first. A frame being drawn as the compositor ends may never
+ * finish, though: SDL 3.4.20's OpenGL present (Wayland_GLES_SwapWindow, which
+ * the software renderer presents through too) waits for the frame callback
+ * in a loop that never ends once the connection has failed, and the Vulkan
+ * renderer on the NVIDIA card did not come back either (where: not traced).
+ * KWin ending cleanly does that: it takes its screen away first, which has
+ * the launcher draw, and closes the connection during that frame. The main
+ * thread cannot get out of it, so a thread of its own (watch_run) watches the
+ * connection's socket: once the compositor has closed it, a frame still being
+ * drawn 3 seconds on ends the launcher there. Its closing steps are skipped
+ * then: a build stops as its input ends, a download is taken up again by the
+ * next start's check. Wayland only */
+static SDL_AtomicU32 draw_since;    /* SDL_GetTicks() as the frame being drawn started, | 1 (0: none) */
+#define STUCK_MS 3000               /* a frame still drawing this long after the compositor has gone */
+
+#ifndef _WIN32
+static int way_fd = -1;             /* the Wayland connection's socket (-1: not Wayland, or not known) */
+static int watch_wake[2] = {-1, -1};    /* a byte written: the watch ends */
+static SDL_AtomicInt watch_stop;
+static SDL_Thread *watch_thread;
+
+/* SDL's Wayland connection (NULL: not Wayland) */
+static void *way_display(void)
+{
+    return SDL_GetPointerProperty(SDL_GetGlobalProperties(), SDL_PROP_GLOBAL_VIDEO_WAYLAND_WL_DISPLAY_POINTER, NULL);
+}
+
+/* libwayland's function NAME (NULL: not there). SDL's Wayland driver has
+ * loaded the library already, so this is the same copy; kept open */
+static SDL_FunctionPointer way_func(const char *name)
+{
+    static SDL_SharedObject *so;
+    static int looked;
+    if (!looked) {
+        looked = 1;
+        so = SDL_LoadObject("libwayland-client.so.0");
+    }
+    return so ? SDL_LoadFunction(so, name) : NULL;
+}
+
+/* the compositor has closed the connection: its socket has hung up (or has an error) */
+static int way_hung_up(void)
+{
+    struct pollfd p = {.fd = way_fd, .events = 0};
+    return way_fd >= 0 && poll(&p, 1, 0) > 0 && (p.revents & (POLLHUP | POLLERR));
+}
+
+/* the watch's thread: asleep until the socket hangs up or the launcher
+ * closes. poll with no events asked for wakes for a hang-up or an error
+ * only, never for the compositor's messages. It takes no lock of
+ * libwayland's: a thread stuck in libwayland may hold one */
+static int SDLCALL watch_run(void *unused)
+{
+    (void)unused;
+    struct pollfd p[2] = {{.fd = way_fd, .events = 0}, {.fd = watch_wake[0], .events = POLLIN}};
+    for (;;) {
+        int n = poll(p, 2, -1);
+        if (SDL_GetAtomicInt(&watch_stop) || (n < 0 && errno != EINTR) || (n > 0 && (p[0].revents & POLLNVAL)))
+            return 0;
+        if (n > 0 && (p[0].revents & (POLLHUP | POLLERR)))
+            break;
+    }
+    /* the compositor has closed it: the loop closes the launcher, unless a frame never finishes */
+    while (!SDL_GetAtomicInt(&watch_stop)) {
+        /* signed: a frame started in this millisecond can read 1 ms ahead (the | 1) */
+        Uint32 t = SDL_GetAtomicU32(&draw_since);
+        if (t && (Sint32)((Uint32)SDL_GetTicks() - t) >= STUCK_MS) {
+            say("window: the compositor has closed its connection and the frame being drawn has not "
+                "finished in %d s: the launcher ends", STUCK_MS / 1000);
+            _exit(1);
+        }
+        SDL_Delay(100);
+    }
+    return 0;
+}
+#endif
+
+/* the watch starts (once the window and its renderer are there) */
+static void watch_start(void)
+{
+#ifndef _WIN32
+    void *d = way_display();
+    if (!d)
+        return;
+    int (*get_fd)(void *) = (int (*)(void *))way_func("wl_display_get_fd");
+    if (!get_fd) {
+        say("window: libwayland's wl_display_get_fd not found: a frame that never finishes when the "
+            "compositor goes away is not noticed");
+        return;
+    }
+    way_fd = get_fd(d);
+    if (pipe(watch_wake) != 0) {
+        say("window: the compositor's watch cannot start (%s)", strerror(errno));
+        return;
+    }
+    fcntl(watch_wake[0], F_SETFD, FD_CLOEXEC);     /* not in the processes the launcher starts */
+    fcntl(watch_wake[1], F_SETFD, FD_CLOEXEC);
+    watch_thread = SDL_CreateThread(watch_run, "compositor watch", NULL);
+    if (!watch_thread)
+        say("window: the compositor's watch cannot start (%s)", SDL_GetError());
+#endif
+}
+
+/* the watch ends (the launcher closes as usual) */
+static void watch_end(void)
+{
+#ifndef _WIN32
+    if (!watch_thread)
+        return;
+    SDL_SetAtomicInt(&watch_stop, 1);
+    ssize_t w = write(watch_wake[1], "x", 1);
+    (void)w;
+    SDL_WaitThread(watch_thread, NULL);
+    watch_thread = NULL;
+    close(watch_wake[0]);
+    close(watch_wake[1]);
+#endif
+}
+
+/* the compositor has gone: its connection has failed (libwayland says so)
+ * or it has closed it. A frame drawn then may never finish (above). Not
+ * Wayland: never */
+static int display_gone(void)
+{
+#ifdef _WIN32
+    return 0;
+#else
+    static int (*get_error)(void *);
+    static int looked, said;
+    void *d = way_display();
+    if (!d)
+        return 0;
+    if (!looked) {
+        looked = 1;
+        get_error = (int (*)(void *))way_func("wl_display_get_error");
+    }
+    int err = get_error ? get_error(d) : 0, hup = way_hung_up();
+    if ((err || hup) && !said++) {
+        if (err)
+            say("window: the compositor's connection has failed (%s): the launcher closes", strerror(err));
+        else
+            say("window: the compositor has closed its connection: the launcher closes");
+    }
+    return err || hup;
+#endif
 }
 
 /* how long the loop may sleep, in milliseconds */
@@ -2278,6 +2438,163 @@ static void follow_fullscreen(const char *when)
     SDL_SetWindowFullscreen(win, want);
 }
 
+/* ---- the window's renderer (docs/design.md section 53) ----
+ * By the game's Renderer and GPU settings, as the game's own window: the
+ * GPU chosen, then the others in the list's order (Auto starts at its
+ * top), each with SDL's Vulkan renderer on it (devices.h vk_window: SDL
+ * itself takes the first GPU that can show the window, by no name); then
+ * SDL's own order, Vulkan first under Wine (section 52), which ends with
+ * Software. Software: SDL's software renderer. The settings change it at
+ * once: in Settings, as the game ends (its menu changes them too) and with
+ * another install folder. SDL_RENDER_DRIVER, if set, decides instead. */
+
+static vk_window vkw;                   /* ours, while ren is SDL's Vulkan renderer on a GPU we chose */
+static char ren_gpu[GPU_NAME_MAX];      /* the GPU ren draws on ("": Software, or not known) */
+static int ren_soft;                    /* GPU was asked for and none could draw: Software */
+static int ren_vulkan_first;            /* SDL's own order has Vulkan first (under Wine: main) */
+static struct {
+    int made, renderer;
+    char gpu[GPU_NAME_MAX];
+} ren_for;                              /* the settings ren was made for */
+
+/* ren for settings s (sdl_choice: SDL's own, for a --shot picture); 0 or -1 */
+static int renderer_make(const settings *s, int sdl_choice)
+{
+    char why[160];
+    const char *env = SDL_getenv("SDL_RENDER_DRIVER");
+    ren_gpu[0] = 0;
+    ren_soft = 0;
+    ren_for.made = 1;
+    ren_for.renderer = s->renderer;
+    SDL_strlcpy(ren_for.gpu, s->gpu, sizeof ren_for.gpu);
+    if (!sdl_choice && !(env && env[0])) {
+        if (s->renderer == RENDERER_SOFTWARE) {
+            if ((ren = SDL_CreateRenderer(win, SDL_SOFTWARE_RENDERER))) {
+                say("renderer: software (the Renderer setting)");
+                return 0;
+            }
+            say("renderer: software cannot start (%s): SDL's choice instead", SDL_GetError());
+        } else if (vk_window_open(win, &vkw, why, sizeof why) == 0 && vkw.n) {
+            int first = -1;
+            for (int i = 0; i < vkw.n && first < 0; i++)
+                if (s->gpu[0] && !SDL_strcasecmp(vkw.gpu[i].name, s->gpu))
+                    first = i;
+            if (s->gpu[0] && first < 0)
+                say("renderer: the GPU chosen (%s) is not here or cannot show this window: the first that works "
+                    "instead", s->gpu);
+            for (int k = -1; k < vkw.n; k++) {
+                int i = k < 0 ? first : k;
+                if (i < 0 || (k >= 0 && i == first))
+                    continue;
+                SDL_PropertiesID p = vk_window_props(&vkw, i, win);
+                ren = SDL_CreateRendererWithProperties(p);
+                SDL_DestroyProperties(p);
+                if (ren) {
+                    SDL_strlcpy(ren_gpu, vkw.gpu[i].name, sizeof ren_gpu);
+                    say("renderer: vulkan on %s%s", ren_gpu, i == first ? " (the GPU chosen)"
+                                                         : first >= 0 ? " (the GPU chosen could not draw)"
+                                                         : " (the first that works)");
+                    return 0;
+                }
+                say("renderer: vulkan cannot start on %s (%s)", vkw.gpu[i].name, SDL_GetError());
+            }
+            vk_window_close(&vkw);
+        } else {
+            say("renderer: no GPU for this window with Vulkan (%s): SDL's own order", why);
+            vk_window_close(&vkw);
+        }
+    }
+    ren = SDL_CreateRenderer(win, NULL);
+    if (!ren) {
+        say("renderer: none of SDL's starts (%s)", SDL_GetError());
+        if (!(ren = SDL_CreateRenderer(win, SDL_SOFTWARE_RENDERER)))
+            return -1;
+    }
+    const char *name = SDL_GetRendererName(ren);
+    if (!SDL_strcmp(name, SDL_SOFTWARE_RENDERER))
+        ren_soft = s->renderer == RENDERER_GPU && !sdl_choice && !(env && env[0]);
+    else
+        vk_renderer_gpu(ren, ren_gpu, sizeof ren_gpu);
+    say("renderer: %s%s%s (%s)", name, ren_gpu[0] ? " on " : "", ren_gpu,
+        sdl_choice ? "SDL's choice for a picture" : env && env[0] ? "SDL_RENDER_DRIVER"
+        : ren_soft                 ? "no GPU can draw this window"
+        : ren_vulkan_first         ? "SDL's own order, Vulkan first under Wine"
+                                   : "SDL's own order");
+    return 0;
+}
+
+static void renderer_free(void)
+{
+    ui_quit();
+    if (ren)
+        SDL_DestroyRenderer(ren);
+    ren = NULL;
+    vk_window_close(&vkw);      /* after the renderer that used it */
+}
+
+/* ren made again when s's Renderer or GPU differs from what it was made for
+ * (GPU only counts with the GPU renderer) */
+static void renderer_follow(const settings *s, const char *when)
+{
+    if (!ren || !win || shot_mode || (ren_for.renderer == s->renderer &&
+                                      (s->renderer != RENDERER_GPU || !SDL_strcasecmp(ren_for.gpu, s->gpu))))
+        return;
+    say("renderer: Renderer %s, GPU %s (%s): made again", s->renderer == RENDERER_GPU ? "GPU" : "Software",
+        s->gpu[0] ? s->gpu : "Auto", when);
+    renderer_free();
+    if (renderer_make(s, 0) || ui_init(ren)) {
+        say("renderer: none can start (%s): the launcher closes", SDL_GetError());
+        SDL_Quit();
+        exit(1);
+    }
+    SDL_SetRenderVSync(ren, 1);
+}
+
+/* the install folder's settings (the game's), for its renderer */
+static void game_settings(settings *s)
+{
+    char p[1100];
+    snprintf(p, sizeof p, "%s/user/settings.txt", game);
+    settings_defaults_here(s);
+    if (exists(p))
+        settings_load(s, p, NULL);
+}
+
+static void follow_renderer(const char *when)
+{
+    static settings s;
+    game_settings(&s);
+    renderer_follow(&s, when);
+}
+
+/* the Settings tab's note for Renderer and GPU: what the launcher draws
+ * with now, in buf (n bytes); NULL when there is nothing to say */
+static const char *renderer_note(int o, char *buf, size_t n)
+{
+    if (st.renderer != RENDERER_GPU || (o != OPT_RENDERER && o != OPT_GPU))
+        return NULL;
+    if (ren_soft)
+        SDL_snprintf(buf, n, "No GPU can draw the launcher's window: it uses Software for now (launcher.log says "
+                     "why).");
+    else if (o != OPT_GPU || !ren_gpu[0])
+        return NULL;
+    else if (st.gpu[0] && SDL_strcasecmp(st.gpu, ren_gpu))
+        SDL_snprintf(buf, n, "%s cannot draw this window: the launcher draws on %s.", st.gpu, ren_gpu);
+    else if (st.gpu[0])
+        SDL_snprintf(buf, n, "The launcher draws on %s now.", st.gpu);
+    else
+        SDL_snprintf(buf, n, "Auto: the launcher draws on %s.", ren_gpu);
+    return buf;
+}
+
+/* Left or Right on a Settings row; Renderer and GPU apply to this window at once */
+static void st_change(int o, int d)
+{
+    option_change(&st, o, d);
+    if (o == OPT_RENDERER || o == OPT_GPU)
+        renderer_follow(&st, "Settings");
+}
+
 static int controls_tab(void)
 {
     return st_tab >= T_PAD;
@@ -2328,7 +2645,7 @@ static void settings_press(int row)
     if (controls_tab())
         capturing = 1;
     else
-        option_change(&st, tab_rows[st_tab][row], 1);
+        st_change(tab_rows[st_tab][row], 1);
 }
 
 /* what a controls row takes: replaces the row's binding */
@@ -2381,9 +2698,9 @@ static void settings_event(const SDL_Event *e)
     else if (k == SDLK_E || k == SDLK_PAGEDOWN || k == SDLK_TAB || g == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
         settings_tab(1);
     else if (!controls_tab() && (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT))
-        option_change(&st, tab_rows[st_tab][st_row], -1);
+        st_change(tab_rows[st_tab][st_row], -1);
     else if (!controls_tab() && (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
-        option_change(&st, tab_rows[st_tab][st_row], 1);
+        st_change(tab_rows[st_tab][st_row], 1);
     else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK)
         settings_press(st_row);
     else if (controls_tab() && (k == SDLK_DELETE || face == UI_IN_CLEAR))
@@ -3363,9 +3680,11 @@ static void draw_settings(void)
         int o = tab_rows[st_tab][st_row];
         t = options[o].label;
         text = options[o].about;
-        static char whole[GPU_NAME_MAX + DISPLAY_NAME_MAX];
+        static char whole[2 * GPU_NAME_MAX + DISPLAY_NAME_MAX + 100];
         if ((o == OPT_GPU || o == OPT_SCALE) && st.renderer != RENDERER_GPU)
             note = "The Software renderer does not use it.";     /* as the game's menu says */
+        else if (renderer_note(o, whole, sizeof whole))
+            note = whole;           /* what this window draws with now (section 53) */
         else if (option_note(&st, o, whole, sizeof whole))
             note = whole;           /* GPU's or Display's whole name: the row cuts a long one short */
         else if (options[o].at_start || o == OPT_CREDITS)
@@ -3618,6 +3937,7 @@ static void draw_pop(void)
 
 static void draw(void)
 {
+    SDL_SetAtomicU32(&draw_since, (Uint32)SDL_GetTicks() | 1);     /* for the compositor's watch */
     draw_t0 = SDL_GetTicksNS();
     wake_due = 0;       /* what moves on the page asks for its next frame while it is drawn */
     int pw = 0, ph = 0;
@@ -3647,6 +3967,7 @@ static void draw(void)
         say("window: the picture shows again (after %d failed frames)", present_failing);
         present_failing = 0;
     }
+    SDL_SetAtomicU32(&draw_since, 0);
 }
 
 /* ---- input on the main pages ---- */
@@ -3723,7 +4044,7 @@ static void mouse_event(SDL_Event *e)
             float right = 40 + 540 - 42 * 0.35f, bw = SDL_min(540 * 0.42f, 42 * 5.6f);
             st_row = r;
             if (!controls_tab() && x >= right - bw && x < right - bw / 2)
-                option_change(&st, tab_rows[st_tab][r], -1);
+                st_change(tab_rows[st_tab][r], -1);
             else
                 settings_press(r);
         }
@@ -3934,27 +4255,23 @@ int main(int argc, char **argv)
      * once the install folder is known: fullscreen when the game's window is (follow_fullscreen) */
     int want_direct = play_direct && !shot_page && !opt_show && !after_game && !opt_do && !opt_pick_game;
     /* WORKAROUND (docs/design.md section 52), not a fix of ours: under Wine and Proton, SDL's
-     * Vulkan renderer first. On an AMD Radeon (RADV), Proton's D3D11 (DXVK) and Wine's own D3D12
-     * keep the picture at its old size when the window is resized, with no error, in any SDL
-     * program; SDL's Vulkan renderer on the same GPU follows the window. The rest is SDL's own
-     * order, tried in turn if Vulkan cannot start. SDL_RENDER_DRIVER, if set, still wins (an
-     * environment variable beats SDL_SetHint) */
-    int vulkan_first = under_wine() &&
+     * Vulkan renderer first in SDL's own order (renderer_make tries Vulkan on each GPU before
+     * it). On an AMD Radeon (RADV), Proton's D3D11 (DXVK) and Wine's own D3D12 keep the picture
+     * at its old size when the window is resized, with no error, in any SDL program; SDL's
+     * Vulkan renderer on the same GPU follows the window. The rest is SDL's own order, tried in
+     * turn if Vulkan cannot start. SDL_RENDER_DRIVER, if set, still wins (an environment
+     * variable beats SDL_SetHint) */
+    ren_vulkan_first = under_wine() &&
                        SDL_SetHint(SDL_HINT_RENDER_DRIVER,
                                    "vulkan,direct3d11,direct3d12,direct3d,opengl,opengles2,gpu,software");
-    if (!SDL_CreateWindowAndRenderer("VF4 Final Tuned builder", win_w, win_h,
-                                     SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                         (!shot_page ? SDL_WINDOW_HIDDEN : 0),
-                                     &win, &ren)) {
+    /* the window now, hidden; its renderer once the install folder's settings are known */
+    win = SDL_CreateWindow("VF4 Final Tuned builder", win_w, win_h,
+                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (!shot_page ? SDL_WINDOW_HIDDEN : 0));
+    if (!win) {
         SDL_Log("window: %s", SDL_GetError());
         return 1;
     }
     SDL_SetWindowMinimumSize(win, min_w, min_h);
-    SDL_SetRenderVSync(ren, 1);
-    if (ui_init(ren)) {
-        SDL_Log("ui: %s", SDL_GetError());
-        return 1;
-    }
     find_paths();
     {
         char lp[1100], ap[1100];
@@ -3972,13 +4289,22 @@ int main(int argc, char **argv)
     for (int i = 0; i < nunknown; i++)
         say("not an option: %s (ignored)", unknown[i]);
     say("builder files: %s", root[0] ? root : "(not found)");
-    say("window: SDL %d.%d.%d, renderer %s%s, video %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
+    {
+        static settings s;
+        game_settings(&s);
+        if (renderer_make(&s, shot_page != NULL)) {
+            say("window: no renderer (%s)", SDL_GetError());
+            return 1;
+        }
+    }
+    SDL_SetRenderVSync(ren, 1);
+    if (ui_init(ren)) {
+        say("ui: %s", SDL_GetError());
+        return 1;
+    }
+    say("window: SDL %d.%d.%d, renderer %s, video %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MINOR(SDL_GetVersion()), SDL_VERSIONNUM_MICRO(SDL_GetVersion()),
-        SDL_GetRendererName(ren),
-        vulkan_first                    ? " (Vulkan asked for first under Wine)"
-        : SDL_getenv("SDL_RENDER_DRIVER") ? " (SDL_RENDER_DRIVER)"
-                                          : "",
-        SDL_GetCurrentVideoDriver());
+        SDL_GetRendererName(ren), SDL_GetCurrentVideoDriver());
     if (!shot_page)
         say("window: %d x %d to start (display scale %.2f, usable area %d x %d)", win_w, win_h, win_scale,
             win_usable.w, win_usable.h);
@@ -4147,6 +4473,7 @@ int main(int argc, char **argv)
     }
     if (upd == U_IDLE && !after_game && !direct_run)
         upd_start(1);       /* the check at every start: a line on GitHub's API, no download */
+    watch_start();
     int running = 1, result = do_failed, restarting = 0;
     while (running) {
         /* asleep until something needs the loop (loop_wait_ms). A hidden window (the game
@@ -4226,7 +4553,8 @@ int main(int argc, char **argv)
         }
         /* Update now: in place as soon as it is here and nothing runs, then the new launcher */
         if (upd == U_READY && upd_when == UW_NOW && !proc && !uproc) {
-            draw();
+            if (running && !display_gone())
+                draw();
             if (apply_update() == 0) {
                 restart_launcher(opt_game, opt_exit);
                 restarting = 1;
@@ -4269,6 +4597,12 @@ int main(int argc, char **argv)
             result = auto_upd == 3 && upd != U_CHECK_FAILED ? 0 : 1;
             running = 0;
         }
+        /* closing: no more frames. A quit can come from the compositor going away (SDL's
+         * quit), and a frame drawn then may never finish (display_gone; section 53) */
+        if (!running || display_gone()) {
+            running = 0;
+            continue;
+        }
         frame_gap();
         draw();
     }
@@ -4307,6 +4641,7 @@ int main(int argc, char **argv)
         if (apply_update() == 0)
             say("%s goes in use at the next start, which builds the game again", upd_version);
     }
+    watch_end();
     if (log_file)
         fclose(log_file);
     ui_quit();

@@ -30,10 +30,13 @@ _Static_assert(GAME_BTN_UP == BTN_UP && GAME_BTN_DOWN == BTN_DOWN && GAME_BTN_LE
 
 static game_frame_fn frame_fn;
 static game_gpu_fn gpu_fn;
+static int machine_up;      /* game_machine_init has set the view up */
 
 void game_machine_gpu(game_gpu_fn fn)
 {
     gpu_fn = fn;
+    if (machine_up)
+        view_host_gpu(fn);
 }
 
 void game_machine_wide(int width)
@@ -214,6 +217,7 @@ int game_machine_init(const char *image, const char *dimm, const char *dimm_key,
     view_host_start();
     if (gpu_fn)
         view_host_gpu(gpu_fn);
+    machine_up = 1;
     mem_guards();
     if (rt_native_init(image))
         return 1;

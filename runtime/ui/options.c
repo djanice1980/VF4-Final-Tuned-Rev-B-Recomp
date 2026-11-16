@@ -51,15 +51,18 @@ const option_info options[OPT_COUNT] = {
                      "them.", 0 },
     [OPT_RENDERER] = { "Renderer",
                        "GPU draws the game with Vulkan at the internal resolution below. Software draws it on "
-                       "the processor at the cabinet's 640 x 480 (wider with a wide picture).", 1 },
+                       "the processor at the cabinet's 640 x 480 (wider with a wide picture). The launcher's "
+                       "window follows it too. When no GPU can draw, Software is used. A change applies at "
+                       "once.", 0 },
     [OPT_GPU] = { "GPU",
-                  "The graphics card the GPU renderer draws on. Auto lets SDL choose: a separate graphics card "
-                  "before one in the processor. One not there when the game starts (an external one "
-                  "unplugged) is passed over (Auto) until it is back. Software does not use it.", 1 },
+                  "The graphics card the game and the launcher draw on. Auto takes the first in this list that "
+                  "works. One chosen that is missing or cannot draw gives way to the first that works; when "
+                  "none works, Software is used.", 0 },
     [OPT_SCALE] = { "Internal resolution",
                     "The size the GPU renderer draws the game at, before the picture is scaled to the window "
                     "or the screen: 1 to 4 times the cabinet's 640 x 480, or a wide picture's (854 x 480 for "
-                    "16:9). Higher is sharper and needs a faster GPU. Software does not use it.", 1 },
+                    "16:9). Higher is sharper and needs a faster GPU. A change applies at once. Software does "
+                    "not use it.", 0 },
     [OPT_SOUND] = { "Sound",
                     "The sound processor and its effects. Off saves processor time, and the game is "
                     "silent.", 1 },

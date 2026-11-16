@@ -3618,7 +3618,10 @@ SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN puts the processor's
 first. SDL_PROP_GPU_DEVICE_NAME_STRING says which device opened. On this
 PC Auto is the RTX 5070 Ti and low power the Radeon 8060S.
 
-**GPU: the choice.** Auto (the default) is SDL's choice, as before. The
+**GPU: the choice.** (Section 53 changes this: Auto is now the first GPU
+in the list that works, a chosen GPU that cannot be had gives way to the
+next in the list, and the launcher's window follows the row too.) Auto
+(the default) is SDL's choice, as before. The
 GPUs are listed by devices.c gpus_list. It opens Vulkan's loader itself
 (vulkan-1.dll or libvulkan.so.1, or SDL_HINT_VULKAN_LIBRARY's) and makes
 a bare instance. It keeps the separate, processor and virtual devices
@@ -3661,7 +3664,7 @@ The row shows Auto or the name, and "NAME (not found)" while a missing
 one is chosen; the description's note has the whole name, which the row
 cuts short. It shows only for the GPU renderer (greyed, with "The
 Software renderer does not use it." for Software). It applies at the
-next start (the menu's dot), and the menu's note says which GPU draws
+next start (the menu's dot; at once since section 53), and the menu's note says which GPU draws
 now, or that the chosen one could not be used and which one draws
 instead. Log: "GPU 1: NVIDIA GeForce RTX 5070 Ti (discrete, PCI
 10de:2c05)", "GPU: NAME, as the settings ask (...)" or "GPU: NAME (Auto:
@@ -3808,6 +3811,10 @@ millisecond to read it (`EVENT_POLL_INTERVAL_NS` in SDL_events.c) and
 goes back to sleep without returning: that is SDL reading the pad, with no
 drawing.
 
+(Section 53: this loop could draw once more as its Wayland compositor went
+away, and that frame never finished, at full CPU. It now draws no more
+then, and a thread of its own ends a launcher stuck in such a frame.)
+
 **Checked** in a headless KWin (a 1920 x 1080 virtual screen at 60 Hz;
 nothing reaches the real desktop). CPU is the launcher process's own
 (its /proc times over 10 s, as a share of one core). Frames were counted
@@ -3860,3 +3867,233 @@ lavapipe's and Wine's threads: the loop itself woke 5 times in each 5 s.
 tried on that machine), VRR, a folder picker's answer (no picker in the
 headless runs; without the wake the loop still reads it within a second),
 a text cursor's blink, and a pad connected.
+
+## 53. Renderer and GPU: an order to fall back on, changed at once (2026-11-15)
+
+Asked for: by default the first GPU that works, then Software; a GPU
+chosen is tried first, then the first that works, then Software; and the
+renderer changed on the fly, in the game and in the launcher.
+
+**One setting for both programs.** The Picture tab's Renderer and GPU rows
+(`renderer` and `gpu` in settings.txt) now decide the launcher's window as
+well as the game's. Before, the GPU row was the game's only, and the
+launcher used SDL's own renderer order.
+
+**The order.** The GPU chosen; then the other GPUs in the GPU row's order
+(devices.c gpus_list: Vulkan's order); then Software. Auto starts at the
+top of the list. A GPU works when it opens, takes the window, and its
+renderer starts. A chosen GPU that is not there is logged and kept in
+settings.txt, as before (section 51), and is tried first again once it is
+back.
+
+**What this changes about Auto.** Before, the game's Auto was SDL_GPU's
+own pick, which ranks a separate card first (section 51), and the Linux
+launcher took SDL's own order (OpenGL). Now Auto is the first in Vulkan's
+list, and Mesa's device-select layer puts the GPU the desktop is drawn on
+first:
+
+- On this PC's own desktop (KWin on the Radeon), `vulkaninfo --summary`
+  lists the Radeon 8060S, then the RTX 5070 Ti. Auto there moves from the
+  5070 Ti to the Radeon, the GPU the picture is shown on, so no frame is
+  copied between GPUs. Choosing the 5070 Ti in the GPU row puts it back.
+- In the headless KWin of the tests, which renders on the NVIDIA (section
+  51), the NVIDIA comes first.
+
+**The game** (main.c video_open, video_close, video_switch):
+
+- video_open builds the order: the GPU chosen, the other listed GPUs,
+  then SDL_GPU's own pick if it is not one of them. It tries each in
+  turn: open it (section 51's two ways to open a GPU by name), claim the
+  window, start the GPU renderer (gpu_render_init). The first that does
+  all three draws.
+- A device that claims the window but cannot start the GPU renderer is
+  kept, to show the software picture if no GPU can draw.
+- Software (asked for, or no GPU works): the software picture, shown
+  through the first device that claims the window, else SDL_GPU's own
+  pick. It still needs one: with no Vulkan device at all (and no Direct3D
+  12 on Windows) the game cannot show a window, as before. lavapipe
+  counts as one.
+- Log lines: "renderer: GPU, 1280 x 960, on NAME (the GPU chosen)", "(the
+  GPU chosen could not be used)", "(the first that works: the GPU chosen
+  is not here)", "(Auto: the first that works)"; or "renderer: software,
+  640 x 480, shown through NAME".
+
+**Changed as the game runs.** The menu's Renderer, GPU and Internal
+resolution apply at once (no dot now). The menu pauses the game (section
+22), so the change falls between the machine's frames:
+
+- The menu's change (MENU_LIVE) asks the window's loop to switch
+  (video_redo). The loop closes the renderer and its device (video_close)
+  and opens them again by the order (video_open). Internal resolution
+  alone, on the same GPU, only restarts the GPU renderer on its device.
+- The machine's thread either hands its passes to the GPU renderer or
+  keeps them for the software picture (game_machine_gpu), and may only
+  change that on its own thread. So the window's loop publishes the
+  choice (`gpu_path`), and the machine's thread takes it up at its next
+  vertical blank, in on_frame. It logs "vertical blank N: the machine
+  draws for the software picture from now on" (or "for the GPU
+  renderer").
+- gpu_render's CPU side (its lock, packet lists and texture upload queue)
+  outlives the device, so the machine may submit at any time. After a new
+  init, the next submit uploads the whole texture memory in use (`up_all`):
+  the new device has none of it.
+- The menu's overlay keeps its software side (the backdrop and the UI)
+  and makes its GPU textures again on the new device (ovl_gpu_free,
+  ovl_gpu_make).
+- The notes say what draws now: "Drawing on NAME now.", "Auto: drawing on
+  NAME.", "NAME could not be used: drawing on OTHER.", or, for the GPU
+  renderer with no GPU, "The GPU renderer could not start on any GPU: the
+  game is drawn with Software for now."
+
+**The launcher** (launcher.c renderer_make, renderer_follow):
+
+- SDL's renderer API cannot be given a GPU by name either. But its Vulkan
+  renderer takes a Vulkan instance, surface and physical device made by
+  the program (SDL_PROP_RENDERER_CREATE_VULKAN_*, with the graphics and
+  present queue families).
+- devices.c vk_window_open makes them for the launcher's window:
+  - an instance with SDL's extensions, plus
+    VK_KHR_get_physical_device_properties2 when it is there (SDL's renderer
+    looks for it);
+  - the window's surface;
+  - the GPUs that can show the window (a graphics queue, a queue that
+    presents to the surface, VK_KHR_swapchain), by the GPU row's names.
+    CPU devices are left out, as in the row.
+- renderer_make tries SDL's Vulkan renderer on the GPU chosen, then on
+  each of the others. Then it takes SDL's own order (Vulkan first under
+  Wine, section 52), which ends with Software. With Software asked for,
+  it uses SDL's software renderer.
+- The renderer is made again at once, on the same window, with the UI's
+  textures (ui_quit, ui_init):
+  - when Renderer or GPU changes in Settings;
+  - when the game ends (its menu may have changed them);
+  - when another install folder is chosen (it has its own settings).
+- SDL_RENDER_DRIVER, if set, still decides, and --shot pictures use
+  SDL's own choice.
+- Log lines: "renderer: vulkan on NAME (the GPU chosen)", "(the GPU
+  chosen could not draw)", "(the first that works)", "renderer: software
+  (the Renderer setting)", and "renderer: Renderer Software, GPU Auto
+  (Settings): made again".
+- The Settings note says what the launcher draws on now, as the game's
+  menu does.
+- The "window: SDL ..." line no longer says why. The "renderer:" line
+  says it, including "SDL's own order, Vulkan first under Wine".
+
+**Tested** in headless KWin (one 1920 x 1080 virtual output, Xwayland on;
+nothing on the real desktop). The game ran natively; the launcher ran
+natively and as the Windows build under Wine 11 (a scratch prefix, with
+small test installs: a build.json and user/settings.txt). Pictures were
+checked at 1:1.
+
+| Case | Result |
+|---|---|
+| Game: Auto (Wayland) | the first in the list (here the NVIDIA) |
+| Game: the Radeon chosen (Wayland) | drawn on it ("the GPU chosen") |
+| Game: a GPU that is not here | the first that works, logged, the setting kept |
+| Game: the Radeon chosen on X11 (the X server on the NVIDIA) | its swapchain fails, so the NVIDIA draws ("could not be used"); the menu's note says so |
+| Game: Software | the software picture, shown through the first GPU |
+| Game menu as it runs: GPU, Software, GPU; Auto, NVIDIA, Radeon; 1x, 2x, 3x | each at once; the picture drawn after each; the machine's change logged; settings saved |
+| Launcher (Wayland, and Windows under Wine): Auto, the Radeon, a GPU not here, Software | as the game. Under Wine the Radeon cannot make a swapchain (the X server is on the NVIDIA), so the NVIDIA draws ("could not draw") |
+| Launcher: another install folder (`--pick-game`) | made again with that folder's Renderer |
+| Launcher Settings as it runs (Windows under Wine) | Software, GPU, the NVIDIA, the Radeon (fell back), Auto: each made again, and the page drawn right after |
+| Launcher under Wine, only lavapipe / no Vulkan | SDL's own order: Vulkan on lavapipe / Direct3D 9 |
+
+The descriptions were shortened after the first test: the GPU row's text
+and a fallback note with two long GPU names ran past the bottom of the
+launcher's description card.
+
+**Not tested:**
+
+- A GPU that opens and claims the window but whose GPU renderer cannot
+  start: there is no way to force that without a test hook. The code keeps
+  that device for the software picture.
+- A GPU lost while the game runs (an external GPU unplugged): not handled,
+  as before.
+- The launcher's Settings switch natively. Neither XTEST's keys nor its
+  pointer reach native windows in the headless session (section 52). The
+  same renderer_follow ran natively for `--pick-game`.
+- The launcher following the game's menu when the game ends (the same
+  function).
+- Proton itself, Windows, the Steam Deck, and this PC's own desktop.
+
+### The compositor going away (found on the way: section 52's loop)
+
+Section 52's launcher spun at full CPU, and SIGTERM did not stop it, when
+its Wayland compositor went away under it: with OpenGL, Vulkan and the
+software renderer alike. It was seen in the headless runs, where KWin ends
+with the test. The 0.5.7 launcher closes then ("Wayland display connection
+closed by server").
+
+**What happens.** Found with a debug build of SDL 3.4.20 (from
+`toolchain/sdl3-src`, built apart and loaded with `LD_LIBRARY_PATH`) under
+gdb, and `WAYLAND_DEBUG`:
+
+- KWin killed, as a crash: SDL's event pump finds the connection gone,
+  logs "Wayland display connection closed by server (fatal)" and sends its
+  quit. The loop's `running` went to 0, but the loop still drew at the end
+  of that turn, and that frame never finished.
+- KWin ending cleanly: it takes its screen away first
+  (`wl_registry.global_remove`, `wl_surface.leave`), which wakes the
+  launcher, and it draws. KWin closes the connection during that frame:
+  the present's own flush fails (`ECONNRESET`; `wl_display_get_error` 104)
+  and SDL's `display_disconnected` stays false. SDL's pump would find it,
+  but the pump never runs again.
+- Where the frame never finishes: with OpenGL, and with the software
+  renderer (on Wayland it presents through OpenGL), in SDL's
+  `Wayland_GLES_SwapWindow`, which waits for the frame callback
+  (`SDL_waylandopengles.c` line 156). Once the connection has failed,
+  `wl_display_prepare_read_queue` keeps saying events are queued,
+  `wl_display_dispatch_queue_pending` will not dispatch them, and the loop
+  goes back to its top without looking at its own 50 ms limit. With Vulkan
+  on the NVIDIA card the frame did not finish either, mostly in the kernel;
+  under gdb that case did not happen (it depends on timing), so it was not
+  traced.
+- SIGTERM: SDL turns it into a quit event, which the stuck main thread
+  never reads.
+
+So the cause is in SDL (and for Vulkan, probably in NVIDIA's driver), not
+here. What the launcher does about it:
+
+- **Before each frame** (`display_gone`) the loop asks whether the
+  compositor has gone: libwayland's `wl_display_get_error`, or the
+  connection's socket hung up. If it has, or the loop is closing (SDL's
+  quit), no frame is drawn and the launcher closes as usual: "window: the
+  compositor has closed its connection: the launcher closes".
+- **A frame already being drawn** when the compositor closes the
+  connection: the main thread cannot get out of it. So a thread of its
+  own (`watch_run`) sleeps on the connection's socket: `poll` with no events
+  asked for wakes for a hang-up or an error only, and it takes none of
+  libwayland's locks (a stuck thread may hold one). Once the socket has
+  hung up, a frame still being drawn 3 seconds on ends the launcher there
+  (`_exit`): "window: the compositor has closed its connection and the
+  frame being drawn has not finished in 3 s: the launcher ends". That
+  skips the launcher's closing steps: a build stops as its input ends, and
+  a download is taken up again by the next start's check.
+- Wayland only. Windows is not changed; X11 was not looked at.
+
+**Tested** in the same headless KWin: five launchers left running, their
+windows over each other, as KWin ends, 5 times cleanly and once killed.
+Nothing was left running after any of them.
+
+| Launcher | KWin ends cleanly | KWin killed |
+|---|---|---|
+| 0.5.7 | closes (SDL's quit), 5 of 5 | closes |
+| Section 52's loop (main) | spins | spins |
+| With the check before each frame only | still spins: Vulkan on the NVIDIA 3 of 3, software 2 of 3, OpenGL 2 of 3 | closes |
+| With the watch: Vulkan on the NVIDIA | the watch ends it, 5 of 5 | closes (SDL's quit) |
+| With the watch: Vulkan on the Radeon | closes (SDL's quit), 5 of 5 | closes |
+| With the watch: software | the watch 4 of 5, SDL's quit 1 | closes |
+| With the watch: OpenGL | the watch 2 of 5, SDL's quit 3 | closes |
+
+A scratch build that logged each frame's start showed that the frame that
+never finishes starts as KWin takes its screen away, and that the watch
+ends the launcher 3.0 seconds after that start. With KWin kept for 12
+seconds first, no present took 200 ms or more in any of the four: frames
+do not stall while the compositor is there, even in covered windows.
+
+**The game is not fixed.** It closes when KWin ends cleanly (3 of 3). When
+KWin is killed, it stays, asleep (no CPU): its main thread waits in
+NVIDIA's Vulkan driver (`drmSyncobjTimelineWait`, under SDL) for a buffer
+the compositor never gives back. Whether main's game does the same was not
+tested. The game writes its backup every 10 seconds and as it ends, so
+ending it the launcher's way needs more care.

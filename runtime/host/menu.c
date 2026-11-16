@@ -136,7 +136,7 @@ static int change(int d)
         return MENU_STAY;
     option_change(s, id, d);
     return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_WINDOW || id == OPT_VOLUME ||
-                   id == OPT_DISPLAY
+                   id == OPT_DISPLAY || id == OPT_RENDERER || id == OPT_GPU || id == OPT_SCALE
                ? MENU_LIVE
                : MENU_STAY;
 }
@@ -642,9 +642,6 @@ static int later(int id)
     case OPT_CARDS: return s->cards != run.start.cards;
     case OPT_NETWORK: return s->network != run.start.network;
     case OPT_REGION: return s->region != run.start.region;
-    case OPT_RENDERER: return s->renderer != run.start.renderer;
-    case OPT_SCALE: return s->scale != run.start.scale;
-    case OPT_GPU: return SDL_strcasecmp(s->gpu, run.start.gpu) != 0;
     case OPT_SOUND: return s->sound != run.start.sound;
     }
     return 0;
@@ -696,19 +693,19 @@ static void about_of(int id, const char **title, const char **text, const char *
             *note = "Sound is off: turn it on below, for the next start.";
         else if ((id == OPT_SCALE || id == OPT_GPU) && s->renderer != RENDERER_GPU)
             *note = "The Software renderer does not use it.";
+        else if ((id == OPT_RENDERER || id == OPT_GPU || id == OPT_SCALE) && s->renderer == RENDERER_GPU &&
+                 !(run.gpu_now && run.gpu_now[0]))
+            *note = "The GPU renderer could not start on any GPU: the game is drawn with Software for now. The "
+                    "game's log (vf4ft.log) says why.";
         else if (id == OPT_GPU) {
-            /* the whole names: the row cuts a long one short */
+            /* the whole names: the row cuts a long one short (section 53: as it is now) */
             static char gn[2 * GPU_NAME_MAX + 100];
-            if (later(id))
-                SDL_snprintf(gn, sizeof gn, "Changed to %s: applies the next time the game starts.",
-                             s->gpu[0] ? s->gpu : "Auto");
-            else if (run.gpu_now && s->gpu[0] && SDL_strcasecmp(s->gpu, run.gpu_now))
-                SDL_snprintf(gn, sizeof gn, "%s could not be used when the game started: drawing on %s instead. "
-                             "Applies the next time the game starts.", s->gpu, run.gpu_now);
-            else if (run.gpu_now)
-                SDL_snprintf(gn, sizeof gn, "Drawing on %s now. Applies the next time the game starts.", run.gpu_now);
+            if (s->gpu[0] && SDL_strcasecmp(s->gpu, run.gpu_now))
+                SDL_snprintf(gn, sizeof gn, "%s could not be used: drawing on %s.", s->gpu, run.gpu_now);
+            else if (s->gpu[0])
+                SDL_snprintf(gn, sizeof gn, "Drawing on %s now.", run.gpu_now);
             else
-                SDL_strlcpy(gn, "Applies the next time the game starts.", sizeof gn);
+                SDL_snprintf(gn, sizeof gn, "Auto: drawing on %s.", run.gpu_now);
             *note = gn;
         } else if (id == OPT_DISPLAY) {
             static char dn[DISPLAY_NAME_MAX + 32];

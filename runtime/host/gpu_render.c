@@ -48,12 +48,18 @@ typedef struct packet {
     size_t vols_cap;
 } packet;
 
+/* made once and kept: the machine's thread may hand a frame over while the
+ * window's thread stops the renderer or starts it again (docs/design.md
+ * section 53) */
 static SDL_Mutex *lock;
 static packet pk[3];
 static int pk_ready = -1, pk_reading = -1;     /* which packet is newest, which the window draws */
 /* texel uploads waiting: [at, n, n texels] after one another */
 static Uint32 *up;
 static size_t up_n, up_cap;
+/* the renderer has just started (again): the next frame sends the whole
+ * arena, as the device's copy of it is new and empty */
+static int up_all;
 static unsigned stat_frames, stat_max_tris, stat_tvol_frames;
 
 static int grow(void **p, size_t *cap, size_t need, size_t elem)
@@ -75,7 +81,18 @@ static int grow(void **p, size_t *cap, size_t need, size_t elem)
 void gpu_render_submit(const view_gpu_frame *f)
 {
     SDL_LockMutex(lock);
-    /* the texels first: every frame's, in order, whether it is drawn or not */
+    /* the texels first: every frame's, in order, whether it is drawn or not.
+     * After a start, all of the arena that is in use */
+    if (up_all && !GROW(up, up_cap, (size_t)f->arena_texels + 2)) {
+        up_n = 0;
+        if (f->arena_texels) {
+            up[up_n++] = 0;
+            up[up_n++] = f->arena_texels;
+            SDL_memcpy(up + up_n, f->arena, (size_t)f->arena_texels * 4);
+            up_n += f->arena_texels;
+        }
+        up_all = 0;
+    }
     for (Uint32 i = 0; i < f->ndirty; i++) {
         Uint32 at = f->dirty[i].at, n = f->dirty[i].n;
         if (GROW(up, up_cap, up_n + 2 + n))
@@ -280,7 +297,14 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
 {
     gpu = dev;
     scale = scale_ < 1 ? 1 : scale_ > 4 ? 4 : scale_;
-    lock = SDL_CreateMutex();
+    if (!lock && !(lock = SDL_CreateMutex()))
+        return -1;
+    /* what came before is for a device gone: the arena again, whole, and no frame until the next */
+    SDL_LockMutex(lock);
+    up_n = 0;
+    up_all = 1;
+    pk_ready = -1;
+    SDL_UnlockMutex(lock);
     if (!(SDL_GetGPUShaderFormats(gpu) & SDL_GPU_SHADERFORMAT_SPIRV))
         return SDL_SetError("the GPU device takes no SPIR-V (it is not Vulkan)"), -1;
     ds_format = SDL_GPUTextureSupportsFormat(gpu, SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT, SDL_GPU_TEXTURETYPE_2D,
@@ -650,5 +674,17 @@ void gpu_render_quit(void)
         SDL_ReleaseGPUTexture(gpu, t_color);
     if (t_ds)
         SDL_ReleaseGPUTexture(gpu, t_ds);
+    /* all of it gone, for a start again on this device or another (the
+     * lock, the frames handed over and the counts stay) */
+    SDL_zeroa(pl_scene);
+    pl_bg = pl_vol = pl_resolve = pl_shadow = NULL;
+    sh_scene_v = sh_scene_f = sh_vol_v = sh_rect_v = sh_bg_f = sh_const_f = NULL;
+    b_tex = b_vert = b_state = b_vol = NULL;
+    b_vert_size = b_state_size = b_vol_size = 0;
+    xfer = NULL;
+    xfer_size = 0;
+    t_color = t_ds = NULL;
+    t_w = t_h = 0;
+    have_picture = 0;
     gpu = NULL;
 }
