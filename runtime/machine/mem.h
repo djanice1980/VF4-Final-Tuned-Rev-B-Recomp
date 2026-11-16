@@ -10,6 +10,7 @@
 #define VF4_MEM_H
 
 #include "sh4.h"
+#include "mem_track.h"      /* recomp */
 #include <stddef.h>
 
 #define RAM_BASE   0x0c000000u

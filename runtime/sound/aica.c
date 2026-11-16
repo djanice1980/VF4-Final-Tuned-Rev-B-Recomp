@@ -17,6 +17,7 @@
 #include "aica.h"
 #include "arm7.h"
 #include "aica_tables.h"
+#include "../machine/mem_track.h"   /* recomp: rollback (docs/design.md section 55) */
 
 #include <string.h>
 
@@ -94,6 +95,8 @@ static u8 *ram;
 #define AUDIO_FRAMES 65536u
 static s16 audio[AUDIO_FRAMES * 2];
 static u32 audio_w, audio_r;    /* frame counters; the buffer holds w - r frames */
+static int audio_drop;          /* aica_audio_drop: re-run frames' samples are not kept */
+static u32 audio_dropped;
 
 #define R(off) st.reg[(off) >> 2]
 
@@ -474,6 +477,7 @@ static void dsp_sample(void)
             }
             if (p->mwt) {
                 u16 m = p->nofl ? (u16)(shifted >> 8) : dsp_pack(shifted);
+                mem_track_host(ram + at, 2);        /* recomp */
                 memcpy(ram + at, &m, 2);
             }
         }
@@ -682,6 +686,8 @@ void aica_init(uint8_t *sound_ram, unsigned arm_budget)
         st.ch[c].eg = EG_MAX, st.ch[c].eg_state = EG_RELEASE;
     arm7_set_ram(sound_ram, AICA_RAM_SIZE - 1);
     audio_w = audio_r = 0;
+    audio_drop = 0;
+    audio_dropped = 0;
 }
 
 void aica_run(unsigned n)
@@ -734,13 +740,17 @@ void aica_run(unsigned n)
         if (l < -32768) l = -32768;
         if (r > 32767) r = 32767;
         if (r < -32768) r = -32768;
+        st.samples++;
+        if (audio_drop) {
+            audio_dropped++;
+            continue;
+        }
         u32 i = audio_w % AUDIO_FRAMES;
         audio[2 * i] = (s16)l;
         audio[2 * i + 1] = (s16)r;
         audio_w++;
         if (audio_w - audio_r > AUDIO_FRAMES)
             audio_r = audio_w - AUDIO_FRAMES;
-        st.samples++;
     }
 }
 
@@ -760,6 +770,19 @@ unsigned aica_audio_take(int16_t *dst, unsigned max)
 void aica_audio_discard(void)
 {
     audio_r = audio_w;
+}
+
+unsigned aica_audio_drop(int on)
+{
+    unsigned n = audio_dropped;
+    audio_drop = on;
+    audio_dropped = 0;
+    return n;
+}
+
+uint32_t aica_audio_kept(void)
+{
+    return audio_w;
 }
 
 void *aica_state(unsigned *size)

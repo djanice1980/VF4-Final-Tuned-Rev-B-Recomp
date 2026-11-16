@@ -35,6 +35,16 @@ const u8 *view_host_picture(int *w);
  * Any thread; the next pass drawn takes it */
 void view_host_wide(int width);
 
+/* recomp: rollback's re-run frames (docs/design.md section 56) were shown
+ * the first time. VIEW_RERUN: a screen's lists are not taken and no screen
+ * is drawn; set it as the machine goes back (the textures are looked at
+ * again). VIEW_RERUN_LAST: the last re-run frame, whose lists the frame
+ * after it shows: they are taken, still no screen drawn. VIEW_LIVE: as
+ * ever. A pass into a texture is drawn throughout: its picture goes into
+ * the machine's texture memory. */
+enum { VIEW_LIVE, VIEW_RERUN_LAST, VIEW_RERUN };
+void view_rerun(int mode);
+
 /* recomp (M6): the GPU path. With view_host_gpu set, a pass to the screen
  * is not rasterized here: after transform, lighting and the translucent
  * sort, what the rasterizer would draw is handed to submit, on the

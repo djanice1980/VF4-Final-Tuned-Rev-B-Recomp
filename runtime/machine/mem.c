@@ -5,6 +5,7 @@
 #include "machine.h"
 
 #include <errno.h>
+#include <stdlib.h>          /* recomp: mem_track tables */
 #include <stdio.h>
 #include <string.h>
 #ifdef _WIN32                          /* recomp: Windows, docs/design.md section 14 */
@@ -21,11 +22,176 @@ u8 *mem_wpage[65536];                   /* recomp: see mem.h */
 u8 mem_code_page[65536];                /* recomp */
 void (*mem_code_store)(u32 addr, u32 n, const void *bytes);    /* recomp */
 
-/* recomp: mem_wpage from mem_page and the code pages */
+static u8 track_armed[65536];           /* recomp: mem_track.h; per 64 KiB of the address space */
+
+/* recomp: mem_wpage from mem_page, the code pages and the pages armed for tracking */
 void mem_wpage_sync(void)
 {
     for (u32 p = 0; p < 65536; p++)
-        mem_wpage[p] = mem_code_page[p] ? NULL : mem_page[p];
+        mem_wpage[p] = mem_code_page[p] || track_armed[p] ? NULL : mem_page[p];
+}
+
+/* ---- recomp: tracking the pages a frame writes (mem_track.h) ---- */
+
+int mem_tracking;
+static mem_track_fn track_fn;
+static u32 track_n;                     /* tracked pages: every area's, 64 KiB each */
+static u16 track_of[65536];             /* per 64 KiB of the address space: its page + 1, or 0 */
+static u8 **track_host;                 /* per page: its bytes */
+static u32 *track_first, *track_cnt;    /* per page: where its addresses' list starts, and how long it is */
+static u16 *track_idx;                  /* the 64 KiB address pages each page appears at */
+static u8 *track_shown;                 /* per page: shown this frame */
+static u32 *track_list, track_list_n;   /* the pages shown this frame */
+
+static void track_free(void)
+{
+    free(track_host);
+    free(track_first);
+    free(track_cnt);
+    free(track_idx);
+    free(track_shown);
+    free(track_list);
+    track_host = NULL;
+    track_first = track_cnt = track_list = NULL;
+    track_idx = NULL;
+    track_shown = NULL;
+    track_n = track_list_n = 0;
+}
+
+int mem_track_begin(mem_track_fn fn)
+{
+    mem_track_end();
+    u32 base[MEM_MAX_AREAS];
+    for (int i = 0; i < mem_area_count; i++) {
+        base[i] = track_n;
+        track_n += mem_areas[i].size / MEM_TRACK_PAGE;
+    }
+    if (!track_n || track_n > 65535)
+        return -1;
+    track_host = malloc(track_n * sizeof *track_host);
+    track_first = calloc(track_n, sizeof *track_first);
+    track_cnt = calloc(track_n, sizeof *track_cnt);
+    track_idx = malloc(65536 * sizeof *track_idx);
+    track_shown = calloc(track_n, 1);
+    track_list = malloc(track_n * sizeof *track_list);
+    if (!track_host || !track_first || !track_cnt || !track_idx || !track_shown || !track_list) {
+        track_free();
+        return -1;
+    }
+    for (int i = 0; i < mem_area_count; i++)
+        for (u32 off = 0; off < mem_areas[i].size; off += MEM_TRACK_PAGE)
+            track_host[base[i] + off / MEM_TRACK_PAGE] = mem_areas[i].host + off;
+    /* every address page that reaches an area's bytes: the mirrors and the aliases */
+    memset(track_of, 0, sizeof track_of);
+    for (u32 p = 0; p < 65536; p++) {
+        u8 *h = mem_page_ram[p];
+        for (int i = 0; h && i < mem_area_count; i++)
+            if (h >= mem_areas[i].host && h < mem_areas[i].host + mem_areas[i].size) {
+                u32 page = base[i] + (u32)(h - mem_areas[i].host) / MEM_TRACK_PAGE;
+                track_of[p] = (u16)(page + 1);
+                track_cnt[page]++;
+                break;
+            }
+    }
+    u32 at = 0;
+    for (u32 page = 0; page < track_n; page++) {
+        track_first[page] = at;
+        at += track_cnt[page];
+        track_cnt[page] = 0;
+    }
+    for (u32 p = 0; p < 65536; p++)
+        if (track_of[p]) {
+            u32 page = track_of[p] - 1u;
+            track_idx[track_first[page] + track_cnt[page]++] = (u16)p;
+        }
+    track_fn = fn;
+    mem_tracking = 1;
+    mem_track_arm(1);
+    return 0;
+}
+
+void mem_track_end(void)
+{
+    if (!track_n)
+        return;
+    mem_tracking = 0;
+    memset(track_armed, 0, sizeof track_armed);
+    mem_wpage_sync();
+    track_free();
+    memset(track_of, 0, sizeof track_of);
+    track_fn = NULL;
+}
+
+static void track_page_arm(u32 page, int armed)
+{
+    for (u32 j = 0; j < track_cnt[page]; j++) {
+        u16 p = track_idx[track_first[page] + j];
+        track_armed[p] = (u8)armed;
+        mem_wpage[p] = armed || mem_code_page[p] ? NULL : mem_page[p];
+    }
+}
+
+void mem_track_arm(int all)
+{
+    if (!track_n)
+        return;
+    if (all) {
+        memset(track_shown, 0, track_n);
+        for (u32 page = 0; page < track_n; page++)
+            track_page_arm(page, 1);
+    } else
+        for (u32 i = 0; i < track_list_n; i++) {
+            track_shown[track_list[i]] = 0;
+            track_page_arm(track_list[i], 1);
+        }
+    track_list_n = 0;
+}
+
+u32 mem_track_count(void)
+{
+    return track_n;
+}
+
+u8 *mem_track_host_of(u32 page)
+{
+    return page < track_n ? track_host[page] : NULL;
+}
+
+static void track_show(u32 page)
+{
+    track_shown[page] = 1;
+    track_list[track_list_n++] = page;
+    track_fn(page, track_host[page]);
+    track_page_arm(page, 0);
+}
+
+void mem_track_slow(u32 addr)
+{
+    u32 page = track_of[addr >> 16];
+    if (page && !track_shown[page - 1])
+        track_show(page - 1);
+}
+
+void mem_track_host_slow(const void *host, size_t n)
+{
+    const u8 *h = host;
+    if (!n)
+        return;
+    for (int i = 0; i < mem_area_count; i++) {
+        const mem_area *a = &mem_areas[i];
+        if (h < a->host || h >= a->host + a->size)
+            continue;
+        u32 page0 = 0;
+        for (int k = 0; k < i; k++)
+            page0 += mem_areas[k].size / MEM_TRACK_PAGE;
+        size_t lo = (size_t)(h - a->host), hi = lo + n - 1;
+        if (hi >= a->size)
+            hi = a->size - 1;
+        for (size_t o = lo / MEM_TRACK_PAGE; o <= hi / MEM_TRACK_PAGE; o++)
+            if (!track_shown[page0 + o])
+                track_show(page0 + (u32)o);
+        return;
+    }
 }
 
 /* recomp: a store mem_wpage sends to the slow path: a code page that is
@@ -33,6 +199,7 @@ void mem_wpage_sync(void)
  * mem_code_store has seen the bytes; anything else is io_write's */
 void mem_code_write(sh4 *c, u32 a, u32 v, int size)
 {
+    mem_track(a);                       /* recomp: before the store; see mem_track.h */
     u8 *p = mem_page[a >> 16];
     if (!p) {
         io_write(c, a, v, size);
@@ -255,6 +422,7 @@ u32 g_r8(u32 a) { u8 *p = mem_ptr(a); return p ? *p : 0; }
 void (*mem_host_store)(u32 addr, u32 n);
 int mem_planting;
 #define HOST_STORE(a, n) do { \
+        mem_track(a);   /* recomp: n never crosses a 64 KiB page here */ \
         if (__builtin_expect(mem_host_store != NULL, 0)) mem_host_store(a, n); \
         if (__builtin_expect(mem_planting, 0)) mem_plant(a, n); \
         else if (__builtin_expect(mem_plant_near(a), 0)) mem_unplant(a, n); \

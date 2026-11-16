@@ -477,6 +477,7 @@ static u32 ram_slow_read(sh4 *c, u32 addr, int size)
 static void ram_slow_write(sh4 *c, u32 addr, u32 val, int size)
 {
     u8 *p = mem_ptr(addr);
+    mem_track(addr);                        /* recomp */
     if (in_low_ram(addr))
         low_ram_written[((addr & 0x1fffffffu) - RAM_BASE) / 4] = 1;
     if (mem_plant_near(addr))

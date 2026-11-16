@@ -59,6 +59,12 @@
  *                     (docs/design.md section 48)
  *   --resume FILE     for tests: the run goes on from FILE's snapshot (made by this build), after
  *                     the user's files are in
+ *   --rollback N      for tests: once the game has booted, the machine keeps its last N frames for
+ *                     going back to (docs/design.md section 55); nothing goes back by itself
+ *   --synctest N[,P]  for tests: rollback, and every P vertical blanks (default 120) the machine
+ *                     runs N frames (1 to 60), goes back N and runs them again with the same
+ *                     controls, unseen and unheard (section 56); each check's result goes to the
+ *                     log ("synctest:")
  *   --host [PORT]     a two-PC game (session.h, docs/design.md sections 46, 47, 49 and 50): this PC
  *                     hosts and waits for the other on UDP port PORT (default 29404), showing a join
  *                     code; the game starts when it joins. Should the other PC leave, this PC's game
@@ -2912,6 +2918,19 @@ int main(int argc, char **argv)
             snap_path = argv[++i];
         }
         else if (!strcmp(a, "--resume") && v) resume_path = argv[++i];
+        else if (!strcmp(a, "--rollback") && v) {
+            int n = atoi(argv[++i]);
+            if (n < 1 || n > 60) { fprintf(stderr, "vf4ft: --rollback: 1 to 60\n"); return 2; }
+            game_machine_rollback(n, 0, 0);
+        }
+        else if (!strcmp(a, "--synctest") && v) {
+            char *end = NULL;
+            int n = (int)strtol(argv[++i], &end, 10), p = 120;
+            if (end && *end == ',')
+                p = atoi(end + 1);
+            if (n < 1 || n > 60 || p < n + 1) { fprintf(stderr, "vf4ft: --synctest: N[,P], N 1 to 60, P more than N\n"); return 2; }
+            game_machine_rollback(n, n, p);
+        }
         else if (!strcmp(a, "--host")) {
             int port = 0;
             if (v && v[0] >= '0' && v[0] <= '9')

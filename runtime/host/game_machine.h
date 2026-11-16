@@ -197,4 +197,14 @@ int game_machine_snapshot_get(unsigned char **data, size_t *size, unsigned *fram
  * the reason in game_machine_why (the machine is as it was) */
 int game_machine_resume(const unsigned char *data, size_t size);
 
+/* Rollback, for tests (docs/design.md sections 55 and 56): before
+ * game_machine_run. Once the game has booted the machine keeps its last
+ * depth frames (1 to 60). synctest N (at most depth): every period vertical
+ * blanks it runs N frames, goes back N and runs them again with the same
+ * controls, without the frame function, sound or screens, and says on
+ * stderr ("synctest:") whether going back gave the machine as it was, the
+ * second run the machine the first one made, and its sound was all left
+ * out. 0 for either: off */
+void game_machine_rollback(int depth, int synctest, int period);
+
 #endif

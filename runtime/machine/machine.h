@@ -79,6 +79,13 @@ extern char snapshot_error[256];      /* why the last snapshot_load failed */
 int snapshot_save_mem(u8 **data, size_t *size);
 int snapshot_load_mem(const u8 *data, size_t size);
 void snapshot_register(const char *name, void *ptr, u32 size);
+/* recomp: rollback (rollback.c): what a snapshot holds but the memory, as one
+ * buffer of snapshot_dev_size bytes, in this process only; snapshot_dev_part
+ * names the parts of the buffer (0 past the last) */
+size_t snapshot_dev_size(void);
+void snapshot_dev_save(u8 *out);
+void snapshot_dev_load(const u8 *in);
+int snapshot_dev_part(int i, const char **name, size_t *off, size_t *len);
 
 struct mem_watch;
 void machine_watch_report(sh4 *c, struct mem_watch *w, u32 addr, u32 val, int size, int is_write);

@@ -126,6 +126,7 @@ static void driver_request(u32 w)
         if (src < SOUND_RAM_SIZE && dst < SOUND_RAM_SIZE && size <= SOUND_RAM_SIZE - src &&
             size <= SOUND_RAM_SIZE - dst) {
             u8 *base = mem_ptr(0xa0000000u + SOUND_RAM_PHYS);
+            mem_track_host(base + dst, size);       /* recomp */
             memmove(base + dst, base + src, size);
         }
         sw32(0x98, 0);

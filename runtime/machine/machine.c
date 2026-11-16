@@ -480,15 +480,19 @@ static const char *snapshot_walk(const u8 *data, size_t size, int apply)
             if (!q || *q > 1)
                 return "it ends early or is damaged (a memory page is missing)";
             if (*q == 0) {
-                if (apply)
+                if (apply) {
+                    mem_track_host(a->host + off, 4096);    /* recomp: rollback */
                     memset(a->host + off, 0, 4096);
+                }
                 continue;
             }
             const u8 *page = snap_take(&in, 4096);
             if (!page)
                 return "it ends early (a memory page is cut off)";
-            if (apply)
+            if (apply) {
+                mem_track_host(a->host + off, 4096);        /* recomp: rollback */
                 memcpy(a->host + off, page, 4096);
+            }
         }
     }
     if (in.p != in.end)
@@ -509,6 +513,79 @@ int snapshot_load_mem(const u8 *data, size_t size)
     }
     cpu.stop = 0;
     cpu.next_event = 0;
+    return 0;
+}
+
+/* ---- recomp: the machine but its memory, for rollback (runtime/machine/rollback.c) ----
+ * What snapshot_write keeps outside the memory areas, as one buffer of a fixed
+ * layout: the processor, the hardware registers, the frame count, the event
+ * table (unused rows zeroed, so that equal machines give equal bytes) and each
+ * module's state. In this process only: the events keep their routines'
+ * addresses. */
+
+size_t snapshot_dev_size(void)
+{
+    size_t n = sizeof cpu + sizeof hw + sizeof machine_frame + sizeof event_n + sizeof events;
+    for (int i = 0; i < blob_n; i++)
+        n += blobs[i].size;
+    return n;
+}
+
+void snapshot_dev_save(u8 *out)
+{
+    memcpy(out, &cpu, sizeof cpu);
+    out += sizeof cpu;
+    memcpy(out, &hw, sizeof hw);
+    out += sizeof hw;
+    memcpy(out, &machine_frame, sizeof machine_frame);
+    out += sizeof machine_frame;
+    memcpy(out, &event_n, sizeof event_n);
+    out += sizeof event_n;
+    memcpy(out, events, (size_t)event_n * sizeof events[0]);
+    memset(out + (size_t)event_n * sizeof events[0], 0, (size_t)(EVENT_MAX - event_n) * sizeof events[0]);
+    out += sizeof events;
+    for (int i = 0; i < blob_n; i++) {
+        memcpy(out, blobs[i].ptr, blobs[i].size);
+        out += blobs[i].size;
+    }
+}
+
+void snapshot_dev_load(const u8 *in)
+{
+    memcpy(&cpu, in, sizeof cpu);
+    in += sizeof cpu;
+    memcpy(&hw, in, sizeof hw);
+    in += sizeof hw;
+    memcpy(&machine_frame, in, sizeof machine_frame);
+    in += sizeof machine_frame;
+    memcpy(&event_n, in, sizeof event_n);
+    in += sizeof event_n;
+    memcpy(events, in, sizeof events);
+    in += sizeof events;
+    for (int i = 0; i < blob_n; i++) {
+        memcpy(blobs[i].ptr, in, blobs[i].size);
+        in += blobs[i].size;
+    }
+    /* exactly as saved, the stop code and the next event's time too: the run
+     * that goes on from here (rt_native_rewind) clears the one and works out
+     * the other */
+}
+
+int snapshot_dev_part(int i, const char **name, size_t *off, size_t *len)
+{
+    static const char *const fixed[] = { "cpu", "hw", "frame", "events" };
+    size_t sizes[4] = { sizeof cpu, sizeof hw, sizeof machine_frame + sizeof event_n, sizeof events };
+    size_t at = 0;
+    for (int k = 0; k < 4 + blob_n; k++) {
+        size_t n = k < 4 ? sizes[k] : blobs[k - 4].size;
+        if (k == i) {
+            *name = k < 4 ? fixed[k] : blobs[k - 4].name;
+            *off = at;
+            *len = n;
+            return 1;
+        }
+        at += n;
+    }
     return 0;
 }
 

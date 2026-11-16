@@ -565,6 +565,7 @@ u32 rt_io_read(sh4 *c, u64 atk, u32 addr, int size)
 
 void rt_io_write(sh4 *c, u64 atk, u32 addr, u32 val, int size)
 {
+    mem_track(addr);        /* the page armed for rollback (mem_track.h) */
     /* most stores into code pages are not into code: the interrupt
      * handler's stack, for one, is inside the program's .text */
     u8 *p = mem_page[addr >> 16];
@@ -592,12 +593,13 @@ void rt_io_write(sh4 *c, u64 atk, u32 addr, u32 val, int size)
 
 void rt_sq_write(sh4 *c, u64 atk, u32 dst, const u32 *words)
 {
+    mem_track(dst);         /* rollback (mem_track.h) */
     u32 k = (u32)(atk >> 32);
     c->pc = (u32)atk + 2;
     c->cycles -= k;
     c->insns -= k;
     u8 *p = mem_page[dst >> 16];
-    if (p) {                                /* a code page (mem_wpage) */
+    if (p) {                                /* a code page (mem_wpage), or one armed for rollback */
         rt_store_at = (u32)atk;
         mem_code_note(dst, 32, words);
         rt_store_at = 0;
@@ -676,6 +678,7 @@ static int program_load(int program)
         u8 *h = mem_ptr(dst);
         if (!h || off > size || n > size - off || !mem_ptr(dst + n - 1) || mem_ptr(dst + n - 1) != h + n - 1)
             return -1;
+        mem_track_host(h, n);
         memcpy(h, img + off, n);
         loaded += n;
     }
@@ -787,6 +790,28 @@ int rt_native_load(const u8 *data, size_t size)
     return 0;
 }
 
+/* Rollback (runtime/machine/rollback.c, docs/design.md section 55): the
+ * frame hook has put memory and the models back to an earlier frame's end
+ * of this same run. The run starts again from there as after a snapshot's
+ * load, without code_refit: every byte of the code that differs from the
+ * program's own was marked when it was stored (rt_code_store) or loaded
+ * (code_refit), and marks are never taken back, so they still cover the
+ * code as it was then. */
+#define RT_REWOUND (-2)             /* rt_switch_to: rt_native_rewind */
+
+int rt_native_can_rewind(void)
+{
+    return rt_program_now == PROGRAM_MAIN && rt_restart_set;
+}
+
+void rt_native_rewind(void)
+{
+    if (!rt_native_can_rewind())
+        return;
+    rt_switch_to = RT_REWOUND;
+    longjmp(rt_restart, 1);
+}
+
 int rt_native_run(sh4 *c)
 {
     rt_cpu = c;
@@ -803,6 +828,10 @@ int rt_native_run(sh4 *c)
                 machine_stop(c, STOP_FATAL, "a snapshot was loaded, and the code tables cannot be made");
                 rt_finish(STOP_FATAL);
             }
+            c->stop = 0;
+        } else if (rt_switch_to == RT_REWOUND) {
+            rt_skip_entry = 0;
+            rt_resumed = 1;
             c->stop = 0;
         } else {
             program_switch(c, rt_switch_to);    /* test mode: the other program, from its start (or a restart) */

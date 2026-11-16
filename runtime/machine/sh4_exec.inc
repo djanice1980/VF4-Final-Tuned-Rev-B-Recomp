@@ -476,6 +476,7 @@ static void X(store_queue_flush)(sh4 *c, u32 addr)
         obs_store_block(c, dst, c->sq[q]);
 #endif
         mem_code_note(dst, 32, c->sq[q]);   /* recomp */
+        mem_track(dst);                     /* recomp: rollback (mem_track.h) */
         memcpy(p + (dst & 0xffff), c->sq[q], 32);
     }
     else

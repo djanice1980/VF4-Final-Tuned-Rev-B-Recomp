@@ -138,6 +138,26 @@ What the recomp changed:
   so two PCs playing one game get the same bits whatever their math
   library. The values are the ones `sin` and `cos` gave on Linux, so runs
   keep their hashes (docs/design.md section 45).
+- Rollback (2026-11-16, docs/design.md section 55). `mem_track.h`,
+  `rollback.h` and `rollback.c` are the recomp's own files. `mem.h`,
+  `mem.c`: the pages a frame writes are tracked: a page armed for
+  tracking is NULL in `mem_wpage` (`mem_wpage_sync` leaves armed pages
+  out too), so its first store takes the slow path, which calls
+  `mem_track` (`mem_code_write`, and `HOST_STORE` for `g_w*` and
+  `g_write`). `mem_track` is also called by `ram_slow_write` (`hw.c`) and
+  the store-queue flush (`sh4_exec.inc`); `mem_track_host`, before device
+  code writes through a host pointer, by the sound driver's block move
+  (`hw_sound.c`), `target_store` (`view.c`) and a snapshot's pages
+  (`machine.c`). `machine.h`, `machine.c`: `snapshot_dev_size`,
+  `snapshot_dev_save`, `snapshot_dev_load` and `snapshot_dev_part`, what a
+  snapshot holds but the memory as one buffer. With rollback off
+  (`mem_tracking` 0) nothing behaves differently.
+- Frames run again (2026-11-16, docs/design.md section 56). `view.h`,
+  `view.c`: `view_rerun` and its three modes; `lists_begin` does not take
+  a screen's lists in `VIEW_RERUN`, `render_started` draws no screen
+  unless `VIEW_LIVE`, and going back makes the texture cache look at its
+  textures again (`gen`). With `VIEW_LIVE`, the only mode outside
+  rollback's replays, nothing behaves differently.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

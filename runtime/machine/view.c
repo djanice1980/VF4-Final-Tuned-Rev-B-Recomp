@@ -111,6 +111,7 @@ static FILE *pipe_f;
 static int pipe_fps = 60;
 static int realtime;                    /* --realtime: 60 vertical blanks a second of real time */
 static int host_mode;                   /* recomp: the game window draws every frame (view_host_start) */
+static int rerun;                       /* recomp: rollback's re-run frames (view_rerun) */
 static int marks;                       /* --view-marks: where the game itself says the fighters are */
 static u32 view_from;                   /* --view-from N: nothing before this vertical blank */
 static int threads_wanted;              /* --view-threads N */
@@ -2743,6 +2744,8 @@ static void lists_begin(int pass)
         if (want && pic_request)
             pic_targets_seen++;
     }
+    if (!pass && rerun == VIEW_RERUN)
+        want = regular = 0;             /* recomp: a re-run frame's screen (view_rerun) */
     /* a scene that is not wanted is noted all the same: its render must find it, and nothing else */
     cur = scene_open(key);
     cur->capture = want;
@@ -2977,6 +2980,7 @@ static void target_store(void)
     u8 *base = mem_ptr(VRAM1 + tg.addr);
     if (!base)
         return;
+    mem_track_host(base, (size_t)(tg.h - 1) * tg.stride + (size_t)tg.w * bpp);     /* recomp */
     for (int y = 0; y < tg.h; y++) {
         const u32 *frow = fb + y * FBW;
         u8 *out = base + (size_t)y * tg.stride;
@@ -3355,6 +3359,14 @@ void view_host_wide(int width)
     __atomic_store_n(&wide_ox, ox > WIDE_MAX ? WIDE_MAX : ox, __ATOMIC_RELAXED);
 }
 
+/* recomp: rollback's re-run frames (view.h) */
+void view_rerun(int mode)
+{
+    if (mode == VIEW_RERUN)
+        gen++;              /* the texture memory went back: the textures are summed again */
+    rerun = mode;
+}
+
 static void scene_draw(scene *sc, int to_texture)
 {
     u32 xc = view_core_reg(0, 0x68), yc = view_core_reg(0, 0x6c), sof = view_core_reg(0, 0x60);
@@ -3444,7 +3456,8 @@ static void render_started(void)
     int drawn = 0;
     if (s == cur)
         cur = NULL;
-    if (s && s->capture) {
+    /* recomp: no screen in a re-run frame; the scene may be the first run's (view_rerun) */
+    if (s && s->capture && (to_texture || rerun == VIEW_LIVE)) {
         scene_draw(s, to_texture);
         drawn = 1;
     }

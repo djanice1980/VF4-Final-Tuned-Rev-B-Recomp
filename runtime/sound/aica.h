@@ -35,6 +35,14 @@ int aica_main_irq(void);
 unsigned aica_audio_take(int16_t *dst, unsigned max);
 void aica_audio_discard(void);
 
+/* rollback's re-run frames were heard the first time: while dropping is on,
+ * the samples made are not put in the buffer (the chip runs as ever).
+ * Returns how many were dropped since it was last turned on or off. */
+unsigned aica_audio_drop(int on);
+
+/* how many frames have been put in the buffer so far (it wraps) */
+uint32_t aica_audio_kept(void);
+
 /* the state, for the machine's snapshots: pointer and size */
 void *aica_state(unsigned *size);
 

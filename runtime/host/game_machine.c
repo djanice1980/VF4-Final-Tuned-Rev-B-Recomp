@@ -16,10 +16,12 @@
 #include "game_machine.h"
 #include "dimm_image.h"
 #include "tables.h"
+#include "rollback.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 _Static_assert(GAME_PICTURE_W == VIEW_W && GAME_PICTURE_H == VIEW_H && GAME_PICTURE_W_MAX == VIEW_W_MAX,
                "the picture's size");
@@ -86,8 +88,143 @@ static void snapshot_take(void)
         snap_data = NULL;
 }
 
+/* ---- rollback, for tests (docs/design.md section 55) ---- */
+
+static int rb_depth, st_n, st_period;
+static enum { ST_IDLE, ST_RUN, ST_REPLAY } st_state;
+static u32 st_from, st_next;
+static game_input st_in[60];            /* the controls of frames st_from + 1 .. st_from + st_n */
+static rb_digest st_h0, st_h1, st_h;
+static unsigned st_checks, st_bad_back, st_bad_replay, st_bad_sound;
+static double st_t0;                    /* when the second run started */
+static u32 st_kept0, st_kept;           /* aica_audio_kept at st_from, and as the machine went back */
+
+static double now_seconds(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+}
+
+void game_machine_rollback(int depth, int synctest, int period)
+{
+    rb_depth = depth;
+    st_n = synctest > 60 ? 60 : synctest;
+    st_period = period;
+    if (st_n > rb_depth)
+        rb_depth = st_n;
+}
+
+/* the machine was changed behind the ring's back (another program, a snapshot) */
+static void rollback_reset(void)
+{
+    if (rb_on() && st_checks)
+        fprintf(stderr, "synctest: %u checks so far: %u put back wrong, %u replayed wrong, %u replays heard\n",
+                st_checks, st_bad_back, st_bad_replay, st_bad_sound);
+    rb_end();
+    st_state = ST_IDLE;
+    view_rerun(VIEW_LIVE);
+    aica_audio_drop(0);
+}
+
+/* the end of host_frame: the machine is this frame's, the controls in */
+static void rollback_frame(int booted, const game_input *in)
+{
+    if (!rb_depth || !booted || rt_native_program() != PROGRAM_MAIN)
+        return;
+    u32 f = machine_frame;
+    if (!rb_on()) {
+        if (rb_begin(rb_depth)) {
+            fprintf(stderr, "vf4ft: rollback: out of memory for %d frames: off\n", rb_depth);
+            rb_depth = 0;
+            return;
+        }
+        fprintf(stderr, "vf4ft: vertical blank %u: rollback keeps %d frames\n", f, rb_depth);
+        st_state = ST_IDLE;
+        st_next = f + (u32)st_period;
+    }
+    rb_frame(f);
+    static unsigned since;
+    if (++since == 600) {
+        since = 0;
+        rb_stats s;
+        rb_stats_take(&s);
+        unsigned n = s.frames ? s.frames : 1;
+        fprintf(stderr, "rollback: vertical blank %u: %.3f ms a frame keeping the models, %.3f ms copying %.1f "
+                "pages (%.2f MB) a frame; %u times back, %.2f ms each; %.1f MB held\n", f, s.save_s * 1e3 / n,
+                s.copy_s * 1e3 / n, (double)s.pages / n, (double)s.pages * MEM_TRACK_PAGE / n / 1e6, s.restores,
+                s.restores ? s.restore_s * 1e3 / s.restores : 0.0, rb_bytes() / 1e6);
+    }
+    if (!st_n || !rb_on())
+        return;
+    switch (st_state) {
+    case ST_IDLE:
+        if (f >= st_next) {
+            rb_digest_take(&st_h0);
+            st_kept0 = aica_audio_kept();
+            st_from = f;
+            st_state = ST_RUN;
+        }
+        break;
+    case ST_RUN:
+        st_in[f - st_from - 1] = *in;
+        if (f - st_from < (u32)st_n)
+            break;
+        rb_digest_take(&st_h1);
+        if (!rt_native_can_rewind()) {
+            fprintf(stderr, "synctest: the run cannot go back\n");
+            st_state = ST_IDLE;
+            st_n = 0;
+            break;
+        }
+        if (rb_restore(st_from)) {
+            fprintf(stderr, "synctest: vertical blank %u is not kept\n", st_from);
+            st_state = ST_IDLE;
+            st_next = f + (u32)st_period;
+            break;
+        }
+        rb_digest_take(&st_h);
+        st_checks++;
+        if (rb_digest_diff(&st_h0, &st_h, stderr, "synctest: put back"))
+            st_bad_back++;
+        st_state = ST_REPLAY;
+        st_t0 = now_seconds();
+        /* the frames run again were seen and heard the first time: no
+         * screen drawn, no sound kept; the last one's lists are taken, the
+         * frame after it shows them (section 56) */
+        st_kept = aica_audio_kept();
+        aica_audio_drop(1);
+        view_rerun(st_n > 1 ? VIEW_RERUN : VIEW_RERUN_LAST);
+        rt_native_rewind();                 /* does not return: rt_native_can_rewind */
+        fprintf(stderr, "synctest: the run did not go back\n");
+        abort();                            /* the machine is the earlier frame's, the run is not */
+    case ST_REPLAY:
+        if (f - st_from + 1 == (u32)st_n)
+            view_rerun(VIEW_RERUN_LAST);
+        if (f - st_from < (u32)st_n)
+            break;
+        double ms = (now_seconds() - st_t0) * 1e3;
+        view_rerun(VIEW_LIVE);
+        unsigned dropped = aica_audio_drop(0);
+        u32 kept = aica_audio_kept() - st_kept, heard = st_kept - st_kept0;
+        if (kept || dropped != heard)       /* the replay makes what the first run made, and none is kept */
+            st_bad_sound++;
+        rb_digest_take(&st_h);
+        int bad = rb_digest_diff(&st_h1, &st_h, stderr, "synctest: replay");
+        if (bad)
+            st_bad_replay++;
+        fprintf(stderr, "synctest: vertical blanks %u-%u: replay %s (in %.1f ms; %u pages most a frame, %.1f MB "
+                "held; sound: %u samples dropped of %u, %u kept)\n", st_from + 1, f, bad ? "DIFFERS" : "same", ms,
+                rb_pages_most(), rb_bytes() / 1e6, dropped, heard, kept);
+        st_state = ST_IDLE;
+        st_next = f + (u32)st_period;
+        break;
+    }
+}
+
 int game_machine_resume(const unsigned char *data, size_t size)
 {
+    rollback_reset();
     if (rt_native_load(data, size)) {
         snprintf(why, sizeof why, "%s", snapshot_error);
         return -1;
@@ -111,6 +248,7 @@ static void host_frame(sh4 *c)
     if (switches != rt_native_switches) {
         switches = rt_native_switches;
         booted = 0;
+        rollback_reset();
     }
     if (!booted && rt_native_program() == PROGRAM_TEST)
         booted = 1;
@@ -118,9 +256,13 @@ static void host_frame(sh4 *c)
         int m = game_mode_main(), s = game_mode_sub();
         booted = (m == 0 && s >= 1 && s < 16) || (m >= 1 && m < 8);
     }
-    int pw = VIEW_W;
-    const u8 *rgb = view_host_picture(&pw);
-    frame_fn(machine_frame, rgb, pw, !booted, &in);
+    if (st_state == ST_REPLAY) {
+        in = st_in[machine_frame - st_from - 1];    /* the sync test's second run: no frame function */
+    } else {
+        int pw = VIEW_W;
+        const u8 *rgb = view_host_picture(&pw);
+        frame_fn(machine_frame, rgb, pw, !booted, &in);
+    }
     inputs.player[0] = in.player[0];
     inputs.player[1] = in.player[1];
     inputs.sys = in.sys;
@@ -133,6 +275,7 @@ static void host_frame(sh4 *c)
     }
     if (snap_wanted)
         snapshot_take();
+    rollback_frame(booted, &in);
 }
 
 unsigned long long game_machine_hash(void)

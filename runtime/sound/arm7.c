@@ -10,6 +10,7 @@
  * Coprocessor instructions take the undefined-instruction trap (there is no
  * coprocessor). Instructions are counted, not cycles. */
 #include "arm7.h"
+#include "../machine/mem_track.h"   /* recomp: rollback (docs/design.md section 55) */
 
 #include <stdio.h>
 #include <string.h>
@@ -56,6 +57,7 @@ static inline u32 rd8(u32 a)
 static inline void wr32(u32 a, u32 v)
 {
     if (a < 0x00800000u) {
+        mem_track_host(ram + (a & ram_mask & ~3u), 4);     /* recomp */
         memcpy(ram + (a & ram_mask & ~3u), &v, 4);
         return;
     }
@@ -64,6 +66,7 @@ static inline void wr32(u32 a, u32 v)
 static inline void wr8(u32 a, u32 v)
 {
     if (a < 0x00800000u) {
+        mem_track_host(ram + (a & ram_mask), 1);           /* recomp */
         ram[a & ram_mask] = (uint8_t)v;
         return;
     }
@@ -82,6 +85,7 @@ static inline void wr16(u32 a, u32 v)
 {
     if (a < 0x00800000u) {
         uint16_t h = (uint16_t)v;
+        mem_track_host(ram + (a & ram_mask & ~1u), 2);     /* recomp */
         memcpy(ram + (a & ram_mask & ~1u), &h, 2);
         return;
     }

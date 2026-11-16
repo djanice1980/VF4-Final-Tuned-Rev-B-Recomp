@@ -4257,3 +4257,258 @@ Also tested:
 Not covered: X11 (and the game under XWayland) was not looked at, and
 Windows is not changed; Proton's game is the Windows build. A two-PC game was not tried with the compositor
 going away.
+
+## 55. Rollback's first part: going back, and the one-PC sync test (2026-11-16)
+
+The two-PC game is lockstep with an input delay (sections 46 to 50).
+Rollback would let each PC run ahead on a guess of the other player's
+controls and, when the real ones arrive and differ, put the machine back
+to the frame they belong to and run the frames since again. This section
+builds the part every rollback needs, and nothing of the network: the
+machine kept at the end of each of the last few frames, the way back to
+any of them, and a test on one PC that shows the machine run again from
+there is the machine it was.
+
+**What a frame costs to keep** (measured first, on the desktop, a scripted
+two-player fight): the machine's own work is 2.28 ms a frame. The memory a
+frame writes is 0.71 MB at 4 KiB granularity, 2.9 MB at 64 KiB. Copying
+what changed takes about 0.06 ms; the models' state (everything a snapshot
+holds outside the memory areas: the processor, the hardware registers, the
+event table and every module's `snapshot_register` blob) is about 2.3 MB
+and takes about 0.09 ms to copy whole.
+
+**Which pages a frame writes** (`runtime/machine/mem_track.h`, `mem.c`).
+Translated code and the interpreter store through `mem_wpage`, a NULL entry
+sending the store to the slow path (`rt_io_write`, `mem_code_write`,
+`rt_sq_write`). While rollback is on, a 64 KiB page of a memory area not
+yet written since the frame began is *armed*: NULL in `mem_wpage` at every
+address it appears at (each of the six mirrors, and the aliases), so its
+first store takes the slow path, which calls `mem_track`. That shows the
+page to rollback, which copies its 64 KiB away, and puts it back in
+`mem_wpage`; later stores to it that frame take the fast path again. The
+fast path is unchanged, so a frame pays only for its first store into each
+page (a slow call and a 64 KiB copy). The host's own stores (`g_w32` and the
+rest, through `HOST_STORE`; the ELAN's plain transfers, the controller's
+replies, the BIOS stand-in) call `mem_track` too, and device code that
+writes guest memory through a host pointer calls `mem_track_host` first:
+the ARM7's stores into sound RAM, the sound DSP's ring, the sound driver's
+block moves, a pass the renderer stores into a texture, the program's load
+and a snapshot's load. The pages that always take the slow path (low RAM,
+the first 64 KiB of sound RAM) are shown by `ram_slow_write`. 4 KiB pages
+would copy a quarter of the bytes but need a table 16 times larger;
+`mprotect` and a fault handler were not used, since every store already
+goes through code this project generates or owns.
+
+**The ring** (`runtime/machine/rollback.c`). At each frame's end
+(`rb_frame`, from the end of `host_frame` once the game has booted, its
+controls in) the models are copied whole (`snapshot_dev_save`, machine.c)
+into the newest record, and the pages written since are armed again. A
+record holds that frame's models and the pages the next frame wrote, as
+they were before. `rb_restore(F)` puts back the pages of every record from
+the newest to F's, newest first (what is left of each page is its oldest
+copy, F's), then F's models, and arms every page. The 64 KiB copies come
+from a pool and go back to it, so after the first few frames nothing is
+allocated.
+
+**Going on from there** (`rt_native_rewind`, rt_native.c). The run starts
+again from `rt_native_run`'s frame, as after a snapshot's load from the
+frame hook (`rt_native_load`), with the processor where it was at that
+frame's end: inside the vertical blank's event, before the interrupt is
+taken, which `rt_event` then does as the first run did. It skips
+`code_refit`: every byte of the program that differs from its own was
+marked when it was stored or loaded, and marks are never taken back, so the
+marks still cover the code as it was at F. As after any load, the code
+around the routine the run was in goes on in the interpreter
+(`rt_resumed`).
+
+**The sync test** (`--synctest N[,P]`, game_machine.c). Every P vertical
+blanks: hash the machine at a frame's end (every 4 KiB page of every memory
+area, and each part of the models' state), run N frames, hash again, go
+back N frames and check the hash is the first one ("put back"), then run
+the N frames again with the controls the first run had, without the frame
+function, and check the hash is the second one ("replay"). Any difference
+is listed by memory area and address, or by the model's name.
+
+**The writer it found.** The first run (N 8, P 60, 185 checks over a
+15,000-frame fight) had every replay right, but once the put-back machine
+differed from the saved one in one 4 KiB page of ELAN memory. The
+interpreter's store-queue flush (`sh4_exec.inc`) wrote RAM through
+`mem_page` itself, past the tracker. The game sends its display lists to
+ELAN memory by store queue, and once the run has gone back the code around
+the main loop runs on the interpreter, so a page could be written there
+unseen. The write is the game's, so the replay made it again and matched.
+The flush now calls `mem_track` first.
+
+**Tested** in the headless KWin, the Linux build (gcc) on the desktop
+(Ryzen AI Max+ 395), GPU renderer, the sound chip on with SDL's dummy
+output, unpaced, the scripted two-player fight (`--press`) to vertical
+blank 15,000. Rollback starts at vertical blank 2,387, when the game has
+booted:
+
+| Case | Checks | Put back wrong | Replayed wrong |
+|---|---|---|---|
+| `--synctest 8,60`, before the flush's fix | 185 | 1 (one ELAN page) | 0 |
+| `--synctest 8,60` | 185, twice | 0 | 0 |
+| `--synctest 30,95` | 100 | 0 | 0 |
+
+Every run, rollback off or on, going back or not, ended at vertical blank
+15,000 after the same 15,194,980,856 instructions, and the pictures show
+the fight played as without rollback.
+
+**What it costs** (vertical blanks 4,500 to 15,000; the machine's thread
+a frame, the view's lists and transform included, from the log's 600-frame
+averages; two runs each, alternated):
+
+| | Off | `--rollback 8` |
+|---|---|---|
+| The machine's thread a frame | 4.33, 4.34 ms | 4.82, 5.16 ms |
+| Keeping the models a frame | | 0.10 ms |
+| Copying pages a frame | | 0.19 ms (61 pages, 4.0 MB) |
+| Memory held | | 64 MB |
+
+So keeping 8 frames costs about 0.5 to 0.8 ms a frame here, 11 to 19
+percent; the copies are 0.3 ms of it, the rest the slow first stores and the
+caches the 4 MB pushes out. A frame writes more 64 KiB pages (4.0 MB) than
+change (2.9 MB): a page counts when it is stored to, whether or not the
+bytes change. 30 frames hold 220 MB. Going back 8 frames takes 1.5 ms
+(158 times); running the 8 frames again takes 41 ms (median; 76 ms at
+most), about 5 ms a frame: a frame run again costs what a frame costs,
+the view's work included, since nothing is skipped yet.
+
+**What it means for the two-PC game.** At 60 frames a second the desktop
+has about 11 ms a frame to spare, two frames run again a frame. On the
+Steam Deck, about 2.5 times slower (section 45's estimate), the frame
+alone takes most of the 16.7 ms and there is no room to run frames again.
+The next steps are to run frames again without the view (section 56:
+lists, transform and the passes into textures: what they make is only
+seen, and the game never reads texture memory, but a texture pass of a
+frame run again would be missing from the next picture), to see what the slow first
+stores cost under Proton, and the network side: guessing the other
+player's controls, sending them, and going back when a guess was wrong.
+
+Not covered: the Windows build was compiled (llvm-mingw), not run; the
+sync test was not run under Proton or on a Deck. Sound made by frames run
+again goes to the audio buffer as well (the test only); the two-PC game
+will have to leave it out (section 56 does). `tests/lockstep` was not run: it builds
+VF4debug's own interpreter, not `runtime/machine`, and nothing in
+`runtime/cpu` changed.
+
+## 56. Frames run again without sound or screens (2026-11-16)
+
+Section 55's frames run again made their sound a second time and drew
+their screens a second time: the sound went into the audio buffer after
+the first run's, and every screen's lists were read, transformed and
+drawn (or handed to the GPU) although no one would see them. Both were
+seen and heard the first time. This section leaves them out, before any
+network code.
+
+**Sound** (`aica.c`). The chip runs in a frame run again as in any other
+frame: its channels, envelopes, DSP and timers are machine state, and the
+replay must leave them as the first run did. Only the last step, the
+sample going into the audio buffer (which is not machine state), is left
+out while `aica_audio_drop` is on. The sync test turns it on as the
+machine goes back and off at the end of the last frame run again, and
+checks that the samples dropped are as many as the first run made in
+those frames and that none reached the buffer. The next sample after the
+replay is made from the machine the first run had at the same point, so
+what is heard is what would have been heard without going back.
+
+**When a screen's lists are drawn.** The view (`view.c`) reads a screen's
+display lists as the game sends them, from the frame's "start lists"
+(core register 0x144) on, and draws the scene at the "start render"
+(0x014). Measured over the first 8,000 vertical blanks (a temporary log):
+of 7,057 screens, 7,047 were drawn in the frame after the one whose lists
+they are: the game builds frame f's lists, and the render that frame
+starts is of frame f-1's. The other ten were at the boot (two drawn in
+the frame their lists began) and at loading breaks after the fight
+starts and between rounds (lists begun, then nothing drawn for 2 to 151
+frames). No pass into a texture was made in those 8,000 frames.
+
+So the last frame run again is special: its lists are the ones the first
+frame after the replay draws. `view_rerun` has three modes:
+
+- `VIEW_RERUN` (from going back to the end of the next-to-last frame run
+  again): a screen's lists are not taken (no lists read, no transform),
+  and no screen is drawn.
+- `VIEW_RERUN_LAST` (the last frame run again): its lists are taken, as in
+  any frame; still no screen drawn.
+- `VIEW_LIVE`: as ever.
+
+No screen is drawn until the replay is over because the first render
+after going back is of the frame before it, whose lists the view no
+longer holds: its scene, found by the object list base, holds lists from
+later in the first run. A pass into a texture is taken and drawn in every
+mode, since its picture goes into texture memory, part of the machine,
+and the screens after it use it. Going back also makes the texture cache
+look at every texture again (`gen`): texture memory changed behind it.
+
+**Tested** in the headless KWin as in section 55 (GPU renderer, sound chip
+on with SDL's dummy output, unpaced, the scripted fight), to vertical
+blank 12,100, each case against a run without rollback. A temporary
+running sum of every sample put in the audio buffer was logged every 600
+vertical blanks. The periods were chosen so that in every case a replay
+ends at vertical blanks 3,027, 6,099, 9,043 and 11,987; the pictures
+(`--shot`) were taken at 3,028 and 3,029, 6,099 and 6,100, 9,044 and
+9,045, 11,988 and 12,000.
+
+| Case | Replays | Put back or replayed wrong | Sound wrong | Sound sums (20) | Pictures (8) |
+|---|---|---|---|---|---|
+| `--synctest 1,63` | 151 | 0 | 0 | the same | the same |
+| `--synctest 8,120` | 75 | 0 | 0 | the same | the same |
+| `--synctest 30,98` | 75 | 0 | 0 | the same | the same |
+| `--synctest 8,120`, software renderer | 75 | 0 | 0 | the same | the same |
+
+"Sound wrong" counts replays that kept a sample, or dropped a different
+number than the first run made (736, 5,888 and 22,048 samples, 735 or 736
+a frame). The pictures were compared pixel by pixel: 3,028, 6,100, 9,044
+and 11,988 are the first pictures drawn after a replay, from the lists of
+its last frame. In the run without rollback a picture and the next differ
+in 0.6 to 1.2 million pixels, so a picture left over or drawn from the
+wrong lists would have shown. The software renderer's case (the view
+draws the screen itself, into the picture the window shows) was compared
+with a software-renderer run without rollback. The GPU renderer's run
+without rollback took 4.33 ms a frame, as in section 55: frames run once
+are unchanged.
+
+**What it costs** (the time to run the frames again, from going back to
+the end of the last one; the 8,120 and 30,98 cases):
+
+| | Section 55 (view's work included) | Now |
+|---|---|---|
+| 8 frames again, median | 40.8 ms | 20.0 ms (10.0 to 28.9 ms, 10th to 90th percentile) |
+| 8 frames again, most | 75.8 ms | 78.3 ms |
+| 30 frames again, median | | 75.2 ms |
+| A frame run again | about 5 ms | about 2.5 ms |
+
+A frame run again now costs about what the machine's own work costs
+(section 55 measured 2.28 ms) and its page tracking, whichever renderer:
+with the software renderer, whose frames take 8.56 ms without rollback,
+8 frames again took 20.7 ms (median). The slowest, 78 ms,
+was in the loading break between rounds (vertical blanks 7,500 to 7,507);
+late in the fight, where the machine's own work is heavier (6.2 ms a frame
+without rollback), 8 frames again took about 40 ms.
+
+**What it means for the two-PC game.** On the desktop, with about 12 ms a
+frame to spare, four or five frames can be run again within one frame.
+On the Steam Deck, by section 45's estimate of 2.5 times slower, a frame
+run again would take about 6 ms with about 4 ms to spare (a frame and
+keeping it, 12 to 13 ms): going back still costs the Deck frames. It
+needs measuring on a Deck before the network side is built around it.
+The network side is next: guessing the other player's controls, sending
+them, and going back when a guess was wrong.
+
+Also fixed, in section 55's sync test: had the run been unable to go back
+(`rt_native_rewind` returning), the machine would already have been put
+back, and the test would have stayed in its replay, no longer calling the
+frame function and reading controls past the 60 it keeps. It now asks
+`rt_native_can_rewind` before putting the machine back. It did not happen
+in any test.
+
+Not covered: no pass into a texture was made in the fight, so drawing
+them in frames run again is untested; a pass whose lists began in the
+frame before the one gone back to would be drawn from lists the view no
+longer holds (as a screen's would, which is why no screen is drawn). A
+scene whose lists begin in a frame run again (not the last) and that is
+drawn more than a frame later, as at a loading break, is not drawn: the
+picture stays as it was for that frame. The Windows build and Proton were
+not run.

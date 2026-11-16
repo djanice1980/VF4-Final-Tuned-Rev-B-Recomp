@@ -29,6 +29,13 @@ int rt_native_power_on(void);
  * snapshot_error says why and the machine is as it was */
 int rt_native_load(const unsigned char *data, size_t size);
 
+/* rollback (runtime/machine/rollback.c): from the frame hook, after the
+ * machine was put back to an earlier frame's end of this run, the run goes on
+ * from there. Does not return while the game (not its test program) runs:
+ * when rt_native_can_rewind, asked before the machine is put back */
+int rt_native_can_rewind(void);
+void rt_native_rewind(void);
+
 /* the program running now: PROGRAM_MAIN or PROGRAM_TEST (tables.h) */
 int rt_native_program(void);
 extern unsigned rt_native_switches;     /* how many times the BIOS stand-in started the other program */
