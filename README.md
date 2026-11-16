@@ -264,8 +264,9 @@ release is out, the Play page says so:
 
 - **Update now** downloads it, puts it in place, restarts the launcher and
   builds the game again.
-- **When I close** downloads it now and puts it in when you close the
-  launcher; the next start builds the game again.
+- **Install on next launch** downloads it now; it installs the next time
+  you start the launcher, which builds the game again. (Its files are put
+  in place as the launcher closes.)
 
 Saves and settings stay. **Check for updates**, at the foot of the Play
 page, asks again. A development build never updates itself; only a

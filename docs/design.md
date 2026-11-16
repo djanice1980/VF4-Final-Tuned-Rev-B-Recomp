@@ -1360,7 +1360,9 @@ playing, or have the update go in when the launcher closes.
 - At every start the launcher runs a check: one request to GitHub, no
   download. A newer release puts a card on the Play page, in the place of
   the "new builder" card: *Version X is out*, with **Update now** and
-  **When I close**.
+  **When I close** (named **Install on next launch** from 0.5.12: what
+  the player sees is the next start installing it; the files are still
+  put in place as the launcher closes).
   - *Update now* downloads it, puts it in place as soon as no build is
     running, and starts the new launcher, which closes the old one.
   - *When I close* downloads it now; the card then says it goes in when

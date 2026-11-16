@@ -3244,12 +3244,12 @@ static float draw_update_card(float y)
                  "built again before you play, and your saves and settings stay.",
                  rel_version, upd_size > 0 ? SDL_max(upd_size / 1000000, 1) : 0);
         id1 = B_UPD_NOW, b1 = "Update now";
-        id2 = B_UPD_CLOSE, b2 = "When I close";
+        id2 = B_UPD_CLOSE, b2 = "Install on next launch";
         break;
     case U_FETCHING:
         snprintf(t, sizeof t, "%s %s\xE2\x80\xA6", upd_stage == 2 ? "Unpacking" : "Downloading", upd_version);
         SDL_strlcpy(s, upd_when == UW_NOW ? "Then the launcher restarts and builds the game again."
-                                          : "It goes in when you close the launcher.", sizeof s);
+                                          : "It installs the next time you start the launcher.", sizeof s);
         bar = 1;
         if (upd_when == UW_CLOSE)
             id1 = B_UPD_NOW, b1 = "Update now", style1 = 0;
@@ -3257,7 +3257,7 @@ static float draw_update_card(float y)
         break;
     case U_READY:
         if (upd_when == UW_CLOSE) {
-            snprintf(t, sizeof t, "Version %s goes in when you close the launcher", upd_version);
+            snprintf(t, sizeof t, "Version %s installs on the next launch", upd_version);
             SDL_strlcpy(s, "Or now: the launcher restarts, then builds the game again.", sizeof s);
             id1 = B_UPD_NOW, b1 = "Update now";
         } else {
