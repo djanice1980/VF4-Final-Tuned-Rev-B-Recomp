@@ -26,6 +26,7 @@ static void set(binding *b, const char *a, const char *c)
 
 const char *const settings_card_default[2] = { "p1", "p2" };
 const char *const settings_region_text[REGIONS] = { "Japan", "USA", "Export", "Korea", "Australia" };
+const char *const settings_latency_name[LATENCIES] = { "auto", "on", "off" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -139,6 +140,7 @@ void settings_defaults(settings *s)
      * so without one every player picks freely (docs/design.md section 42) */
     s->network = 0;
     s->region = REGION_JAPAN;
+    s->latency = LATENCY_AUTO;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -470,6 +472,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "region")) {
                 if ((ok = choice(v, region_names, REGIONS, &x)))
                     s->region = x;
+            } else if (!strcmp(name, "latency")) {
+                if ((ok = choice(v, settings_latency_name, LATENCIES, &x)))
+                    s->latency = x;
             } else {
                 /* key1.punch, key2.punch, pad.punch */
                 char *dot = strchr(name, '.');
@@ -550,6 +555,11 @@ int settings_save(const settings *s, const char *path)
     PUT("region = %s            # japan | usa | export | korea | australia: the board's region, as the\n"
         "                       # cabinet's BIOS gives it (the warning screen, win streaks, ...)\n",
         region_names[s->region]);
+    PUT("latency = %s          # auto | on | off: latency optimization in a two-PC game (rollback): this PC\n"
+        "                       # guesses the other player's late controls and puts a wrong guess right\n"
+        "                       # instead of waiting; auto turns it on when the connection needs it. It\n"
+        "                       # takes processor time: a Steam Deck may not be fast enough (off there)\n",
+        settings_latency_name[s->latency]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

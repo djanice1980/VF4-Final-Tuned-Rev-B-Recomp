@@ -137,6 +137,44 @@ static unsigned char hello_card_pkt[512];   /* the host's WELCOME (or LATE), sen
 static int welcome_len;
 static int thread_gone;             /* the network thread has stopped (the network failed) */
 
+/* latency optimization (section 57; under lock but rb_mode) */
+static SDL_AtomicInt rb_mode;       /* SESSION_ROLLBACK_*: this PC's choice */
+static struct { unsigned frame; Uint16 v; } used[RING];   /* the other's controls each vertical blank ran with */
+static unsigned settled;            /* every vertical blank to this one ran with the other's real controls */
+static int guessing;                /* this PC guesses now */
+static int auto_on;                 /* Auto's choice now */
+static unsigned auto_for;           /* vertical blanks the round trip has said otherwise */
+static Uint64 t_run[RING], t_arr[RING];     /* when each vertical blank began here, and when the other's controls for
+                                               it came (SDL_GetTicksNS) */
+static unsigned lat_done;           /* lateness counted to this vertical blank */
+static double lat_mine;             /* how late the other's controls come here, on average (ms; below 0 early) */
+static double lat_theirs;           /* the other PC's (from its INPUTs) */
+static int their_guessing;          /* the other PC has latency optimization on */
+static struct { unsigned frame; Uint64 h; } hash_held[HRING];  /* fingerprints taken, until every vertical blank
+                                                                  before theirs ran with the real controls */
+/* the round trip, from INPUT's times */
+static Uint16 echo_ms;              /* the newest send time heard from the other PC (its SDL_GetTicks, low 16 bits) */
+static Uint64 echo_at;              /* when it came (this PC's SDL_GetTicks) */
+static int echo_have;
+static double srtt, rttvar;         /* ms */
+static unsigned rtt_n;
+static struct {                     /* for the log, since the last line */
+    unsigned frames, guessed, wrong, again, again_most, waits, lat_n;
+    Uint64 wait_ns;
+    double lat_min, lat_max;
+} rb_n;
+
+/* for tests (session_test_lag): datagrams held back (under tx_lock) */
+#define LAG_Q 1024
+static int lag_ms, lag_jitter, lag_loss, lag_live;
+static struct lagged {
+    Uint64 due;                     /* SDL_GetTicksNS */
+    udp_addr to;
+    int n;
+    unsigned char b[HDR + 2048];
+} *lag_q;
+static int lag_n;
+
 /* a PC joining a game going on (under lock) */
 static int phase;                   /* PH_* */
 static int late;                    /* joining PC: it joins a game going on, until it has the host's machine */
@@ -206,6 +244,39 @@ static int header(unsigned char *p, int kind)
     return HDR;
 }
 
+/* for tests, under tx_lock: a datagram held back (1), or lost (1), or to go
+ * now (0: the queue is full) */
+static int lag_hold(const udp_addr *to, const unsigned char *s, size_t m)
+{
+    if (lag_loss && SDL_rand(100) < lag_loss)
+        return 1;
+    if (lag_n == LAG_Q || m > sizeof lag_q[0].b)
+        return 0;
+    int d = lag_ms + (lag_jitter ? SDL_rand(2 * lag_jitter + 1) - lag_jitter : 0);
+    struct lagged *q = &lag_q[lag_n++];
+    q->due = SDL_GetTicksNS() + (Uint64)(d > 0 ? d : 0) * 1000000u;
+    q->to = *to;
+    q->n = (int)m;
+    memcpy(q->b, s, m);
+    return 1;
+}
+
+/* the network thread: the datagrams held back whose time has come go */
+static void lag_flush(void)
+{
+    SDL_LockMutex(tx_lock);
+    Uint64 now = SDL_GetTicksNS();
+    for (int i = 0; i < lag_n;) {
+        if (lag_q[i].due > now) {
+            i++;
+            continue;
+        }
+        udp_send(sock, &lag_q[i].to, lag_q[i].b, (size_t)lag_q[i].n);
+        lag_q[i] = lag_q[--lag_n];
+    }
+    SDL_UnlockMutex(tx_lock);
+}
+
 /* a datagram to `to`, sealed with the session's keys (its kind marked SEALED) */
 static void send_sealed(const udp_addr *to, const unsigned char *b, int n)
 {
@@ -216,6 +287,8 @@ static void send_sealed(const udp_addr *to, const unsigned char *b, int n)
     s[5] |= SEALED;
     SDL_LockMutex(tx_lock);
     size_t m = keyed ? secure_seal(&tx, s, HDR, (size_t)n) : 0;
+    if (m && lag_live && lag_hold(to, s, m))
+        m = 0;
     SDL_UnlockMutex(tx_lock);
     if (m)
         udp_send(sock, to, s, m);
@@ -381,6 +454,35 @@ static void play_reset(void)
     their_pause = 0;
     verified = agreed = 0;
     ended = left = 0;
+    /* latency optimization: a new start, perhaps with another PC */
+    for (int i = 0; i < RING; i++) {
+        used[i].frame = ~0u;
+        t_run[i] = t_arr[i] = 0;
+    }
+    for (int i = 0; i < HRING; i++)
+        hash_held[i].frame = ~0u;
+    settled = lat_done = 0;
+    lat_mine = lat_theirs = 0;
+    their_guessing = 0;
+    auto_on = 0;
+    auto_for = 0;
+    echo_have = 0;
+    srtt = rttvar = 0;
+    rtt_n = 0;
+    memset(&rb_n, 0, sizeof rb_n);
+}
+
+/* under lock: the session's inputs from vertical blank first on (its start,
+ * or again once a PC has joined a game going on); the vertical blanks before
+ * it have none on either PC, so they ran as they will stay */
+static void run_from(unsigned first)
+{
+    started = 1;
+    mine_first = first;
+    theirs_full = first - 1;
+    settled = first - 1;
+    lat_done = first - 1;
+    lat_mine = lat_theirs = 0;
 }
 
 static void advance_full(void)
@@ -411,7 +513,26 @@ static void compare(unsigned frame)
     }
 }
 
-/* an INPUT datagram's body */
+/* a round trip measured (ms): its average and how much it varies, as TCP
+ * keeps them (RFC 6298), over more datagrams (an INPUT comes every few ms) */
+static void rtt_sample(double r)
+{
+    if (!rtt_n++) {
+        srtt = r;
+        rttvar = r / 2;
+        return;
+    }
+    rttvar += (SDL_fabs(r - srtt) - rttvar) / 16;
+    srtt += (r - srtt) / 32;
+}
+
+/* an INPUT datagram's body: the inputs (first, count, the values), the
+ * newest of this PC's the other has with none missing, its flags (1 its menu
+ * is open, 2 it guesses), its time as it sent this (ms, low 16 bits), the
+ * newest of this PC's times it heard and how long it held it (0xffff none),
+ * how late this PC's inputs come there (0.1 ms, signed), then its
+ * fingerprints */
+#define INPUT_TAIL 14
 static void take_input(const unsigned char *p, int n)
 {
     if (n < 5)
@@ -419,12 +540,16 @@ static void take_input(const unsigned char *p, int n)
     unsigned first = get32(p);
     int count = p[4];
     p += 5, n -= 5;
-    if (n < 2 * count + 6)
+    if (n < 2 * count + INPUT_TAIL)
         return;
+    Uint64 now_ns = SDL_GetTicksNS();
     for (int i = 0; i < count; i++) {
         unsigned f = first + (unsigned)i;
-        if (started && f <= theirs_full)
+        /* not past the ring: the vertical blanks not yet checked must stay in it */
+        if (started && (f <= theirs_full || f - theirs_full > RING / 2))
             continue;
+        if (theirs[f % RING].frame != f)
+            t_arr[f % RING] = now_ns;
         theirs[f % RING].frame = f;
         theirs[f % RING].v = get16(p + 2 * i);
     }
@@ -433,8 +558,20 @@ static void take_input(const unsigned char *p, int n)
     if (ack > their_ack)
         their_ack = ack;
     their_pause = p[4] & 1;
-    int nh = p[5];
-    p += 6, n -= 6;
+    their_guessing = p[4] >> 1 & 1;
+    Uint16 sent = get16(p + 5), echo = get16(p + 7), held = get16(p + 9);
+    lat_theirs = (Sint16)get16(p + 11) / 10.0;
+    Uint64 now_ms = SDL_GetTicks();
+    if (held != 0xffff) {
+        Uint16 r = (Uint16)((Uint16)now_ms - echo - held);
+        if (r < 5000)
+            rtt_sample(r);
+    }
+    echo_ms = sent;
+    echo_at = now_ms;
+    echo_have = 1;
+    int nh = p[13];
+    p += INPUT_TAIL, n -= INPUT_TAIL;
     for (int i = 0; i < nh && n >= 12; i++, p += 12, n -= 12) {
         unsigned f = get32(p);
         int k = (int)(f / SESSION_CHECK % HRING);
@@ -463,9 +600,15 @@ static int make_input(unsigned char *b)
     for (unsigned i = 0; i < count; i++, n += 2)
         put16(b + n, mine[(first + i) % RING].v);
     put32(b + n, started ? theirs_full : 0);
-    b[n + 4] = (unsigned char)(SDL_GetAtomicInt(&paused_here) ? 1 : 0);
-    unsigned char *nh = b + n + 5;
-    n += 6;
+    b[n + 4] = (unsigned char)((SDL_GetAtomicInt(&paused_here) ? 1 : 0) | (guessing ? 2 : 0));
+    Uint64 now_ms = SDL_GetTicks();
+    put16(b + n + 5, (Uint16)now_ms);
+    put16(b + n + 7, echo_ms);
+    put16(b + n + 9, echo_have && now_ms - echo_at < 1000 ? (Uint16)(now_ms - echo_at) : 0xffff);
+    double lt = lat_mine * 10;
+    put16(b + n + 11, (Uint16)(Sint16)(lt > 32000 ? 32000 : lt < -32000 ? -32000 : SDL_lround(lt)));
+    unsigned char *nh = b + n + 13;
+    n += INPUT_TAIL;
     *nh = 0;
     /* the newest fingerprints, newest first */
     unsigned newest = 0;
@@ -489,7 +632,7 @@ static int make_input(unsigned char *b)
  * once it has the host's game: the host takes its first INPUT as saying so) */
 static void send_input(void)
 {
-    unsigned char b[HDR + 5 + 2 * SEND_MAX + 6 + 12 * HASH_SEND];
+    unsigned char b[HDR + 5 + 2 * SEND_MAX + INPUT_TAIL + 12 * HASH_SEND];
     SDL_LockMutex(lock);
     if ((phase == PH_PLAY || phase == PH_SEND) && !late) {
         int n = make_input(b);
@@ -939,9 +1082,7 @@ static void patch_take(const unsigned char *p, int m)
         patch_done = 0;
         patch_t0 = SDL_GetTicks();
         /* the session runs again from the vertical blank after the host's machine was taken */
-        started = 1;
-        mine_first = f + 1 + (unsigned)delay;
-        theirs_full = mine_first - 1;
+        run_from(f + 1 + (unsigned)delay);
         phase = PH_SEND;
         say("the host's game is coming: its machine at the end of vertical blank %u, a difference of %u bytes; "
             "this player's card %s", f, total, card ? "is in its unit" : "stays out");
@@ -1139,7 +1280,9 @@ static int SDLCALL session_thread(void *arg)
     Uint64 next_send = 0, next_chunks = 0, next_late = 0, next_ack = 0;
     while (!SDL_GetAtomicInt(&quit_thread)) {
         udp_addr from;
-        int n = udp_recv(sock, b, sizeof b, &from, 4);
+        int n = udp_recv(sock, b, sizeof b, &from, lag_live ? 1 : 4);
+        if (lag_live)
+            lag_flush();
         Uint64 now = SDL_GetTicks();
         if (n < 0) {
             SDL_LockMutex(lock);
@@ -1518,6 +1661,12 @@ int session_connect(const session_start *mine_s, session_start *out, unsigned lo
     }
     SDL_UnlockMutex(lock);
     SDL_SetAtomicInt(&quit_thread, 0);
+    SDL_LockMutex(tx_lock);
+    lag_live = lag_q && (lag_ms || lag_jitter || lag_loss);
+    SDL_UnlockMutex(tx_lock);
+    if (lag_live)
+        say("test: each datagram goes %d ms later, give or take %d, and %d in 100 are lost", lag_ms, lag_jitter,
+            lag_loss);
     thread = SDL_CreateThread(session_thread, "session", NULL);
     if (!thread)
         return fail("Cannot start the network thread: %s", SDL_GetError());
@@ -1527,9 +1676,176 @@ int session_connect(const session_start *mine_s, session_start *out, unsigned lo
     return 0;
 }
 
-int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_input *in)
+/* ---- latency optimization (section 57) ---- */
+
+void session_rollback(int mode)
 {
+    SDL_SetAtomicInt(&rb_mode, mode);
+}
+
+void session_test_lag(int ms, int jitter, int loss)
+{
+    if (!lag_q && (ms || jitter || loss))
+        lag_q = calloc(LAG_Q, sizeof *lag_q);
+    lag_ms = ms;
+    lag_jitter = jitter;
+    lag_loss = loss;
+}
+
+int session_round_trip(double *ms, double *jitter, int *on)
+{
+    *ms = *jitter = 0;
+    *on = 0;
+    if (!lock)
+        return -1;
+    SDL_LockMutex(lock);
+    int r = rtt_n ? 0 : -1;
+    *ms = srtt;
+    *jitter = rttvar;
+    *on = guessing;
+    SDL_UnlockMutex(lock);
+    return r;
+}
+
+void session_fail(const char *why)
+{
+    SDL_LockMutex(lock);
+    end_locked(why);
+    SDL_UnlockMutex(lock);
+}
+
+/* under lock: the other player's controls for frame: theirs once they have
+ * come, else a guess (*guess 1): the newest of theirs that came */
+static Uint16 their_input(unsigned frame, int *guess)
+{
+    *guess = frame > theirs_full;
+    if (!*guess)
+        return theirs[frame % RING].v;
+    return theirs_full >= mine_first ? theirs[theirs_full % RING].v : 0;
+}
+
+/* under lock: both players' controls for frame (the other's o) into in, and
+ * o noted as what the frame ran with */
+static void fill(unsigned frame, Uint16 o, game_input *in)
+{
+    Uint16 a = mine[frame % RING].frame == frame ? mine[frame % RING].v : 0;
+    in->player[side] = a & 0x1ff;
+    in->coin[side] = a >> 9 & 1;
+    in->player[!side] = o & 0x1ff;
+    in->coin[!side] = o >> 9 & 1;
+    used[frame % RING].frame = frame;
+    used[frame % RING].v = o;
+}
+
+/* under lock: the fingerprints taken whose vertical blanks before them all
+ * ran with the real controls are this PC's now: sent, and compared */
+static void send_held(void)
+{
+    for (int i = 0; i < HRING; i++) {
+        unsigned f = hash_held[i].frame;
+        if (f == ~0u || (started && f > settled + 1))
+            continue;
+        my_hash[i].frame = f;
+        my_hash[i].h = hash_held[i].h;
+        hash_held[i].frame = ~0u;
+        compare(f);
+    }
+}
+
+/* the machine's fingerprint at the start of a check vertical blank, held
+ * until it is sure (it is taken again if the vertical blank runs again) */
+static void hold_hash(unsigned frame)
+{
+    Uint64 h = hash_fn(frame);
+    SDL_LockMutex(lock);
+    int i = (int)(frame / SESSION_CHECK % HRING);
+    hash_held[i].frame = frame;
+    hash_held[i].h = h;
+    send_held();
+    SDL_UnlockMutex(lock);
+}
+
+/* under lock: how many vertical blanks past the other's newest controls
+ * this PC may run, guessing theirs, the machine able to go back to the end of
+ * kept_from. None while the other's menu is open or it is leaving, and none
+ * before its first controls have come: the two PCs start in step */
+static unsigned room(unsigned kept_from)
+{
+    if (!guessing || their_pause || left || theirs_full < mine_first || kept_from == ~0u || theirs_full < kept_from)
+        return 0;
+    return SESSION_GUESS_MAX;
+}
+
+/* under lock, each vertical blank: whether this PC guesses, as its choice
+ * says. Auto, from the round trip: on once the input delay has hidden too
+ * little of it (half, the way there, and twice its jitter, against the
+ * delay less 3 ms for the network thread's turn and the frame's own work)
+ * for a second; off once it has hidden it with 5 ms to spare for ten */
+static void choose(unsigned frame)
+{
+    int mode = SDL_GetAtomicInt(&rb_mode), want = mode == SESSION_ROLLBACK_ON;
+    if (mode == SESSION_ROLLBACK_AUTO) {
+        if (rtt_n >= 50) {
+            double need = srtt / 2 + 2 * rttvar, hide = delay * 1000.0 / 60 - 3;
+            int other = auto_on ? need < hide - 5 : need > hide;
+            auto_for = other ? auto_for + 1 : 0;
+            if (auto_for >= (auto_on ? 600u : 60u)) {
+                auto_on = !auto_on;
+                auto_for = 0;
+                say("vertical blank %u: Auto: latency optimization %s: round trip %.1f ms, jitter %.1f ms; the input "
+                    "delay is %.1f ms", frame, auto_on ? "on" : "off", srtt, rttvar, delay * 1000.0 / 60);
+            }
+        }
+        want = auto_on;
+    }
+    if (want != guessing) {
+        guessing = want;
+        say("vertical blank %u: latency optimization %s", frame,
+            want ? "on: this PC guesses the other player's controls when they are late"
+                 : "off: this PC waits for the other player's controls");
+    }
+}
+
+/* under lock: how late the other's controls came, against when this PC
+ * began their vertical blank, for each that has both now (on average) */
+static void lateness(unsigned frame)
+{
+    unsigned to = theirs_full < frame ? theirs_full : frame;
+    while (lat_done < to) {
+        unsigned k = ++lat_done;
+        if (!t_arr[k % RING] || !t_run[k % RING])
+            continue;
+        double ms = (double)(Sint64)(t_arr[k % RING] - t_run[k % RING]) / 1e6;
+        ms = ms > 100 ? 100 : ms < -100 ? -100 : ms;
+        lat_mine += (ms - lat_mine) / 32;
+        if (!rb_n.lat_n || ms < rb_n.lat_min)
+            rb_n.lat_min = ms;
+        if (!rb_n.lat_n || ms > rb_n.lat_max)
+            rb_n.lat_max = ms;
+        rb_n.lat_n++;
+    }
+}
+
+/* under lock: when both PCs guess, the one further ahead sees the other's
+ * controls come later; its next vertical blank comes later by a little, at
+ * most 1 ms, until both see them come as late (half the difference) */
+static Uint64 pace(void)
+{
+    if (!guessing || !their_guessing)
+        return 0;
+    double ahead = (lat_mine - lat_theirs) / 2 - 1;
+    if (ahead <= 0)
+        return 0;
+    return (Uint64)((ahead > 16 ? 1.0 : ahead / 16) * 1e6);
+}
+
+int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_input *in, session_back *bk)
+{
+    unsigned kept_from = bk->kept_from;
+    memset(bk, 0, sizeof *bk);
+    bk->kept_from = kept_from;
     memset(in, 0, sizeof *in);
+    Uint64 t0 = SDL_GetTicksNS();
     SDL_LockMutex(lock);
     if (late) {                     /* the joining PC's copy of the session's start: no inputs, no fingerprints */
         boot_frame = frame;
@@ -1543,15 +1859,8 @@ int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_inp
         return e ? -1 : 0;
     }
     SDL_UnlockMutex(lock);
-    if (frame % SESSION_CHECK == 0) {
-        Uint64 h = hash_fn(frame);
-        SDL_LockMutex(lock);
-        int i = (int)(frame / SESSION_CHECK % HRING);
-        my_hash[i].frame = frame;
-        my_hash[i].h = h;
-        compare(frame);
-        SDL_UnlockMutex(lock);
-    }
+    if (frame % SESSION_CHECK == 0)
+        hold_hash(frame);
     SDL_LockMutex(lock);
     if (ended) {
         SDL_UnlockMutex(lock);
@@ -1562,9 +1871,7 @@ int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_inp
         return 0;                   /* the start-up: no inputs on either PC */
     }
     if (!started) {
-        started = 1;
-        mine_first = frame + (unsigned)delay;
-        theirs_full = mine_first - 1;
+        run_from(frame + (unsigned)delay);
         say("vertical blank %u: the game's start-up has ended; inputs from vertical blank %u", frame, mine_first);
         advance_full();
     }
@@ -1572,19 +1879,24 @@ int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_inp
     mine[at % RING].frame = at;
     mine[at % RING].v = (Uint16)((bits & 0x1ff) | (coin ? 0x200 : 0));
     mine_newest = at;
+    choose(frame);
+    t_run[frame % RING] = t0;
     SDL_UnlockMutex(lock);
     send_input();
     SDL_LockMutex(lock);
+    bk->guessing = guessing;
     if (frame < mine_first) {
+        bk->settled = settled;
+        bk->keep = guessing ? SESSION_KEEP : 0;
         SDL_UnlockMutex(lock);
         return 0;                   /* the first `delay` vertical blanks: none pressed yet */
     }
-    Uint64 t0 = SDL_GetTicks();
+    Uint64 t1 = SDL_GetTicks(), tw = SDL_GetTicksNS();
     int said = 0;
-    while (theirs_full < frame && !ended && !left && !SDL_GetAtomicInt(&cancelled)) {
+    while (frame > theirs_full + room(kept_from) && !ended && !left && !SDL_GetAtomicInt(&cancelled)) {
         SDL_WaitConditionTimeout(cond, lock, 5);
         Uint64 now = SDL_GetTicks();
-        if (now - t0 > WAIT_SAY_MS && !ended) {
+        if (now - t1 > WAIT_SAY_MS && !ended) {
             if (phase == PH_SEND)
                 late_status();      /* the host: the joining PC is still getting this game */
             else if (their_pause)
@@ -1605,19 +1917,67 @@ int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_inp
     if (said && !ended) {
         status[0] = 0;
         say("vertical blank %u: player %d's inputs came after %llu ms", frame, 2 - side,
-            (unsigned long long)(SDL_GetTicks() - t0));
+            (unsigned long long)(SDL_GetTicks() - t1));
     }
     if (ended || SDL_GetAtomicInt(&cancelled)) {
         SDL_UnlockMutex(lock);
         return -1;
     }
-    Uint16 a = mine[frame % RING].v, o = theirs[frame % RING].v;
-    in->player[side] = a & 0x1ff;
-    in->coin[side] = a >> 9 & 1;
-    in->player[!side] = o & 0x1ff;
-    in->coin[!side] = o >> 9 & 1;
+    bk->waited_ns = SDL_GetTicksNS() - tw;
+    /* the other's controls that have come since: the first vertical blank
+     * that ran with a wrong guess, and all after it, run again */
+    unsigned to = theirs_full < frame - 1 ? theirs_full : frame - 1;
+    while (settled < to) {
+        unsigned k = settled + 1;
+        if (used[k % RING].frame == k && used[k % RING].v != theirs[k % RING].v) {
+            bk->redo = k;
+            break;
+        }
+        settled = k;
+    }
+    lateness(frame);
+    int g;
+    fill(frame, their_input(frame, &g), in);
+    send_held();
+    bk->settled = settled;
+    bk->keep = guessing || g || settled + 1 < frame ? SESSION_KEEP : 0;
+    bk->pace_ns = pace();
+    rb_n.frames++;
+    rb_n.guessed += (unsigned)g;
+    if (bk->redo) {
+        unsigned n = frame - bk->redo + 1;
+        rb_n.wrong++;
+        rb_n.again += n;
+        if (n > rb_n.again_most)
+            rb_n.again_most = n;
+    }
+    if (bk->waited_ns > 1000000u) {
+        rb_n.waits++;
+        rb_n.wait_ns += bk->waited_ns;
+    }
+    if (rb_n.frames == 600) {
+        say("vertical blank %u: round trip %.1f ms, jitter %.1f; latency optimization %s; in 600 vertical blanks %u "
+            "guessed, %u went back (%u run again, at most %u at once), waited %u times (%.0f ms); the other's "
+            "controls came %+.1f ms late here (%+.1f to %+.1f), %+.1f there", frame, srtt, rttvar,
+            guessing ? "on" : "off", rb_n.guessed, rb_n.wrong, rb_n.again, rb_n.again_most, rb_n.waits,
+            rb_n.wait_ns / 1e6, lat_mine, rb_n.lat_min, rb_n.lat_max, lat_theirs);
+        memset(&rb_n, 0, sizeof rb_n);
+    }
     SDL_UnlockMutex(lock);
     return 0;
+}
+
+void session_replay(unsigned frame, game_input *in)
+{
+    memset(in, 0, sizeof *in);
+    if (frame % SESSION_CHECK == 0)
+        hold_hash(frame);
+    SDL_LockMutex(lock);
+    if (started && frame >= mine_first) {
+        int g;
+        fill(frame, their_input(frame, &g), in);
+    }
+    SDL_UnlockMutex(lock);
 }
 
 unsigned session_verified(void)
@@ -1663,6 +2023,12 @@ void session_end(void)
         SDL_WaitThread(thread, NULL);
         thread = NULL;
         say("%u fingerprints agreed with the other PC's, the newest at vertical blank %u", agreed, verified);
+    }
+    if (tx_lock) {
+        SDL_LockMutex(tx_lock);
+        lag_live = 0;               /* tests: the BYE goes now */
+        lag_n = 0;
+        SDL_UnlockMutex(tx_lock);
     }
     if (sock != UDP_NONE) {
         if (sid)
@@ -1768,9 +2134,7 @@ int session_late_send(unsigned char *patch, size_t n, unsigned frame, int card_i
     patch_t0 = SDL_GetTicks();
     /* the session runs again from the next vertical blank */
     play_reset();
-    started = 1;
-    mine_first = frame + 1 + (unsigned)delay;
-    theirs_full = mine_first - 1;
+    run_from(frame + 1 + (unsigned)delay);
     backup_going = 0;
     card_wait = 0;
     phase = PH_SEND;

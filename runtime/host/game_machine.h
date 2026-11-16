@@ -207,4 +207,48 @@ int game_machine_resume(const unsigned char *data, size_t size);
  * out. 0 for either: off */
 void game_machine_rollback(int depth, int synctest, int period);
 
+/* Rollback in the two-PC game (docs/design.md section 57), not with the
+ * tests above. All from the frame function but the first.
+ *
+ * Before game_machine_run: the controls of a vertical blank run again come
+ * from fn (on the machine's thread, in place of the frame function) */
+typedef void (*game_replay_fn)(unsigned frame, game_input *in);
+void game_machine_replay(game_replay_fn fn);
+
+/* keep the machine's last depth vertical blanks from the end of this one on
+ * (0: none kept, from now). Only once the game has booted, and not in its
+ * test program */
+void game_machine_keep(int depth);
+
+/* the oldest vertical blank the machine can go back to the end of now, or
+ * ~0u (none kept) */
+unsigned game_machine_kept_from(void);
+
+/* at the end of this vertical blank, once its controls have gone in: the
+ * machine goes back to the end of vertical blank frame - 1 (it must be kept)
+ * and runs frame .. this one again, their controls from the replay function,
+ * no screen drawn and no sound kept (but the last one's lists: the next
+ * screen shows them). Returns; the frame function is next called for the
+ * vertical blank after this one */
+void game_machine_go_back(unsigned frame);
+
+/* 1 when a going back could not be done since the last call (the vertical
+ * blank was not kept): the machine went on from where it was */
+int game_machine_back_failed(void);
+
+/* since the last call: times gone back, vertical blanks run again, and the
+ * time that took (ms in all, and the longest) */
+typedef struct game_back_stats {
+    unsigned backs, frames;
+    double ms, ms_most;
+} game_back_stats;
+void game_machine_back_stats(game_back_stats *s);
+
+/* on the machine's thread: the backup as it is now into b, as
+ * game_machine_backup_get does without marking it got; then
+ * game_machine_backup_new(b) later, which marks it got: 1 when it differs
+ * from what was last put or got */
+void game_machine_backup_peek(unsigned char *b);
+int game_machine_backup_new(const unsigned char *b);
+
 #endif

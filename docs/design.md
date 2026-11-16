@@ -4512,3 +4512,223 @@ scene whose lists begin in a frame run again (not the last) and that is
 drawn more than a frame later, as at a loading break, is not drawn: the
 picture stays as it was for that frame. The Windows build and Proton were
 not run.
+
+## 57. Latency optimization: guessing the other player's controls (2026-11-16)
+
+Until now the two-PC game waited (section 46): each PC runs vertical blank
+f only once the other's controls for f have come, and the input delay (2
+vertical blanks, 33 ms) is all the time they have to come in. On a LAN
+they take a millisecond or less. Over Wi-Fi with others on it, a VPN or
+the internet they can take longer than 33 ms, or vary, and then the game
+stops on both PCs until they come. This section adds the other way,
+rollback, as a setting: **Latency optimization**, Auto, On or Off.
+
+**On**, a PC that does not have the other's controls for the next vertical
+blank does not wait: it guesses them (the newest of theirs that came,
+repeated: in a fight a player holds a direction or a button for many
+vertical blanks), and runs on, up to 8 vertical blanks past the newest
+that came. When they come, they are compared with the guesses; if one was
+wrong, at the end of the vertical blank it is running then the machine
+goes back to the end of the vertical blank before the first wrong guess
+and runs the ones since again with the real controls (sections 55 and
+56: no screen drawn, no
+sound kept, so the player sees and hears only the corrected run from then
+on). **Off**, it waits, as before. **Auto** (the default) turns it on
+while the connection needs it (below).
+
+Each PC chooses for itself. The two runs are the same whatever each
+chose: a PC's run is the vertical blanks it settled, all with both
+players' real controls, and a vertical blank that ran on a guess is either
+the same as its settled run or is run again. So a Steam Deck can keep it
+off (it waits, as before) while the PC it plays keeps it on.
+
+**Measuring the connection.** Each PC sends its controls every vertical
+blank (section 46), so the controls packet carries the measuring: when it
+was sent (ms, 16 bits), the newest send time of the other's it has had
+(echo), and how long it held that before this send. A PC that gets its own
+time echoed back takes the round trip as now − echo − held, and keeps a
+smoothed round trip and how much it varies the way TCP does (RFC 6298),
+with gains of 1/32 and 1/16 since 60 samples come a second, not one. The
+packet also says whether its PC is guessing, and how late the other's
+controls come there (below): 8 bytes more in each controls packet. The
+two PCs must have the same build, as before.
+
+**Auto.** The input delay hides delay × 16.7 ms of the way there, less
+3 ms for the network thread's turn and the vertical blank's own work. Auto
+turns latency optimization on once half the round trip plus twice its
+variation has been more than that for a second (60 vertical blanks, after
+at least 50 samples), and off once it has been 5 ms less for ten seconds.
+With the input delay of 2: on above 30.3 ms, off below 25.3 ms. On a LAN
+(round trip about 0.1 ms) it stays off. Each switch is in `vf4ft.log`.
+
+**Where it is set.** The launcher's Settings, Game tab, and `latency` in
+`settings.txt` (auto, on, off). The game's menu has the row only during a
+two-PC game (Game tab), where its note says what it is doing now and the
+round trip measured, and a change takes effect at once. A one-PC
+release's Game tab is already ten rows, as many as it shows without
+scrolling; a two-PC game's has no Test or Restart rows.
+
+**What waits for the real controls.** Everything that leaves the machine
+or is compared waits until every vertical blank before it ran with both
+players' real controls ("settled"):
+
+- the fingerprints (section 46): taken at the start of a check vertical
+  blank as before, held until the vertical blanks before it are settled,
+  and taken again if it is run again; only then sent and compared;
+- the cards: a player's card is written from the newest check both PCs
+  agreed on, as before (its copy is taken with the fingerprint, so again
+  when run again);
+- the host's backup (written every 10 seconds when it has changed): taken
+  at the start of the vertical blank as before, written once the vertical
+  blanks before it are settled, taken again if it is run again.
+
+**How far it can go back.** The machine keeps the last 10 vertical blanks
+(the guessing limit and 2). A guess is wrong at the earliest at the oldest
+unsettled vertical blank, which is at least f − 8 when this PC is at f (it
+runs no further than 8 past the newest of theirs, and those up to the
+newest are settled once compared), and going back needs the end of the one
+before it, f − 9: kept. A PC starts guessing only once its machine keeps
+the vertical blanks since the newest of theirs; one whose machine cannot
+keep them (no memory for them) says so and waits instead, as with Off.
+Should going back fail all the same, the session ends with a message on
+both PCs, as when the fingerprints differ (it did not happen in any
+test). A PC that waits keeps nothing.
+
+**Keeping the two PCs in step.** With both guessing, nothing holds a PC
+back until it is 8 vertical blanks ahead, and the one that started first
+would run on ahead of the other by as much as it started earlier: it would
+guess every vertical blank and the other none. Each PC measures how late
+the other's controls come against when it began their vertical blank
+(smoothed), and sends it in the controls packet. The one that sees them
+later than the other does is ahead: it makes each vertical blank later by
+up to 1 ms (a sixteenth of the difference) until both see them equally
+late. Only when both guess: with one waiting, the waiting PC is the one
+held back already, and slowing the other would slow both.
+
+**Tested** (the headless KWin, both games Linux, over loopback, the GPU
+renderer, sound chip on with SDL's dummy output). `--net-lag MS,JITTER`
+(for tests) sends each of a PC's datagrams MS ms later, give or take
+JITTER, so the round trip is about twice MS.
+
+**The same run whatever each chose.** Unpaced (as fast as each can go),
+20,000 vertical blanks, a fingerprint in the log every 500; each case's
+host and joining game against a one-PC run of the same presses moved on
+by the input delay (the reference). "Run again": fingerprint lines logged
+again for a check vertical blank run again (its first run's was from a
+guess).
+
+| Host / joining | Lag each way | Presses | Fingerprints the same (of 39) | Checks agreed | Went back every 600 | Run again |
+|---|---|---|---|---|---|---|
+| Off / Off | none | a few | 39, 39 | 333 | none | 0, 0 |
+| On / On | none | a few | 39, 39 | 333 | 0 to 3 | 0, 0 |
+| On / On | 30 ± 10 ms | the scripted fight | 39, 39 | 333 | 40 to 66 | 11, 16 |
+| On / Off | 30 ± 10 ms | the scripted fight | 39, 39 | 333 | about 40 (the host) | 13, 0 |
+
+The scripted fight is section 55's two-player fight (`--press`): its
+player 1's presses the host's, its player 2's the joining game's. Player 1 changes
+its controls every 10 vertical blanks and player 2 every 23, so a guess
+of "the same as last" is wrong often: with 30 ms each way, almost every
+vertical blank ran on a guess (585 to 600 of 600), and the machine went
+back 40 to 66 times in 600, up to 9 vertical blanks at once. A wrong
+guess at a check vertical blank showed as a different first fingerprint
+and the right one when run again (vertical blank 19,000 on the host of
+the On / Off case: `c4381c8e...` first, `603747f8...` run again, the
+joining game's and the reference's).
+
+**Joining a game going on** (section 49's test, all three games On, 30 ±
+10 ms each way, the join code typed): A hosts, B plays to vertical blank
+9,000 and leaves, A plays alone, C joins A's game going on at 10,409 and
+plays to 36,000. A's fingerprints and B's agreed at all 18 they share,
+A's and C's at all 56 (C's from before the join are of its copy of the
+session's start); both sessions went back 3 to 7 times every 600 vertical
+blanks.
+
+**At the game's own pace** (both Auto unless said, the scripted fight,
+to vertical blank 9,000; all fingerprints the same as the reference's in
+every case, 17 of 17, and 150 checks agreed):
+
+| Lag each way | Choice | Auto | Guessed, every 600 | Went back, every 600 (most at once) | Waited, every 600 | Controls came, host / joining |
+|---|---|---|---|---|---|---|
+| none | Auto | stayed off | 0 | 0 | 0 | 14.5 / 52 ms early |
+| 30 ± 10 ms | Off | | 0 | 0 | host 8 to 31 (21 to 64 ms); joining 223 to 257 (1.09 to 1.33 s) | 9 early / on time |
+| 30 ± 10 ms | Auto | on at the 59th vertical blank | 105 to 146 | 6 to 33 (2) | none after it turned on | 5 / 5 ms early |
+| 60 ± 15 ms | Auto | on at the 59th | 516 to 600 | 52 to 121 (5) | none after it turned on | 23 / 23 ms late |
+
+With no lag Auto stayed off (round trip 0.1 to 0.3 ms) and the game
+played as before: the other's controls came 14.5 ms before they were
+needed on the host and 52 ms on the joining game (together twice the
+input delay, 66.7 ms; the joining game ran 19 ms behind the host), and
+neither waited. With 30 ± 10 ms each way
+both PCs turned it on 59 vertical blanks after the start (the
+round trip measured 60 to 61 ms, varying by 7 to 8: half of it and twice
+the variation is 45 ms, more than the 30.3 the input delay hides). The
+controls then came 5 ms early on average on both PCs (each 600 vertical
+blanks, both within 1.5 ms of each other: the two kept in step), but up
+to 18 ms late now and then, so about one vertical blank in five ran on a
+guess, never more than 2 in a row, and the machine went back 6 to 33
+times in 600, 2 vertical blanks each time. With Off instead, the same lag
+stopped the joining game 223 to 257 times in every 600 vertical blanks,
+1.1 to 1.3 seconds in every ten: in lockstep one PC runs at the edge,
+where any packet later than the average stops it.
+
+With 60 ± 15 ms each way (a round trip of 120 ms, far more than the
+input delay hides) nearly every vertical blank ran on a guess, and the
+machine went back 52 times in 600 on the host and 120 on the joining
+game (which had more of the other's changes to put right), at most 5
+vertical blanks at once. The machine's time a frame (the desktop) went
+from 5 to 7 ms on average in the fight to 7 to 11 ms, at most 48 ms;
+once Auto had turned on, neither game fell behind by a quarter of a
+second (the joining game did once in the first second, waiting, before
+it turned on).
+
+**At Steam Deck speed** (imitated: no Deck was used). The joining game's
+threads each limited to 35 or 45% of one core (a cgroup's `cpu.max`, on
+4 cores and their SMT siblings), the earlier estimates of the LCD Deck's
+and the OLED's speed; the host at full speed on the other 12 cores. Both
+at the game's own pace, 30 ± 10 ms each way, the host On, the scripted
+fight to vertical blank 9,000. "In the fight": vertical blanks 4,788 to
+6,588, the heaviest part.
+
+| Joining game | Its choice | Vertical blanks a second, in the fight / from 2,988 on | Its machine's time a frame in the fight | Behind by 1/4 s | It went back, every 600 |
+|---|---|---|---|---|---|
+| full speed | On | 60 / 60.0 | 6.3 to 7.8 ms | never | 15 to 27, 2 at once |
+| 45% (OLED) | Off | 60 / 60.0 | 10.7 to 11.0 ms | never | none; it waited 13 to 98 times every 600 (24 to 318 ms) |
+| 45% (OLED) | On | 59.9 / 59.9 | 14.4 to 14.5 ms | never | 27 to 49, 2 or 3 at once, 14 to 20 ms each time on average |
+| 35% (LCD) | Off | 53.8 to 56.4 / 58.2 | 17.5 to 18.3 ms | 11 times | none |
+| 35% (LCD) | On | 51.5 to 53.8 / 55.9 | 18.4 to 19.1 ms | 24 times | none in the fight; 41 to 52 in the break after it, up to 8 at once, 18 to 24 ms each time on average |
+
+At the OLED's speed latency optimization held the full pace with no
+waiting (Off waited, as in lockstep), but a vertical blank that went back
+took up to 52 ms with the frames run again in it. At the LCD Deck's speed
+the joining game's own vertical blanks take more than 1/60 s in the fight
+whichever it chose, so both games ran at its pace there (52 to 56 a
+second); On cost it about 1 ms a vertical blank more (keeping its frames)
+and slowed it further. In the fight it never guessed: it was the one
+behind, so the host's controls were always there; the host did the
+guessing. The host (On) then ran up to 8 vertical blanks ahead of it,
+went back 52 times every 600, 9 vertical blanks each time, and waited 113
+to 163 times every 600, whichever the joining game chose: the game can go
+no faster than the slower PC, and the host's guessing only ran ahead and
+put it right. Keeping the two in step (above) works only while both
+guess, and by at most 1 ms a vertical blank, too little for a PC 15%
+slower. So on a Deck that slows down, Off is better for the Deck; making
+the faster PC follow a slower one, and keeping frames for less, are left
+for later.
+
+The imitation's numbers depend on how it is run: over vertical blanks
+4,500 to 7,000, the joining game Off took 16.4 ms a frame at 35% and 10.3
+at 45%, where the earlier one-PC run under the same limits (unpaced, no
+session) took 13.7 and 9.7. A first run of these cases with the host
+free to use any core gave the same as the table, within 1%. How far
+either is from a real Deck is not known.
+
+Also fixed: the game's pacing took the time before the two-PC game's wait,
+so after waiting for the other's controls it slept a full vertical blank
+more than it should have, from a time already past. It takes the time
+again after the wait now. In a two-PC game `--rollback` and `--synctest`
+are refused: the session goes back itself.
+
+Not covered here: the Windows build (the release check runs it under
+Wine against the Linux build); a real Deck; a real slow connection (only
+the loopback with `--net-lag`); losing datagrams (`--net-lag`'s third
+number), which the controls' resending covers as before.

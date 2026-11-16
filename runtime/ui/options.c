@@ -76,6 +76,12 @@ const option_info options[OPT_COUNT] = {
                      "the game starts, win streaks in Japanese, and Shun Di reddening as he drinks. The "
                      "others skip the warning and show win streaks in English, and USA adds a rating "
                      "screen to the attract loop. The game's text is the same in every region.", 1 },
+    [OPT_LATENCY] = { "Latency optimization",
+                      "For two PCs over a slow connection. On, this PC doesn't wait for the other player's late "
+                      "controls: it guesses them, and puts a wrong guess right at once, unseen (rollback). Off, "
+                      "the game waits for them. Auto turns it on when the connection needs it. Each PC chooses "
+                      "for itself. A Steam Deck may not be fast enough for it: if the game slows down there, "
+                      "choose Off on the Deck.", 0 },
 };
 
 static int wrap(int v, int d, int n)
@@ -252,6 +258,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
     case OPT_CARDS: row->kind = UI_ROW_TOGGLE; row->on = s->cards; break;
     case OPT_NETWORK: row->kind = UI_ROW_TOGGLE; row->on = s->network; break;
     case OPT_REGION: SDL_strlcpy(buf, settings_region_text[s->region], n); break;
+    case OPT_LATENCY: {
+        static const char *const lt[LATENCIES] = { "Auto", "On", "Off" };
+        SDL_strlcpy(buf, lt[s->latency], n);
+        break;
+    }
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -328,6 +339,7 @@ void option_change(settings *s, int o, int d)
     case OPT_CARDS: s->cards = !s->cards; break;
     case OPT_NETWORK: s->network = !s->network; break;
     case OPT_REGION: s->region = wrap(s->region, d, REGIONS); break;
+    case OPT_LATENCY: s->latency = wrap(s->latency, d, LATENCIES); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;

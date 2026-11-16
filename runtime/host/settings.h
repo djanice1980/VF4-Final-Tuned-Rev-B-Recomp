@@ -47,6 +47,9 @@ enum { REGION_JAPAN, REGION_USA, REGION_EXPORT, REGION_KOREA, REGION_AUSTRALIA, 
 enum { WINDOW_AUTO = 0, WINDOW_MIN = 240, WINDOW_MAX = 4320 };
 enum { FILTER_SMOOTH, FILTER_SHARP };
 enum { RENDERER_GPU, RENDERER_SOFTWARE };
+/* latency optimization in a two-PC game (rollback, docs/design.md section
+ * 57): session.h's SESSION_ROLLBACK_*, in that order */
+enum { LATENCY_AUTO, LATENCY_ON, LATENCY_OFF, LATENCIES };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
@@ -69,6 +72,7 @@ typedef struct settings {
                                      * once the game has written it); "" none (the unit stays empty) */
     int network;            /* 1: the game's own NETWORK setting on; 0 off (the default: no network check at start) */
     int region;             /* REGION_*: the board's region, Japan by default (the game reads it as it starts) */
+    int latency;            /* LATENCY_*: Auto by default; this PC's own choice in a two-PC game */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[ACT_COUNT];         /* every gamepad (the first is player 1, the second player 2) */
 } settings;
@@ -130,6 +134,7 @@ int settings_card_name_ok(const char *name);
  * first game). No player has a card by default */
 extern const char *const settings_card_default[2];
 extern const char *const settings_region_text[REGIONS];      /* "Japan", "USA", "Export", "Korea", "Australia" */
+extern const char *const settings_latency_name[LATENCIES];   /* "auto", "on", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",
  * "21:9", "stretch"), and the width the game's screen is drawn at for it,

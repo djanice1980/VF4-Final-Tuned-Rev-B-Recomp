@@ -76,6 +76,9 @@ typedef struct menu_run {
      * session_code), and a new code. NULL: no such row */
     int (*join_code)(char *buf, size_t n);
     void (*join_code_new)(void);
+    /* a two-PC game: what latency optimization is doing now, for its row's note (buf, n bytes; ""
+     * nothing to say). NULL: no note */
+    void (*latency_now)(char *buf, size_t n);
 } menu_run;
 enum { MENU_CODE_NONE, MENU_CODE_SHOWN, MENU_CODE_GONE };
 

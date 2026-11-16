@@ -115,6 +115,50 @@ void game_machine_rollback(int depth, int synctest, int period)
         rb_depth = st_n;
 }
 
+/* ---- rollback in the two-PC game (section 57) ---- */
+
+static game_replay_fn replay_fn;
+static int net_keep;                    /* vertical blanks the session wants kept (0 none) */
+static u32 net_redo;                    /* at this vertical blank's end: back to net_redo - 1, then again to it */
+static int net_again;                   /* vertical blanks run again, up to net_to: their controls from replay_fn */
+static u32 net_to;
+static int net_failed;
+static double net_t0;                   /* when the machine went back */
+static game_back_stats net_stats;
+
+void game_machine_replay(game_replay_fn fn)
+{
+    replay_fn = fn;
+}
+
+void game_machine_keep(int depth)
+{
+    net_keep = depth;
+}
+
+unsigned game_machine_kept_from(void)
+{
+    return rb_on() && !rb_depth ? rb_oldest() : ~0u;
+}
+
+void game_machine_go_back(unsigned frame)
+{
+    net_redo = frame;
+}
+
+int game_machine_back_failed(void)
+{
+    int f = net_failed;
+    net_failed = 0;
+    return f;
+}
+
+void game_machine_back_stats(game_back_stats *s)
+{
+    *s = net_stats;
+    memset(&net_stats, 0, sizeof net_stats);
+}
+
 /* the machine was changed behind the ring's back (another program, a snapshot) */
 static void rollback_reset(void)
 {
@@ -123,23 +167,79 @@ static void rollback_reset(void)
                 st_checks, st_bad_back, st_bad_replay, st_bad_sound);
     rb_end();
     st_state = ST_IDLE;
+    net_again = 0;
+    net_redo = 0;
     view_rerun(VIEW_LIVE);
     aica_audio_drop(0);
+}
+
+/* the end of host_frame, the two-PC game's part: a replay goes on or ends;
+ * or the session asked to go back: 1 when it could not */
+static int net_no_room;                 /* the session's frames could not be kept (no memory): it waits instead */
+
+static int rollback_net(u32 f)
+{
+    if (net_again) {
+        if (f + 1 == net_to)
+            view_rerun(VIEW_RERUN_LAST);
+        if (f != net_to)
+            return 0;
+        net_again = 0;
+        view_rerun(VIEW_LIVE);
+        aica_audio_drop(0);
+        double ms = (now_seconds() - net_t0) * 1e3;
+        net_stats.ms += ms;
+        if (ms > net_stats.ms_most)
+            net_stats.ms_most = ms;
+        return 0;
+    }
+    if (!net_redo)
+        return 0;
+    u32 g = net_redo;
+    net_redo = 0;
+    if (g < 1 || g > f || !rt_native_can_rewind() || rb_restore(g - 1)) {
+        fprintf(stderr, "vf4ft: vertical blank %u: cannot go back to the end of %u (kept from %u)\n", f, g - 1,
+                rb_on() ? rb_oldest() : 0);
+        net_failed = 1;
+        return 1;
+    }
+    net_again = 1;
+    net_to = f;
+    net_t0 = now_seconds();
+    net_stats.backs++;
+    net_stats.frames += f - g + 1;
+    /* the vertical blanks run again were seen and heard the first time: no
+     * screen drawn, no sound kept; the last one's lists are taken, the
+     * vertical blank after it shows them (section 56) */
+    aica_audio_drop(1);
+    view_rerun(g < f ? VIEW_RERUN : VIEW_RERUN_LAST);
+    rt_native_rewind();                     /* does not return: rt_native_can_rewind */
+    fprintf(stderr, "vf4ft: the run did not go back\n");
+    abort();                                /* the machine is the earlier frame's, the run is not */
 }
 
 /* the end of host_frame: the machine is this frame's, the controls in */
 static void rollback_frame(int booted, const game_input *in)
 {
-    if (!rb_depth || !booted || rt_native_program() != PROGRAM_MAIN)
+    int depth = rb_depth ? rb_depth : net_no_room ? 0 : net_keep;
+    if (!depth || !booted || rt_native_program() != PROGRAM_MAIN) {
+        if (!rb_depth && rb_on())
+            rb_end();                       /* the session keeps none now */
+        net_redo = 0;
         return;
+    }
     u32 f = machine_frame;
     if (!rb_on()) {
-        if (rb_begin(rb_depth)) {
-            fprintf(stderr, "vf4ft: rollback: out of memory for %d frames: off\n", rb_depth);
-            rb_depth = 0;
+        if (rb_begin(depth)) {
+            fprintf(stderr, "vf4ft: rollback: out of memory for %d frames: off\n", depth);
+            if (rb_depth)
+                rb_depth = 0;
+            else
+                net_no_room = 1;            /* none kept: the session never guesses */
+            net_redo = 0;
             return;
         }
-        fprintf(stderr, "vf4ft: vertical blank %u: rollback keeps %d frames\n", f, rb_depth);
+        fprintf(stderr, "vf4ft: vertical blank %u: rollback keeps %d frames\n", f, depth);
         st_state = ST_IDLE;
         st_next = f + (u32)st_period;
     }
@@ -154,6 +254,10 @@ static void rollback_frame(int booted, const game_input *in)
                 "pages (%.2f MB) a frame; %u times back, %.2f ms each; %.1f MB held\n", f, s.save_s * 1e3 / n,
                 s.copy_s * 1e3 / n, (double)s.pages / n, (double)s.pages * MEM_TRACK_PAGE / n / 1e6, s.restores,
                 s.restores ? s.restore_s * 1e3 / s.restores : 0.0, rb_bytes() / 1e6);
+    }
+    if (!rb_depth) {
+        rollback_net(f);                    /* returns only when it did not go back */
+        return;
     }
     if (!st_n || !rb_on())
         return;
@@ -258,6 +362,8 @@ static void host_frame(sh4 *c)
     }
     if (st_state == ST_REPLAY) {
         in = st_in[machine_frame - st_from - 1];    /* the sync test's second run: no frame function */
+    } else if (net_again) {
+        replay_fn(machine_frame, &in);              /* a two-PC game's vertical blank run again */
     } else {
         int pw = VIEW_W;
         const u8 *rgb = view_host_picture(&pw);
@@ -578,13 +684,23 @@ const char *game_machine_backup_put(const unsigned char *b, int coins)
     return eeprom_coins(hw_maple_eeprom(), coins);
 }
 
-int game_machine_backup_get(unsigned char *b)
+void game_machine_backup_peek(unsigned char *b)
 {
     backup_take(b);
+}
+
+int game_machine_backup_new(const unsigned char *b)
+{
     if (!memcmp(b, backup_last, GAME_BACKUP_SIZE))
         return 0;
     memcpy(backup_last, b, GAME_BACKUP_SIZE);
     return 1;
+}
+
+int game_machine_backup_get(unsigned char *b)
+{
+    backup_take(b);
+    return game_machine_backup_new(b);
 }
 
 /* ---- the card units ---- */

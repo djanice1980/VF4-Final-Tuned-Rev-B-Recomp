@@ -215,6 +215,15 @@ static char own_card[CARD_NAME_MAX];    /* this PC's player's card profile ("" n
 static unsigned char own_card_last[GAME_CARD_SIZE];     /* as written last (or put in) */
 static struct { unsigned frame; int have; unsigned char c[GAME_CARD_SIZE]; } own_snap[8];
 static unsigned own_card_done;          /* the check vertical blank written last */
+/* latency optimization (session.h, docs/design.md section 57): the machine
+ * keeps its last vertical blanks and goes back as the session asks. The
+ * host's backup is taken at the start of a vertical blank as ever, and
+ * written once every vertical blank before it ran with both players' real
+ * controls (taken again if it runs again) */
+static int rollback_test;               /* --rollback or --synctest: not in a two-PC game */
+static unsigned char backup_held[GAME_BACKUP_SIZE];
+static unsigned backup_held_at;         /* its vertical blank */
+static int backup_held_on;              /* 1: one is held */
 /* a PC joining a game going on (session.h, docs/design.md section 49): the machine at the end
  * of the session's start-up, the reference, kept by the host and by a joining PC's copy */
 static int ref_step;                    /* 0 not yet, 1 asked for, 2 kept, 3 none */
@@ -324,14 +333,25 @@ static int press_parse(const char *list)
     return 0;
 }
 
+static void backup_write(const unsigned char *b);
+
 static void backup_save(void)
 {
     static unsigned char b[GAME_BACKUP_SIZE];
-    if (!backup_ok || !game_machine_backup_get(b))
+    if (!backup_ok)
+        return;
+    game_machine_backup_peek(b);
+    backup_write(b);
+}
+
+/* the backup b (taken earlier) into its file, when it changed */
+static void backup_write(const unsigned char *b)
+{
+    if (!backup_ok || !game_machine_backup_new(b))
         return;
     char tmp[4300];
     SDL_snprintf(tmp, sizeof tmp, "%s.tmp", backup_path);
-    if (!SDL_SaveFile(tmp, b, sizeof b) || !SDL_RenamePath(tmp, backup_path)) {
+    if (!SDL_SaveFile(tmp, b, GAME_BACKUP_SIZE) || !SDL_RenamePath(tmp, backup_path)) {
         logf_("cannot write the backup %s: %s", backup_path, SDL_GetError());
         SDL_RemovePath(tmp);
     }
@@ -1189,6 +1209,8 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
      * now with no input delay, the other player's none, and another PC can join it (section
      * 49). The joining PC's machine waits until the window closes, its note saying why (a test
      * run stops) */
+    int skip_wait = 0;                      /* going back: the vertical blanks run again take this one's wait */
+    Uint64 pace_more = 0;
     if (in_session) {
         game_input mine = *in;
         if (late_loaded)
@@ -1198,8 +1220,41 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
             late_take();                    /* does not return once the host's game is in */
         if (session_alone)
             late_host(frame);
-        if (!session_stopped && session_frame(frame, booting, mine.player[0], (int)mine.coin[0], in)) {
+        if (!session_stopped && game_machine_back_failed())
+            session_fail("This PC could not go back far enough to put a wrong guess right, so the two games are "
+                         "no longer the same.");
+        if (!session_stopped && frame % BACKUP_EVERY == 0 && backup_ok) {
+            game_machine_backup_peek(backup_held);
+            backup_held_at = frame;
+            backup_held_on = 1;
+        }
+        session_back back = { .kept_from = game_machine_kept_from() };
+        int playing = !session_stopped && !session_frame(frame, booting, mine.player[0], (int)mine.coin[0], in, &back);
+        if (playing) {
+            game_machine_keep(back.keep);
+            if (back.redo) {
+                game_machine_go_back(back.redo);
+                skip_wait = 1;
+            }
+            if (backup_held_on && back.settled + 1 >= backup_held_at) {
+                backup_write(backup_held);
+                backup_held_on = 0;
+            }
+            pace_more = back.pace_ns;
+            if (back.guessing && back.waited_ns > FRAME_NS / 2)
+                due = 0;                    /* it waited: the pace starts again from now, no catching up */
+            if (frame % 600 == 0) {
+                game_back_stats bs;
+                game_machine_back_stats(&bs);
+                if (bs.backs)
+                    logf_("rollback: vertical blank %u: went back %u times, %u vertical blanks run again; %.2f ms "
+                          "each time on average, %.2f ms at most", frame, bs.backs, bs.frames, bs.ms / bs.backs,
+                          bs.ms_most);
+            }
+        } else if (!session_stopped) {
             session_stopped = 1;
+            game_machine_keep(0);
+            backup_held_on = 0;
             backup_save();
             if (session_role() == SESSION_HOST && !SDL_GetAtomicInt(&window_quit)) {
                 session_alone = 1;
@@ -1250,7 +1305,8 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
         art_i++;
     }
     if (frame % BACKUP_EVERY == 0) {
-        backup_save();
+        if (!in_session || session_stopped)
+            backup_save();                  /* a two-PC game's: held above until it is sure */
         cards_save();
     }
     /* test mode: the test program writes the game's settings and can clear
@@ -1317,20 +1373,38 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
 
     /* the frame is due 1/60 s after the one before; a long stall (loading)
      * is not caught up in a burst. The game's first start-up step runs as
-     * fast as it can unless --real-boot: pacing never changes the run */
+     * fast as it can unless --real-boot: pacing never changes the run. The
+     * time is taken again here: the two-PC game may have waited above. Ahead
+     * of the other PC (both guessing), a little later (pace_more) */
     if (booting && !real_boot)
         due = 0;
     else if (!unpaced) {
+        now = SDL_GetTicksNS();
         if (!due || now > due + 250000000ull) {
             if (due)
                 resyncs++;
             due = now;
         }
-        due += FRAME_NS;
-        if (due > now)
+        due += FRAME_NS + pace_more;
+        if (due > now && !skip_wait)
             SDL_DelayPrecise(due - now);
     }
     busy_since = SDL_GetTicksNS();
+}
+
+/* machine thread: a two-PC game's vertical blank run again (session_back's
+ * redo; game_replay_fn): its controls from the session, and its fingerprint
+ * and the host's backup taken again (the first run's were from a guess) */
+static void on_replay(unsigned frame, game_input *in)
+{
+    if (hash_every && frame % hash_every == 0)
+        logf_("state: vertical blank %u: %016llx (run again)", frame, game_machine_hash());
+    if (frame % BACKUP_EVERY == 0 && backup_ok) {
+        game_machine_backup_peek(backup_held);
+        backup_held_at = frame;
+        backup_held_on = 1;
+    }
+    session_replay(frame, in);
 }
 
 static int SDLCALL machine_main(void *arg)
@@ -1347,6 +1421,7 @@ static int SDLCALL machine_main(void *arg)
     int made = !game_machine_init(image_path, dimm_path, dimm_key, in_session || !silent, on_frame);
     if (made) {
         if (in_session) {
+            game_machine_replay(on_replay);
             session_load();
         } else {
             backup_load();
@@ -2220,6 +2295,21 @@ static float screen_refresh(SDL_Window *w)
     return m && m->refresh_rate > 0 ? m->refresh_rate : 0;
 }
 
+/* the menu's note on Latency optimization in a two-PC game: what it does
+ * now, and the round trip measured (session.h) */
+static void latency_now(char *buf, size_t n)
+{
+    double rt, jit;
+    int on, measured = !session_round_trip(&rt, &jit, &on);
+    if (session_stopped)
+        buf[0] = 0;
+    else if (!measured)
+        SDL_snprintf(buf, n, "Now %s. The round trip to the other PC is not measured yet.", on ? "on" : "off");
+    else
+        SDL_snprintf(buf, n, "Now %s. The round trip to the other PC is %.0f ms, varying by %.0f ms.", on ? "on" : "off",
+                     rt, jit);
+}
+
 /* the menu, or (notice: MENU_NOTICE_*) a notice in its place */
 static void menu_show_as(int notice)
 {
@@ -2251,6 +2341,7 @@ static void menu_show_as(int notice)
     r.session = in_session;
     r.join_code = in_session && session_role() == SESSION_HOST ? session_code : NULL;    /* the same values */
     r.join_code_new = session_code_new;
+    r.latency_now = in_session ? latency_now : NULL;
     session_paused(1);              /* the other PC waits, and says why */
     if (notice)
         menu_open_notice(&cfg_, &r, notice);
@@ -2475,6 +2566,7 @@ static int menu_do(int a)
         }
         if (audio)
             SDL_SetAudioStreamGain(audio, cfg_.volume / 100.0f);
+        session_rollback(cfg_.latency);
         if (video_changed())
             video_redo = 1;     /* in the main loop, before the next frame */
         ov_dirty = 1;
@@ -2922,6 +3014,16 @@ int main(int argc, char **argv)
             int n = atoi(argv[++i]);
             if (n < 1 || n > 60) { fprintf(stderr, "vf4ft: --rollback: 1 to 60\n"); return 2; }
             game_machine_rollback(n, 0, 0);
+            rollback_test = 1;
+        }
+        else if (!strcmp(a, "--net-lag") && v) {
+            int ms = 0, jit = 0, loss = 0;
+            if (SDL_sscanf(argv[++i], "%d,%d,%d", &ms, &jit, &loss) < 1 || ms < 0 || ms > 2000 || jit < 0 ||
+                jit > 1000 || loss < 0 || loss > 50) {
+                fprintf(stderr, "vf4ft: --net-lag: MS[,JITTER[,LOSS]]: 0 to 2000 ms, jitter to 1000 ms, loss to 50 in 100\n");
+                return 2;
+            }
+            session_test_lag(ms, jit, loss);
         }
         else if (!strcmp(a, "--synctest") && v) {
             char *end = NULL;
@@ -2930,6 +3032,7 @@ int main(int argc, char **argv)
                 p = atoi(end + 1);
             if (n < 1 || n > 60 || p < n + 1) { fprintf(stderr, "vf4ft: --synctest: N[,P], N 1 to 60, P more than N\n"); return 2; }
             game_machine_rollback(n, n, p);
+            rollback_test = 1;
         }
         else if (!strcmp(a, "--host")) {
             int port = 0;
@@ -3089,6 +3192,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "vf4ft: --snapshot-at and --resume are not for a two-PC game\n");
         return 2;
     }
+    if (in_session && rollback_test) {                  /* the session goes back itself (section 57) */
+        fprintf(stderr, "vf4ft: --rollback and --synctest are not for a two-PC game\n");
+        return 2;
+    }
     kofi_setup(frames_max || nshots || presses || key_items || unpaced || in_session);
     refresh_setup(frames_max || nshots || presses || key_items || unpaced || in_session);
     {
@@ -3117,6 +3224,11 @@ int main(int argc, char **argv)
           silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off",
           settings_region_text[cfg_.region]);
     logf_("settings: gpu %s, display %s", cfg_.gpu[0] ? cfg_.gpu : "auto", cfg_.display[0] ? cfg_.display : "auto");
+    session_rollback(cfg_.latency);
+    if (in_session)
+        logf_("settings: latency optimization %s%s", settings_latency_name[cfg_.latency],
+              settings_steam_deck() != STEAM_DECK_NONE && cfg_.latency != LATENCY_OFF
+                  ? " (a Steam Deck may not be fast enough for it: Off if the game slows down)" : "");
     logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
           dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
 

@@ -16,13 +16,13 @@ static const char *const tab_names[TABS] = { "Game", "Cards", "Picture", "Sound"
 enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_EDIT1, A_EDIT2, A_CONTROL,
        A_CODE };
 
-#define ROWS 12
+#define ROWS 13
 #define ROWS_X 70.0f        /* the rows' place on the panel (menu_draw), for the mouse */
 #define ROWS_W 640.0f
 #define ROW_H 39.0f
 static const int tab_rows[TABS][ROWS] = {
-    [TAB_GAME] = { A_RESUME, A_CODE, OPT_CREDITS, OPT_NETWORK, OPT_REGION, A_TEST, A_RESTART, A_UPDATES, A_KOFI,
-                   A_LAUNCHER, A_QUIT, -1 },
+    [TAB_GAME] = { A_RESUME, A_CODE, OPT_CREDITS, OPT_NETWORK, OPT_REGION, OPT_LATENCY, A_TEST, A_RESTART, A_UPDATES,
+                   A_KOFI, A_LAUNCHER, A_QUIT, -1 },
     [TAB_CARDS] = { OPT_CARD1, A_EDIT1, OPT_CARD2, A_EDIT2, OPT_CARDS, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
                       OPT_SCALE, -1 },
@@ -77,6 +77,8 @@ void menu_open(settings *cfg, const menu_run *r)
                                 id == A_EDIT1 || id == A_EDIT2))
                 continue;
             if (id == A_CODE && !run.join_code)     /* the host of a two-PC game only */
+                continue;
+            if (id == OPT_LATENCY && !run.session)  /* a two-PC game only (the launcher's Settings always) */
                 continue;
             if ((id != A_UPDATES || gu_state() != GU_OFF) && (id != A_LAUNCHER || gu_launcher()))
                 shown_rows[t][nshown[t]++] = id;
@@ -710,6 +712,11 @@ static void about_of(int id, const char **title, const char **text, const char *
         } else if (id == OPT_DISPLAY) {
             static char dn[DISPLAY_NAME_MAX + 32];
             *note = option_note(s, id, dn, sizeof dn);
+        } else if (id == OPT_LATENCY && run.latency_now) {
+            static char ln[240];
+            run.latency_now(ln, sizeof ln);
+            if (ln[0])
+                *note = ln;
         }
         else if (id == OPT_FULLSCREEN && refresh_text())
             *note = refresh_text();
@@ -990,8 +997,8 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
      * Check for updates and Open the launcher) fits in rh = 394 without
      * scrolling; at 46 Quit was below the fold (nine rows then), at 43 the
      * tenth was. An eleventh row there needs this looked at again (Join
-     * code shows only in a two-PC game, which has no Test or Restart: nine
-     * rows). The Controls tab scrolls. */
+     * code and Latency optimization show only in a two-PC game, which has no
+     * Test or Restart: ten rows). The Controls tab scrolls. */
     float ry = Y + 150, rh = H - 150 - 76;
     ui_rows(ROWS_X, ry, ROWS_W, rh, ROW_H, rows, n, row, &top);
 

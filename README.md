@@ -89,6 +89,18 @@ can then join that game the same way, with the new code the host's game
 shows, and takes over the other player's side, its own card in. If
 Windows asks, allow the game through its firewall (it uses UDP port
 29404).
+
+**Latency optimization** (from 0.5.11; the launcher's Settings, Game tab,
+and the game's menu during a two-PC game) is for a slow connection, such
+as busy Wi-Fi or a VPN. Off, each PC waits for the other player's
+controls, and the game stops while they are late. On, it guesses them and
+goes on, and when a guess was wrong it puts it right at once by running
+the last few frames again unseen (rollback). **Auto**, the default, turns
+it on while the connection needs it: on a home network it stays off. Each
+PC chooses for itself. It takes processor time, and a **Steam Deck may not
+be fast enough** for it: if the game slows down on the Deck, set it to Off
+there (the other PC can keep it on).
+([How it works](docs/design.md#57-latency-optimization-guessing-the-other-players-controls-2026-11-16).)
 ([How it works](docs/design.md#46-two-pcs-on-a-lan-the-link-the-start-the-checks-2026-11-14);
 [choosing a side, playing on alone](docs/design.md#47-two-pcs-the-hosts-side-and-the-host-playing-on-alone-2026-11-15);
 [joining a game going on](docs/design.md#49-joining-a-game-going-on-2026-11-15);
@@ -578,7 +590,9 @@ with only a gamepad, the menu's Operator test menu does the same.
   off), `network` (off | on; default off: the game's own NETWORK setting,
   written into its settings record as it starts, so it skips its network
   check), `region` (japan | usa | export | korea | australia; default
-  japan: the board's region, as the cabinet's BIOS gives it), then the controls: `key1.punch =
+  japan: the board's region, as the cabinet's BIOS gives it), `latency`
+  (auto | on | off: a two-PC game's latency optimization; default auto),
+  then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad.*` for gamepads, with SDL's key
   and button names, several separated by commas, `-` for none. The file
@@ -615,7 +629,9 @@ mailbox model, as in M3), `--user DIR`, `--host [PORT]` and
 with `--code CODE` (the joining PC: the six digits the host's game shows),
 `--host-player N` (the host's player, 1 by default, or 2) and
 `--delay N` (its input delay in vertical blanks, 2 by default), and
-for tests `--hash-every N` (the machine's fingerprint in the log every N
+for tests `--net-lag MS[,JITTER[,LOSS]]` (in a two-PC game, each datagram
+this PC sends goes MS ms later, give or take JITTER, and LOSS in 100 are
+dropped), `--hash-every N` (the machine's fingerprint in the log every N
 vertical blanks), `--snapshot-at N FILE` (the whole machine at the end of
 vertical blank N into FILE) and `--resume FILE` (the run goes on from
 FILE, made by the same build; [design.md s48](docs/design.md#48-the-whole-machine-saved-and-resumed-in-another-process-2026-11-15);

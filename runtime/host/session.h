@@ -16,7 +16,8 @@
  * While it runs: inputs before the game's start-up has ended (the
  * fast-forwarded boot) are none on both PCs; from then on each vertical
  * blank's inputs are both players'. Every SESSION_CHECK vertical blanks
- * both PCs send a fingerprint of their machine (the caller's hash); a
+ * both PCs send a fingerprint of their machine (the caller's hash), once
+ * every vertical blank before it ran with both players' real controls; a
  * difference ends the session at once (the two runs went apart).
  *
  * Over UDP (udp.h), one socket a PC. */
@@ -67,18 +68,64 @@ void session_logger(void (*fn)(const char *line));
 /* The connection, on the machine's thread before the machine starts. The
  * host gives the cabinet's fields and own; the joining PC only own. out is
  * the start both agreed on (player[] by player, side this PC's). hash is called at every
- * check vertical blank (from session_frame) for the machine's fingerprint.
+ * check vertical blank (from session_frame, and session_replay when it is
+ * run again) for the machine's fingerprint.
  * Blocks until the two have agreed (0), or the connection failed or was
  * cancelled (session_cancel) (-1, with session_status saying why) */
 int session_connect(const session_start *mine, session_start *out, unsigned long long (*hash)(unsigned frame));
 
+/* Latency optimization (docs/design.md section 57): with it on, this PC
+ * does not wait for the other's controls of a vertical blank: it guesses
+ * them (the other's last that came) and goes on, up to SESSION_GUESS_MAX
+ * vertical blanks past the newest that came. When the real ones come and a
+ * guess was wrong, the machine goes back to the vertical blank before it
+ * and runs the ones since again with the real controls (rollback), unseen
+ * and unheard. Off, it waits for them each vertical blank (lockstep). Auto
+ * turns it on while the round trip measured is more than the input delay
+ * hides. Each PC chooses for itself: the two runs are the same whichever
+ * each chose. Any thread, any time. */
+enum { SESSION_ROLLBACK_AUTO, SESSION_ROLLBACK_ON, SESSION_ROLLBACK_OFF };
+#define SESSION_GUESS_MAX 8
+#define SESSION_KEEP (SESSION_GUESS_MAX + 2)    /* vertical blanks the machine keeps for it */
+void session_rollback(int mode);
+
+/* session_frame's word with the machine */
+typedef struct session_back {
+    unsigned kept_from;     /* in: the oldest vertical blank the machine can go back to (~0u: none kept) */
+    unsigned redo;          /* out: at the end of this vertical blank, go back to the end of redo - 1 and run
+                             * redo .. this one again (session_replay gives their controls); 0 none */
+    int keep;               /* out: vertical blanks the machine is to keep (0 none) */
+    unsigned settled;       /* out: every vertical blank up to this one ran with both players' real controls */
+    int guessing;           /* out: latency optimization is on now */
+    unsigned long long waited_ns;   /* out: how long it waited for the other's controls */
+    unsigned long long pace_ns;     /* out: this PC is ahead of the other: its next vertical blank this much
+                                     * later than 1/60 s */
+} session_back;
+
 /* On the machine's thread, every vertical blank: this PC's player's
  * controls now (game_input's player bits and coin) go to the other PC for
  * vertical blank frame + delay, and in gets both players' for this one
- * (it waits for the other's). booting: the game's start-up step (no
- * inputs). 0, or -1 when the session has ended (session_status says why):
- * the machine should stop */
-int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_input *in);
+ * (the other's guessed, or waited for: above). booting: the game's start-up
+ * step (no inputs). 0, or -1 when the session has ended (session_status says
+ * why): the machine should stop */
+int session_frame(unsigned frame, int booting, unsigned bits, int coin, game_input *in, session_back *back);
+
+/* On the machine's thread, for a vertical blank run again (session_back's
+ * redo): both players' controls, the other's real ones if they have come
+ * since, else guessed again */
+void session_replay(unsigned frame, game_input *in);
+
+/* the machine could not go back (why): the session ends, the other PC is told */
+void session_fail(const char *why);
+
+/* for tests: each datagram this PC sends while the session runs goes ms
+ * later (give or take jitter ms), and loss in a hundred are not sent */
+void session_test_lag(int ms, int jitter, int loss);
+
+/* any thread: the round trip to the other PC as measured (ms) and how much
+ * it varies (0, or -1 when there is none yet), and whether latency
+ * optimization is on now (*on) */
+int session_round_trip(double *ms, double *jitter, int *on);
 
 /* the newest check vertical blank whose fingerprints agreed (0 none yet) */
 unsigned session_verified(void);
