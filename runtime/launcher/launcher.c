@@ -50,14 +50,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
-#include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <unistd.h>
-#endif
 
 #include "card_editor.h"
+#include "compositor.h"
 #include "cards.h"
 #include "devices.h"
 #include "options.h"
@@ -1474,126 +1469,28 @@ static void frame_gap(void)
         SDL_DelayNS(soonest - now);     /* one sleep: a little late does no harm */
 }
 
-/* ---- the compositor going away (docs/design.md section 53) ----
+/* ---- the compositor going away (docs/design.md sections 53 and 54) ----
  * When the Wayland compositor ends, the launcher closes: SDL sends its quit
  * when its event pump finds the connection gone, and display_gone stops the
  * loop drawing first. A frame being drawn as the compositor ends may never
  * finish, though: SDL 3.4.20's OpenGL present (Wayland_GLES_SwapWindow, which
  * the software renderer presents through too) waits for the frame callback
  * in a loop that never ends once the connection has failed, and the Vulkan
- * renderer on the NVIDIA card did not come back either (where: not traced).
- * KWin ending cleanly does that: it takes its screen away first, which has
+ * renderer did not come back either (its acquire has no time limit, as the
+ * game's does not: section 54; not traced here). KWin ending cleanly does that: it takes its screen away first, which has
  * the launcher draw, and closes the connection during that frame. The main
- * thread cannot get out of it, so a thread of its own (watch_run) watches the
- * connection's socket: once the compositor has closed it, a frame still being
- * drawn 3 seconds on ends the launcher there. Its closing steps are skipped
+ * thread cannot get out of it, so compositor.c's watch does: once the
+ * compositor has closed the connection, a frame still being drawn 3 seconds
+ * on (draw() marks it) ends the launcher there. Its closing steps are skipped
  * then: a build stops as its input ends, a download is taken up again by the
  * next start's check. Wayland only */
-static SDL_AtomicU32 draw_since;    /* SDL_GetTicks() as the frame being drawn started, | 1 (0: none) */
-#define STUCK_MS 3000               /* a frame still drawing this long after the compositor has gone */
 
-#ifndef _WIN32
-static int way_fd = -1;             /* the Wayland connection's socket (-1: not Wayland, or not known) */
-static int watch_wake[2] = {-1, -1};    /* a byte written: the watch ends */
-static SDL_AtomicInt watch_stop;
-static SDL_Thread *watch_thread;
-
-/* SDL's Wayland connection (NULL: not Wayland) */
-static void *way_display(void)
+/* the watch's thread, a frame stuck (compositor.c): the exit code */
+static int frame_stuck(void)
 {
-    return SDL_GetPointerProperty(SDL_GetGlobalProperties(), SDL_PROP_GLOBAL_VIDEO_WAYLAND_WL_DISPLAY_POINTER, NULL);
-}
-
-/* libwayland's function NAME (NULL: not there). SDL's Wayland driver has
- * loaded the library already, so this is the same copy; kept open */
-static SDL_FunctionPointer way_func(const char *name)
-{
-    static SDL_SharedObject *so;
-    static int looked;
-    if (!looked) {
-        looked = 1;
-        so = SDL_LoadObject("libwayland-client.so.0");
-    }
-    return so ? SDL_LoadFunction(so, name) : NULL;
-}
-
-/* the compositor has closed the connection: its socket has hung up (or has an error) */
-static int way_hung_up(void)
-{
-    struct pollfd p = {.fd = way_fd, .events = 0};
-    return way_fd >= 0 && poll(&p, 1, 0) > 0 && (p.revents & (POLLHUP | POLLERR));
-}
-
-/* the watch's thread: asleep until the socket hangs up or the launcher
- * closes. poll with no events asked for wakes for a hang-up or an error
- * only, never for the compositor's messages. It takes no lock of
- * libwayland's: a thread stuck in libwayland may hold one */
-static int SDLCALL watch_run(void *unused)
-{
-    (void)unused;
-    struct pollfd p[2] = {{.fd = way_fd, .events = 0}, {.fd = watch_wake[0], .events = POLLIN}};
-    for (;;) {
-        int n = poll(p, 2, -1);
-        if (SDL_GetAtomicInt(&watch_stop) || (n < 0 && errno != EINTR) || (n > 0 && (p[0].revents & POLLNVAL)))
-            return 0;
-        if (n > 0 && (p[0].revents & (POLLHUP | POLLERR)))
-            break;
-    }
-    /* the compositor has closed it: the loop closes the launcher, unless a frame never finishes */
-    while (!SDL_GetAtomicInt(&watch_stop)) {
-        /* signed: a frame started in this millisecond can read 1 ms ahead (the | 1) */
-        Uint32 t = SDL_GetAtomicU32(&draw_since);
-        if (t && (Sint32)((Uint32)SDL_GetTicks() - t) >= STUCK_MS) {
-            say("window: the compositor has closed its connection and the frame being drawn has not "
-                "finished in %d s: the launcher ends", STUCK_MS / 1000);
-            _exit(1);
-        }
-        SDL_Delay(100);
-    }
-    return 0;
-}
-#endif
-
-/* the watch starts (once the window and its renderer are there) */
-static void watch_start(void)
-{
-#ifndef _WIN32
-    void *d = way_display();
-    if (!d)
-        return;
-    int (*get_fd)(void *) = (int (*)(void *))way_func("wl_display_get_fd");
-    if (!get_fd) {
-        say("window: libwayland's wl_display_get_fd not found: a frame that never finishes when the "
-            "compositor goes away is not noticed");
-        return;
-    }
-    way_fd = get_fd(d);
-    if (pipe(watch_wake) != 0) {
-        say("window: the compositor's watch cannot start (%s)", strerror(errno));
-        return;
-    }
-    fcntl(watch_wake[0], F_SETFD, FD_CLOEXEC);     /* not in the processes the launcher starts */
-    fcntl(watch_wake[1], F_SETFD, FD_CLOEXEC);
-    watch_thread = SDL_CreateThread(watch_run, "compositor watch", NULL);
-    if (!watch_thread)
-        say("window: the compositor's watch cannot start (%s)", SDL_GetError());
-#endif
-}
-
-/* the watch ends (the launcher closes as usual) */
-static void watch_end(void)
-{
-#ifndef _WIN32
-    if (!watch_thread)
-        return;
-    SDL_SetAtomicInt(&watch_stop, 1);
-    ssize_t w = write(watch_wake[1], "x", 1);
-    (void)w;
-    SDL_WaitThread(watch_thread, NULL);
-    watch_thread = NULL;
-    close(watch_wake[0]);
-    close(watch_wake[1]);
-#endif
+    say("window: the compositor has closed its connection and the frame being drawn has not finished in %d s: "
+        "the launcher ends", COMPOSITOR_STUCK_MS / 1000);
+    return 1;
 }
 
 /* the compositor has gone: its connection has failed (libwayland says so)
@@ -1601,27 +1498,17 @@ static void watch_end(void)
  * Wayland: never */
 static int display_gone(void)
 {
-#ifdef _WIN32
-    return 0;
-#else
-    static int (*get_error)(void *);
-    static int looked, said;
-    void *d = way_display();
-    if (!d)
+    static int said;
+    int err = 0;
+    if (!compositor_gone(&err))
         return 0;
-    if (!looked) {
-        looked = 1;
-        get_error = (int (*)(void *))way_func("wl_display_get_error");
-    }
-    int err = get_error ? get_error(d) : 0, hup = way_hung_up();
-    if ((err || hup) && !said++) {
+    if (!said++) {
         if (err)
             say("window: the compositor's connection has failed (%s): the launcher closes", strerror(err));
         else
             say("window: the compositor has closed its connection: the launcher closes");
     }
-    return err || hup;
-#endif
+    return 1;
 }
 
 /* how long the loop may sleep, in milliseconds */
@@ -3937,7 +3824,7 @@ static void draw_pop(void)
 
 static void draw(void)
 {
-    SDL_SetAtomicU32(&draw_since, (Uint32)SDL_GetTicks() | 1);     /* for the compositor's watch */
+    compositor_busy(1);     /* for the compositor's watch */
     draw_t0 = SDL_GetTicksNS();
     wake_due = 0;       /* what moves on the page asks for its next frame while it is drawn */
     int pw = 0, ph = 0;
@@ -3967,7 +3854,7 @@ static void draw(void)
         say("window: the picture shows again (after %d failed frames)", present_failing);
         present_failing = 0;
     }
-    SDL_SetAtomicU32(&draw_since, 0);
+    compositor_busy(0);
 }
 
 /* ---- input on the main pages ---- */
@@ -4473,7 +4360,7 @@ int main(int argc, char **argv)
     }
     if (upd == U_IDLE && !after_game && !direct_run)
         upd_start(1);       /* the check at every start: a line on GitHub's API, no download */
-    watch_start();
+    compositor_watch_start(say, frame_stuck);
     int running = 1, result = do_failed, restarting = 0;
     while (running) {
         /* asleep until something needs the loop (loop_wait_ms). A hidden window (the game
@@ -4641,7 +4528,7 @@ int main(int argc, char **argv)
         if (apply_update() == 0)
             say("%s goes in use at the next start, which builds the game again", upd_version);
     }
-    watch_end();
+    compositor_watch_end();
     if (log_file)
         fclose(log_file);
     ui_quit();

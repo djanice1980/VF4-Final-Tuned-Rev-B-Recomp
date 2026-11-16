@@ -4061,7 +4061,8 @@ here. What the launcher does about it:
   compositor has closed its connection: the launcher closes".
 - **A frame already being drawn** when the compositor closes the
   connection: the main thread cannot get out of it. So a thread of its
-  own (`watch_run`) sleeps on the connection's socket: `poll` with no events
+  own (`watch_run`, in `runtime/host/compositor.c` since section 54)
+  sleeps on the connection's socket: `poll` with no events
   asked for wakes for a hang-up or an error only, and it takes none of
   libwayland's locks (a stuck thread may hold one). Once the socket has
   hung up, a frame still being drawn 3 seconds on ends the launcher there
@@ -4091,9 +4092,151 @@ ends the launcher 3.0 seconds after that start. With KWin kept for 12
 seconds first, no present took 200 ms or more in any of the four: frames
 do not stall while the compositor is there, even in covered windows.
 
-**The game is not fixed.** It closes when KWin ends cleanly (3 of 3). When
+**The game was not fixed here.** It closes when KWin ends cleanly (3 of 3). When
 KWin is killed, it stays, asleep (no CPU): its main thread waits in
 NVIDIA's Vulkan driver (`drmSyncobjTimelineWait`, under SDL) for a buffer
-the compositor never gives back. Whether main's game does the same was not
-tested. The game writes its backup every 10 seconds and as it ends, so
-ending it the launcher's way needs more care.
+the compositor never gives back. The game writes its backup every 10
+seconds and as it ends, so ending it the launcher's way needs more care:
+section 54.
+
+## 54. The game and the compositor going away (2026-11-15)
+
+Section 53 left the Linux game running, asleep, when its Wayland
+compositor was killed. Asked for: find why, and have the game end, its
+backup saved, within a few seconds of a compositor crash, while a
+compositor ending cleanly still closes it as before.
+
+**Where it waits.** Found in the headless KWin (KWin killed with SIGKILL,
+as a crash) with a debug build of SDL 3.4.20 (from `toolchain/sdl3-src`,
+loaded with `LD_LIBRARY_PATH`) under gdb. The main thread is in
+`SDL_WaitAndAcquireGPUSwapchainTexture` → SDL's
+`VULKAN_INTERNAL_AcquireSwapchainTexture` → `vkAcquireNextImageKHR` with a
+timeout of `SDL_MAX_UINT64` (`SDL_gpu_vulkan.c` line 10205) → the driver →
+`drmSyncobjTimelineWait`. It is the acquire, not a fence wait. It is the
+same with NVIDIA's driver (620.70.06) and with RADV on the Radeon.
+
+**Why it never returns.** The swapchain uses explicit sync: with
+`WAYLAND_DEBUG=client` the game sends
+`wp_linux_drm_syncobj_surface_v1.set_acquire_point` and `set_release_point`
+with every commit. A buffer is free again only once the compositor signals
+its release point. A killed compositor never does, the kernel's wait has
+no end, and neither driver's Wayland code watches the connection while it
+waits. The game draws at 60 frames a second, so its main thread is almost
+always in that wait when the compositor goes. SDL's event pump never runs
+again: no "connection closed by server", and the quit that SIGTERM makes is
+never read. (SDL's Vulkan renderer, the launcher's, acquires with no time
+limit as well, `SDL_render_vulkan.c`; the launcher draws only when
+something moves (section 52), so it is seldom in an acquire.)
+
+**The machine is not stuck.** Its thread runs on, paced, and writes
+`backup.bin` every 10 seconds after the compositor has gone: the file's
+time moved after the kill in every run. Only the window's thread waits.
+
+**Not a regression.** Main's game before section 53 (cb3aa5d, built apart)
+does the same. Before this section's change, sound off, the game left
+running 8 seconds after KWin ended:
+
+| Game | KWin killed | KWin ends cleanly |
+|---|---|---|
+| Section 53, GPU renderer on the NVIDIA | stays, 2 of 2 | closes, 9 of 9; 5 of them crash (below) |
+| Section 53, Software (shown through SDL_GPU on the NVIDIA) | stays, 1 of 1 | closes, 3 of 3 |
+| Section 53, GPU renderer on the Radeon | stays, 2 of 2 | **stays, 6 of 6** (under gdb it closed, 1 of 1) |
+| cb3aa5d on the NVIDIA | stays, 2 of 2 | closes, 2 of 2; both crash |
+| cb3aa5d on the Radeon | stays, 1 of 1 | stays, 1 of 1 |
+
+On the Radeon even KWin ending cleanly leaves a buffer it never gives
+back: the main thread's kernel wait (`/proc/PID/task/PID/wchan`) is
+`drm_syncobj_timeline_wait_ioctl`, 2 of 2, without gdb.
+
+**A second fault: NVIDIA's driver crashes closing the window.** When KWin
+ends cleanly on the NVIDIA the game closes, but in 7 of 11 runs (both
+builds) it ended with SIGSEGV (exit code 139) and no "clean exit" line.
+The core dumps (`coredumpctl`; two of them with the debug SDL) all show
+`video_close` → `SDL_ReleaseWindowFromGPUDevice` → SDL's
+`VULKAN_INTERNAL_DestroySwapchain` → `vkDestroySwapchainKHR`
+(`SDL_gpu_vulkan.c` line 3360) → NVIDIA's driver → a jump to an address in
+the heap: a stale pointer in the driver once the connection has gone. It
+happens after the machine has stopped and saved, so nothing was lost, but
+the exit code is wrong and a 40 MB core dump is kept each time. The cause
+is in NVIDIA's driver, which this project cannot change.
+
+SDL 3.4.20's Wayland reconnect (`Wayland_VideoReconnect`) is compiled out
+(`#if 0`, waiting on KWin's restart work), so a game cannot carry on under
+a compositor started again anyway: ending it, saved, is the most it can do.
+
+**What the game does now.**
+
+- **The watch, shared with the launcher.** Section 53's watch moved to
+  `runtime/host/compositor.c` (both programs build it; `build.py` too), its
+  behaviour unchanged: a thread sleeps on the Wayland connection's socket
+  (`poll` with no events asked for), and once the compositor has closed it,
+  a stretch the main thread marked (`compositor_busy`) still going 3
+  seconds on is ended by the watch's thread. The program's own function
+  (the launcher's `frame_stuck`, the game's `window_stuck`) says why and
+  does what must come first; then `_exit` with the code it returns. A main
+  thread that comes out of its stretch after the watch has started this
+  waits there for the end (the stamp is taken with a compare-and-swap), so
+  the two threads never both close the game.
+- **The game's stretches:** a frame, from the swapchain's acquire to the end
+  of that turn's GPU work (submit, shots, read-backs); a renderer change
+  from the menu (`video_switch`); and closing the window at the end.
+- **`window_stuck`** (on the watch's thread) does the main thread's exit
+  steps for the machine (`machine_stop_ask`, now shared with the normal
+  exit: the shot and menu waits let go, `window_quit`, a two-PC game
+  cancelled, `game_machine_stop`), then waits up to 5 seconds for the
+  machine thread's own end: as on any quit it writes `backup.bin` and the
+  cards (`machine_main`). Then `session_end` (the other PC is told),
+  `gu_quit` (an update asked for in the menu still goes to the launcher),
+  and exit code 1. A machine that has not stopped in 5 seconds is logged;
+  the backup it wrote last stays. Nothing of the window is closed.
+- **Before each frame** (`display_gone`): libwayland's
+  `wl_display_get_error`, or the socket hung up. If the compositor has
+  gone, no frame is drawn and the loop ends the usual way, the machine
+  stopping and saving.
+- **A workaround for NVIDIA's crash:** at the end, once the machine has
+  stopped and saved, a compositor that has gone means the window is not
+  closed (`gone_close`): `gu_quit`, a line in the log, and `_Exit` with the
+  usual code, so NVIDIA's swapchain destruction never runs. Nothing is
+  lost by it: the process is ending, and the kernel frees what it held.
+  With the compositor there the game closes exactly as before.
+
+The log says which way it went: "window: the compositor has closed its
+connection and the frame being drawn has not finished in 3 s: the machine
+stops, and the game ends once it has saved", or "window: the compositor's
+connection has failed (...): the game closes"; then "machine stopped" and
+"the compositor has gone: the game ends without closing its window (exit
+code N)".
+
+**Tested** in the headless KWin, one game at a time, sound off, KWin
+ending 12 seconds after the game started (in the attract sequence). Times
+are from the kill, or from the end of KWin's session, to the game's end.
+Nothing was left running after any run, `backup.bin` was written after
+KWin ended in every run, and no core dump was made:
+
+| Game | KWin killed | KWin ends cleanly |
+|---|---|---|
+| GPU renderer on the NVIDIA | the watch, 3 of 3, 3.13 to 3.15 s after the kill; exit code 1 | the check before a frame, 5 of 5, 0.26 to 0.29 s; exit code 0 (no crash) |
+| GPU renderer on the Radeon | the watch, 3 of 3, 3.06 s; exit code 1 | the watch 2 of 3 (3.18 and 3.19 s; exit code 1), the check 1 of 3 (0.18 s; exit code 0) |
+| Software (on the NVIDIA) | the watch, 1 of 1, 3.13 s | the check, 1 of 1, 0.29 s |
+
+Also tested:
+
+- The menu open as KWin is killed (the machine waits for it): the watch
+  ended the game 3.17 s on, the machine let go of the menu's wait and
+  stopped. Its backup had not changed since the save 2 seconds before,
+  so it was not written again (`game_machine_backup_get` gives only a
+  changed one).
+- The game ending by itself (`--frames`) with KWin there: as before,
+  "clean exit", exit code 0.
+- The launcher on `compositor.c`: section 53's test again, five
+  launchers and the game, KWin ending cleanly 3 times and killed once.
+  Nothing was left running; each launcher closed as in section 53's
+  table (the watch, or SDL's quit), and the game with them by the check
+  before a frame (exit code 0) or, KWin killed, by the watch (exit code
+  1).
+- The Windows build (llvm-mingw) of both programs compiles
+  (`compositor.c` is empty there).
+
+Not covered: X11 (and the game under XWayland) was not looked at, and
+Windows is not changed; Proton's game is the Windows build. A two-PC game was not tried with the compositor
+going away.

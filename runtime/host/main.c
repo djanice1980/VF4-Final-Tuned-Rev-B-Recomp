@@ -105,6 +105,7 @@
 #include "art.h"
 #include "card_editor.h"
 #include "cards.h"
+#include "compositor.h"
 #include "devices.h"
 #include "game_machine.h"
 #include "settings.h"
@@ -1368,6 +1369,87 @@ static int SDLCALL machine_main(void *arg)
     ev.type = machine_event;
     SDL_PushEvent(&ev);
     return 0;
+}
+
+/* the machine goes on to its stop at its next vertical blank (at once if it
+ * is not running), whatever it waits for: the window closing, or the
+ * compositor's watch (window_stuck). Its thread saves the backup and the
+ * cards as it ends (machine_main) */
+static void machine_stop_ask(void)
+{
+    SDL_SetAtomicInt(&shot_pause, 0);
+    SDL_SetAtomicInt(&menu_pause, 0);       /* a machine waiting for the menu goes on to its stop */
+    SDL_SetAtomicInt(&window_quit, 1);      /* and one whose two-PC game ended */
+    if (in_session)
+        session_cancel();                   /* stops waiting (to connect, or for the other's inputs) */
+    int stopping = SDL_GetAtomicInt(&machine_state) < 2;
+    game_machine_stop();
+    if (stopping)
+        logf_("stopping the machine");
+}
+
+/* ---- the compositor going away (docs/design.md section 54) ----
+ * A frame waits for a swapchain buffer (SDL_GPU's acquire, with no time
+ * limit) that a compositor gone never gives back: killed or crashed, and on
+ * the Radeon even ending cleanly. The machine runs on, but the main thread
+ * never comes back to close the game. compositor.c's watch ends it: once the
+ * compositor has closed its connection, a frame still being drawn 3 seconds
+ * on has the watch's thread stop the machine, which saves as on any quit,
+ * and end the game (window_stuck). A compositor gone between frames ends the
+ * loop as usual (display_gone); the window is then not closed, since NVIDIA's
+ * driver crashes destroying its swapchain (a workaround: gone_close). Wayland
+ * only */
+#define STOP_WAIT_MS 5000   /* how long the watch waits for the machine's stop */
+
+/* the compositor has gone (compositor.c): said once */
+static int display_gone(void)
+{
+    static int said;
+    int err = 0;
+    if (!compositor_gone(&err))
+        return 0;
+    if (!said++) {
+        if (err)
+            logf_("window: the compositor's connection has failed (%s): the game closes", strerror(err));
+        else
+            logf_("window: the compositor has closed its connection: the game closes");
+    }
+    return 1;
+}
+
+/* the game ends with the compositor gone, the machine stopped (its saves
+ * made): what does not need the window (an update asked for in the menu
+ * goes to the launcher), then the caller ends the process without closing
+ * the window. The window's closing would give buffers back to a compositor
+ * that is not there, and NVIDIA's driver (620.70) crashes in it then:
+ * vkDestroySwapchainKHR, under SDL_ReleaseWindowFromGPUDevice. A workaround
+ * for the driver's fault; nothing is lost by it, as the process is ending */
+static void gone_close(int code)
+{
+    gu_quit();
+    logf_("the compositor has gone: the game ends without closing its window (exit code %d)", code);
+}
+
+/* the watch's thread (compositor.c): the compositor has gone and the main
+ * thread's frame has not finished in COMPOSITOR_STUCK_MS. The machine
+ * stops and saves as on any quit, then the game ends: the exit code. The
+ * main thread never goes on (compositor_busy) */
+static int window_stuck(void)
+{
+    logf_("window: the compositor has closed its connection and the frame being drawn has not finished in %d s: "
+          "the machine stops, and the game ends once it has saved", COMPOSITOR_STUCK_MS / 1000);
+    machine_stop_ask();
+    Uint64 t = SDL_GetTicks();
+    int st;
+    while ((st = SDL_GetAtomicInt(&machine_state)) < 2 && SDL_GetTicks() - t < STOP_WAIT_MS)
+        SDL_Delay(10);
+    if (st < 2)
+        logf_("the machine has not stopped in %d s: the backup it wrote last (every 10 seconds) stays",
+              STOP_WAIT_MS / 1000);
+    else if (in_session)
+        session_end();                      /* the other PC is told */
+    gone_close(1);
+    return 1;
 }
 
 /* --art: the machine runs unpaced and waits at each vertical blank of the
@@ -3155,8 +3237,9 @@ int main(int argc, char **argv)
 
     Uint64 t0 = SDL_GetTicksNS(), chord_since = 0, dir_next = 0;
     unsigned shown_frame = 0, pictures = 0, presents = 0;
-    int have_picture = 0, running = 1, stopping = 0, reported_start = 0;
+    int have_picture = 0, running = 1, reported_start = 0;
     int chord_used = 0, last_dir = -1, last_program = 0, key_turns = 0;
+    compositor_watch_start(logf_, window_stuck);    /* section 54 */
     while (running) {
         const char *window_shot = NULL;
         if (gu_poll() && menu_on)
@@ -3462,12 +3545,19 @@ int main(int argc, char **argv)
             }
         }
 
+        /* the compositor has gone: no more frames, as one could wait forever (section 54) */
+        if (display_gone())
+            break;
+
         /* the menu changed Renderer, GPU or Internal resolution: the renderer
          * starts again before this frame (section 53); no picture until the
          * next one comes, from the renderer now in use */
         if (video_redo && running) {
             video_redo = 0;
-            if (video_switch()) {
+            compositor_busy(1);         /* it gives the window back and claims it again */
+            int bad = video_switch();
+            compositor_busy(0);
+            if (bad) {
                 running = 0;
                 break;
             }
@@ -3602,6 +3692,7 @@ int main(int argc, char **argv)
         }
         SDL_GPUTexture *sc = NULL;
         Uint32 w = 0, h = 0;
+        compositor_busy(1);     /* the frame, to its end: it may never finish once the compositor has gone */
         if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &sc, &w, &h)) {
             logf_("acquire swapchain failed: %s", SDL_GetError());
             SDL_CancelGPUCommandBuffer(cmd);
@@ -3673,6 +3764,7 @@ int main(int argc, char **argv)
             shot_turns = 0;
             SDL_SetAtomicInt(&shot_pause, 0);
         }
+        compositor_busy(0);
         if (!sc)
             SDL_Delay(10);      /* minimized: nothing to present to */
         /* a two-PC game that did not start (4) keeps the window, its note saying why, until it is
@@ -3680,17 +3772,9 @@ int main(int argc, char **argv)
         if (st >= 2 && (st != 4 || frames_max))
             running = 0;
     }
+    compositor_busy(0);                     /* the loop left in a frame (its acquire failed) */
 
-    SDL_SetAtomicInt(&shot_pause, 0);
-    SDL_SetAtomicInt(&menu_pause, 0);       /* a machine waiting for the menu goes on to its stop */
-    SDL_SetAtomicInt(&window_quit, 1);      /* and one whose two-PC game ended */
-    if (in_session)
-        session_cancel();                   /* stops waiting (to connect, or for the other's inputs) */
-    /* the machine ends at its next vertical blank (at once if it is not running) */
-    stopping = SDL_GetAtomicInt(&machine_state) < 2;
-    game_machine_stop();
-    if (stopping)
-        logf_("stopping the machine");
+    machine_stop_ask();
     SDL_WaitThread(machine, NULL);
     if (in_session)
         session_end();                      /* the other PC is told */
@@ -3715,6 +3799,12 @@ int main(int argc, char **argv)
             logf_("GPU renderer: %u frames drawn, at most %u triangles; %u frames had translucent volumes (not drawn)",
                   gf, gt, gv);
     }
+    /* the compositor has gone: the window is not closed (gone_close; section 54) */
+    if (display_gone()) {
+        gone_close(failed);
+        _Exit(failed);
+    }
+    compositor_busy(1);     /* closing the window: it may never finish if the compositor goes now */
     ovl_free(gpu);
     if (vpad) {
         SDL_JoystickID id = SDL_GetJoystickID(vpad);
@@ -3723,6 +3813,8 @@ int main(int argc, char **argv)
     }
     video_close();
     SDL_DestroyWindow(win);
+    compositor_busy(0);
+    compositor_watch_end();
     SDL_DestroyMutex(shared.lock);
     gu_quit();      /* the records are saved: an update asked for in the menu goes to the launcher */
     if (to_launcher) {
