@@ -1291,7 +1291,7 @@ footer looked at 1:1. Each style showed its own names, `steamvirtual` as
 Xbox, and `steamvirtual` with `SteamDeck=1` as the Deck. Linux and Windows
 build without warnings.
 
-**Menus go by label, the game by place** (asked for by David). The game's
+**Menus go by label, the game by place** (asked for by the maintainer). The game's
 controls stay where the buttons sit, so the PlayStation 2 layout is the
 same on every pad. In the game's menu, the operator bar and the launcher,
 a face button does what its label says (`ui_pad_face`, from the pad's own
@@ -1320,7 +1320,7 @@ behind its own).
 
 ## 24. Updates (2026-11-13)
 
-Asked for by David: check for a new release and update the program before
+Asked for by the maintainer: check for a new release and update the program before
 playing, or have the update go in when the launcher closes.
 
 **The pieces.**
@@ -1439,7 +1439,7 @@ wrong digest, and a throttled download).
 
 ## 25. Updates from the game's menu (2026-11-13)
 
-Asked for by David: Add to Steam starts the game without the launcher, so
+Asked for by the maintainer: Add to Steam starts the game without the launcher, so
 the game's own menu should have a check for updates, with the update
 going in when the game closes.
 
@@ -1510,8 +1510,8 @@ only once no `update.py` runs, and the step waits for that too.
 
 ## 26. Ko-fi in the game (2026-11-13)
 
-Asked for by David: his Ko-fi page in the game's menu, and once when the
-game starts, as in his pcbview (a one-time notice at its first start, and
+Asked for by the maintainer: the project's Ko-fi page in the game's menu, and once
+when the game starts, as in pcbview (a one-time notice at its first start, and
 Help → Support on Ko-fi).
 
 **The menu.** The Game tab has **Support on Ko-fi** before Quit. Choosing
@@ -1566,9 +1566,9 @@ opens), and the old-SDL fallback button (both of this project's SDLs are
 
 ## 27. Install folder, set choice and plain Wine (2026-11-13)
 
-David ran the 0.5.0 release's launcher under plain Wine 11.21 (not Proton)
+The maintainer ran the 0.5.0 release's launcher under plain Wine 11.21 (not Proton)
 and reported three things: no way to change where the game goes, the
-launcher taking his ROM folder without asking, and a build stuck at
+launcher taking their ROM folder without asking, and a build stuck at
 "compiled 50 of 111" for 15 minutes.
 
 **The set is offered, not taken.** `find_set` used to choose the first set
@@ -1626,7 +1626,7 @@ So the fault is in Wine's Direct3D 12 presentation on this system, not in
 the launcher's code. The launcher now logs its renderer and video driver
 at start, a present that fails (and when it works again), device
 resets, and the first window sizes, so the next report has that in
-`launcher.log`. David's decision: Proton only. The launcher keeps SDL's
+`launcher.log`. The maintainer's decision: Proton only. The launcher keeps SDL's
 own renderer choice (no preference for Vulkan over Direct3D 12 to get
 round plain Wine), and the README says plain Wine is not supported. Not
 looked into, for that reason: why wined3d's Direct3D 11 does not start,
@@ -1648,7 +1648,7 @@ option `--pick-game DIR`):
   found none for an install without it, and logged a release folder that
   was missing.
 
-**Add to Steam only from outside Steam** (David's decision, the same
+**Add to Steam only from outside Steam** (the maintainer's decision, the same
 day; replaced by section 33, which shows the button everywhere and asks
 for Steam to be closed). `tools/steam_shortcut.py` edits Steam's shortcut files, which Steam
 rewrites when it exits, so it needs Steam closed. Run from Steam, the
@@ -1667,7 +1667,7 @@ variables are expected to be the same ones.
 
 ## 28. The launcher's first window size (2026-11-13)
 
-David's report: under CachyOS (KDE, a 4K screen scaled 175%) the launcher
+The maintainer's report: under CachyOS (KDE, a 4K screen scaled 175%) the launcher
 opened small. The Windows launcher under Proton is an X11 window through
 Xwayland, and KWin lets X11 programs scale themselves. SDL's window units
 are logical on Wayland but pixels on Windows and X11, where
@@ -1704,7 +1704,7 @@ different scales (not changed here).
 
 ## 29. Start the game directly (2026-11-13)
 
-David asked for a Steam entry that plays the game without the launcher.
+The maintainer asked for a Steam entry that plays the game without the launcher.
 The launcher cannot make one from inside Steam: Steam rewrites its
 shortcuts when it exits, so they can only be written with Steam closed, and
 closing Steam ends a launcher that runs under its Proton. So the launcher's
@@ -1755,10 +1755,10 @@ Not tried: a real Steam session and the Deck's Game Mode.
 
 ## 30. Steam Input's twin pads (2026-11-13)
 
-David played a release under Steam (Proton) with a DualSense: every
+The maintainer played a release under Steam (Proton) with a DualSense: every
 button moved player 1 and player 2 at once.
 
-**Why (from his `vf4ft.log` and Steam's environment):** with Steam Input
+**Why (from that run's `vf4ft.log` and Steam's environment):** with Steam Input
 on for the game, Steam reads the DualSense itself and gives the game its
 own virtual pad (Valve's 28de:11ff, an XInput pad: `XInput#0`, type
 xboxone, Steam handle 0). Steam names the real pad behind each of its
@@ -1818,7 +1818,7 @@ file at its Linux path):
 The game itself, offscreen with a stand-in Steam pad (`--keys
 padtype=steamvirtual`) and the file, logs the list and its slot.
 
-**On David's machine (2026-11-13),** a 0.5.2-dev test copy added to Steam
+**On the maintainer's machine (2026-11-13),** a 0.5.2-dev test copy added to Steam
 with Steam closed (`tools/steam_shortcut.py add`, named), Steam Input on,
 Proton Experimental. This time SDL had given Steam's pad the real pad's
 ids from the file (`XInput#0`, 054c:0ce6, type ps5, Steam handle set,
@@ -1833,7 +1833,7 @@ was left out, in the game and in the launcher:
 
 ## 31. The mouse in the game's menu (2026-11-13)
 
-David asked for mouse clicks in the game's menu (the launcher had them;
+The maintainer asked for mouse clicks in the game's menu (the launcher had them;
 the game's menu took keys and pads only).
 
 **What (runtime/host/menu.c `menu_mouse`, main.c's event loop):**
@@ -1876,7 +1876,7 @@ desktop running the native build).
 
 ## 32. The DIMM board's memory above the image (2026-11-13)
 
-David asked what the red block behind the first letter of the boot's
+The maintainer asked what the red block behind the first letter of the boot's
 network check screen was. The same screen read RESPONSE TIME = -1 FRAMES
 and MODE = -1.
 
@@ -1927,7 +1927,7 @@ VF4debug has the same gap; it is left to that repository.
 
 ## 33. Add to Steam from the launcher, Steam open or closed (2026-11-13)
 
-David asked for it to be easy: open the launcher, have an option to create
+The maintainer asked for it to be easy: open the launcher, have an option to create
 or recreate its Steam shortcut, and when Steam is open, a note asking to
 close Steam (and, when Steam started the launcher, to open the launcher
 again with Steam closed). It replaces section 27's "Add to Steam only from
@@ -2003,7 +2003,7 @@ own Add a Non-Steam Game) stay the way in.
 
 ## 34. Play's note under plain Wine (2026-11-13)
 
-David asked for a warning when Play is pressed on Linux outside Proton and
+The maintainer asked for a warning when Play is pressed on Linux outside Proton and
 Steam: the kinds of problems to expect.
 
 **When:** the Windows launcher under Wine (`wine_get_version` in ntdll)
@@ -2026,8 +2026,8 @@ switch is turned on from the Play page.
 - The launcher: Wine's Direct3D 11 does not start, SDL's renderer takes
   Direct3D 12, and after resizes the window stops updating (section 27).
 - The game: SDL_GPU takes Vulkan (the RTX 5070 Ti, NVIDIA 620.70.06), and
-  it held 60 frames a second through the attract sequence. David's own run
-  (12:28) found his DualSense through Wine's HID. In a headless KWin with
+  it held 60 frames a second through the attract sequence. The maintainer's own run
+  (12:28) found their DualSense through Wine's HID. In a headless KWin with
   sound off, six quick resizes, then fullscreen on and off by F11: the
   nested screen showed the picture right at every capture (0.4 s to 9 s
   after each change; the 4:3 bars even), and one earlier capture caught a
@@ -2044,7 +2044,7 @@ launcher does).
 
 ## 35. The network setting, off by default (2026-11-13)
 
-David asked whether networking could be turned off so the start-up's
+The maintainer asked whether networking could be turned off so the start-up's
 network screen is skipped, then: "lets turn networking off by default".
 
 **What the game does** (the decomp's `source/vf4lib/libbase/src/system.c`,
@@ -2066,7 +2066,7 @@ to words, 0) at 0x1F8 and 0x208, copy A at 0x218 and copy B right after it.
 `sram_save_load` wants the size in both headers, then takes copy A when its
 check holds, else B, else starts from the defaults. The check is the
 EEPROM's (`eeprom_check`: the data and a zero byte). `net_connect` is at
-0x162A in the record. David's backup: both checks hold, both copies equal,
+0x162A in the record. The maintainer's backup: both checks hold, both copies equal,
 `net_connect` 1.
 
 **The setting:** `network = off | on` in `settings.txt` (default off), on
@@ -2102,8 +2102,8 @@ are not affected: they never load a backup, so the game makes its record
 with the network on as before.
 
 **Checked** (the native game in a headless KWin, sound off and SDL's dummy
-audio; copies of David's backup):
-- David's backup, default settings: "network: off", the log screen at
+audio; copies of the maintainer's backup):
+- The maintainer's backup, default settings: "network: off", the log screen at
   vertical blank 1,200 says "(GAME) NETWORK OFF", MODE 2; the saved backup
   has `net_connect` 0 in both copies and both checks hold.
 - A blank backup: the record appears at vertical blank 226, the network
@@ -2126,9 +2126,9 @@ shows for a moment).
 
 ## 36. Steam's pictures for the entry, from the player's own build (2026-11-13)
 
-David's report: the Steam entry that Add to Steam makes has no artwork and
-no description. His choice for the pictures: made from his own build, on
-his machine, so no game pictures are in the repo or the release.
+The maintainer's report: the Steam entry that Add to Steam makes has no artwork and
+no description. The choice for the pictures: made from the player's own build, on
+the player's machine, so no game pictures are in the repo or the release.
 
 **No description:** a non-Steam entry has none to set. `shortcuts.vdf`
 holds the name, the program, its folder, options, the icon, tags and a few
@@ -2221,14 +2221,14 @@ where it had to be closed; sound off and SDL's dummy audio):
   offscreen at 1:1 (`--shot steam-art`, `steam-done`, `steam-done-plain`,
   `steam-added`, `steam-added-plain`).
 
-Not tried: a real Steam showing the pictures (David's to see: Add to Steam
+Not tried: a real Steam showing the pictures (the maintainer's to see: Add to Steam
 with Steam closed, then start Steam), Windows itself, and the Deck.
 
 ## 37. Card profiles, the launcher's Cards tab and the card editor (2026-11-13)
 
-David's request: a "character profile" per player, as the cabinet's card
+The maintainer's request: a "character profile" per player, as the cabinet's card
 was; a default profile to start from, new ones made from it, and each
-assigned to a player. His choices: the editor in the launcher first, a
+assigned to a player. The choices: the editor in the launcher first, a
 ready card with every item as the default, and assigning from both the
 launcher and the game's menu.
 
@@ -2247,7 +2247,7 @@ device name.
 **A card is one character's:** with a registered card in (flags 0x11),
 the select screen puts the cursor on the card's character and the player
 cannot move it (`select.c`). So a profile is a character: the editor's
-Character row is what David's "character profile" is.
+Character row is what the requested "character profile" is.
 
 **The game's menu** has a Cards tab (Player 1 card, Player 2 card, and the
 card units' switch, moved from the Game tab). Left and Right go through
@@ -2275,8 +2275,8 @@ files (`cards_save`, tmp file and rename) as the menu pauses it, not only
 every 600 vblanks: opened mid-fight, the menu shows the game just begun
 (399 games left on a 400-game card).
 
-*Versus record (2026-11-13):* David won a fight against the computer and
-his card still had no wins. The game counts only versus matches there:
+*Versus record (2026-11-13):* the maintainer won a fight against the computer and
+their card still had no wins. The game counts only versus matches there:
 `game_judge_init` calls `card_match_result_record` (`all_win`,
 `all_lose` and the rank change) after a match between two players, and
 after one against the computer (`play_style` 1) only moves on to the next
@@ -2386,12 +2386,12 @@ a headless KWin with its own Xwayland; test folders only):
 
 Not tried: Windows itself, Proton and the Deck (its keyboard in the
 notes), a cabinet card from VF.NET with a Japanese ring name, and which
-item numbers each character has (the editor goes by number; David's
+item numbers each character has (the editor goes by number; the maintainer's
 earlier choice).
 
 ## 38. The sky above a victory pose: the guard band (2026-11-13)
 
-David saw the top of the screen black at the end of a fight, while the
+The maintainer saw the top of the screen black at the end of a fight, while the
 winner did a victory pose. Reproduced with `--press` (player 1 mashing
 kick and punch, so that player 1 wins; `--press` now takes 8,192 presses
 for that): on the stage with the orange cloud sky, player 1's victory
@@ -2432,7 +2432,7 @@ own, drawn from the game's data).
 
 ## 39. Wide screens without stretching: 16:10, 16:9 and 21:9 (2026-11-13)
 
-David asked for wide screen options with no stretch, for the Steam Deck
+The maintainer asked for wide screen options with no stretch, for the Steam Deck
 OLED (16:10) and 21:9 ultrawide screens too. The Picture setting
 (settings.txt `picture`, the menu's and the launcher's Picture row) is now
 4:3, 16:10, 16:9, 21:9 or stretch. A wide choice draws the game's screen
@@ -2507,10 +2507,10 @@ ultrawide monitor.
 
 ## 40. Quit quits; Window size and Internal resolution (2026-11-13)
 
-David's report: with the Resolution row at 4x and a 16:9 picture, the
-window stayed 1,281 x 720 on his 4K screen. The row was the GPU
+The maintainer's report: with the Resolution row at 4x and a 16:9 picture, the
+window stayed 1,281 x 720 on a 4K screen. The row was the GPU
 renderer's size (3,416 x 1,920 there, scaled down to the window), and the
-window had a fixed size of its own (section 39). He asked for both: an
+window had a fixed size of its own (section 39). The maintainer asked for both: an
 internal resolution and a window size. And the game's Quit brought the
 launcher back, though the menu has Open the launcher for that.
 
@@ -2600,7 +2600,7 @@ different scales (the menu works out the room each time it opens).
 
 ## 41. Region (2026-11-14)
 
-David asked how to change the game's region, and for a region choice in
+The maintainer asked how to change the game's region, and for a region choice in
 the menu.
 
 **Where the region comes from.** On a cabinet it is the BIOS's (the
@@ -2675,7 +2675,7 @@ system information, the Windows game.
 
 ## 42. No card by default; the card editor in the game's menu (2026-11-14)
 
-David's request: no card given to a player by default ("When a card is
+The maintainer's request: no card given to a player by default ("When a card is
 assigned to you, you can only play with the character on the card. Good
 for tournament mode, bad for arcade mode"), and the card editable from the
 game's menu the same way as from the launcher.
@@ -2798,7 +2798,7 @@ Windows game and launcher built, the player's builder compiled):
   inserted;
 - the launcher's editor: the same picture as before, a new card edited
   and saved with good checks;
-- the Windows game: David played the test copy (built from these
+- the Windows game: the maintainer played the test copy (built from these
   sources) on 2026-11-14 with no problems.
 
 Not checked: a Steam Deck's keyboard, an edit waiting when the machine
@@ -2806,7 +2806,7 @@ stops.
 
 ## 43. More window sizes (2026-11-14)
 
-David asked why Window size offered so few sizes, with lists of the usual
+The maintainer asked why Window size offered so few sizes, with lists of the usual
 16:9, 4:3 and 21:9 screens' resolutions. The list (section 40) was the GPU
 renderer's four heights and the screens' 720, 1080 and 2160; nothing else
 limited it. Two things were missing: the heights of the other usual
@@ -2817,7 +2817,7 @@ the screen it is named after, so made smaller to fit).
 
 **The heights** (`settings_window_heights`, 16 of them): 480, 576, 600,
 720, 768, 800, 900, 960, 1050, 1080, 1200, 1440, 1536, 1600, 1920 and
-2160. At the picture's shape they give every size of David's lists: 16:9
+2160. At the picture's shape they give every size of those lists: 16:9
 854 x 480, 1024 x 576, 1280 x 720, 1366 x 768, 1600 x 900, 1920 x 1080,
 2560 x 1440, 3840 x 2160; 4:3 640 x 480, 800 x 600, 1024 x 768, 1280 x
 960, 1400 x 1050, 1440 x 1080, 1600 x 1200, 1920 x 1440, 2048 x 1536; and
@@ -2851,7 +2851,7 @@ as `window = 768`; Auto at 16:9 1708 x 960 (Wayland) and 1600 x 900
 
 ## 44. The Steam Deck: its screen's shape and the OLED's refresh rate (2026-11-14)
 
-David asked for the game to know the Steam Deck and the Deck OLED and to
+The maintainer asked for the game to know the Steam Deck and the Deck OLED and to
 fill their screens on its own. Fullscreen's Auto already went fullscreen
 on a Deck (Steam's `SteamDeck=1`, section 20); what was missing was the
 picture's shape and, on the OLED, the refresh rate.
@@ -2915,7 +2915,7 @@ second logs that it was shown and shows nothing. The launcher with
 
 ## 45. Two players on two PCs: the plan, and the same machine everywhere (2026-11-14)
 
-David asked about two things: a VF.NET server like Flycast's, and two
+The maintainer asked about two things: a VF.NET server like Flycast's, and two
 players playing each other on two PCs, in phases: a LAN first, then a
 private online server, then public matchmaking. The two-PC play comes
 first; VF.NET follows (it starts with reading what the event lists of the
@@ -2934,7 +2934,7 @@ machine to be the same run on both, bit for bit, from the same start.
    or found on the network; inputs a vertical blank or two ahead (on a
    LAN, not felt); UDP, each packet repeating the last inputs.
 2. Private online: the same over the internet, through a forwarded port
-   or a small relay David runs; rollback (the machine saved each frame,
+   or a small relay the maintainer runs; rollback (the machine saved each frame,
    frames run again when a late input differs), which needs a fast
    in-memory snapshot (`snapshot_save_mem` goes through a file). The
    machine takes about 3 ms a frame on a desktop, so it fits there; the
@@ -2942,7 +2942,7 @@ machine to be the same run on both, bit for bit, from the same start.
 3. Public matchmaking: a lobby, a queue by ping, a relay so players never
    see each other's addresses. A decision for later.
 
-**Cards live with their player** (David's rule). A card's file stays on
+**Cards live with their player** (the maintainer's rule). A card's file stays on
 its player's PC, or later on the VF.NET server we build, which can be its
 home so it follows the player to any PC. For a game both PCs need both
 cards, since both run both card units: at the start each PC sends its own
