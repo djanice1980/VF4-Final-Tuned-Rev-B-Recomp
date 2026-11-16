@@ -3564,3 +3564,170 @@ read (counts, positions, indices) and a fuzzer run over snapshots.
 When the host's REFUSE after a wrong code is lost, the joining PC sends
 its PROOF again, which the host does not answer, and it says after 60 s
 that the host did not take its code.
+
+## 51. Window size in order; the GPU and the display (2026-11-15)
+
+Three asks from playing: Window size did not go up and down in order
+when stepped right and back left; and the Picture tab should choose the
+GPU the GPU renderer draws on, and the display the game opens on. Both
+new rows are on the Picture tab of the game's menu and of the launcher's
+Settings, in this order: Fullscreen, **Display**, Window size, Picture,
+Scaling, Renderer, **GPU**, Internal resolution.
+
+**Window size was out of order.** Its list was Auto, then the sizes that
+fit the screen, smallest first, and it wrapped. Auto's size is one of the
+middle ones (the largest that leaves a tenth of the screen free: 1280 x
+960 at 4:3 on a 1920 x 1080 screen), so Right from Auto went down to the
+smallest, Left from the smallest jumped up to Auto and on to the largest,
+and the listed size Auto stood for came again after it (Auto (1280 x
+960), then 1280 x 960). A checker that steps from a start value right to
+the end, left to the other end and right again, on 11 screens (1280 x
+720 to 3840 x 2160, the Deck's 1280 x 800, 2560 x 1080, Wayland ones at
+150% and 200%) with each of the 5 pictures and from 8 start values, found
+all 440 walks out of order.
+
+Now (options.c window_step):
+
+- the sizes that fit, smallest first, with **Auto at its own size**: in
+  the place of the listed size it gives, which is not offered again;
+- **the ends do not wrap**: Left at the smallest and Right at the largest
+  do nothing, and that arrow is drawn dim (ui_row's `ends`, UI_END_LEFT
+  and UI_END_RIGHT; only this row sets them);
+- a value not in the list (a hand edit in settings.txt, a size kept from
+  another screen, a listed height that is Auto's size here) steps from
+  the window it gives to the next strictly smaller or larger one, so no
+  size shows twice;
+- a click on the left half of the value box steps left, in the game's
+  menu and in the launcher: without the wrap, clicks (which step right)
+  could not come back.
+
+A wrapping list jumps from the largest window to the smallest, which is
+the complaint again in another shape; a list of sizes stops at its ends,
+as Volume does. The other choice rows still wrap: their values have no
+order. The checker now finds 0 of the 440 walks out of order, and in the
+game (headless KWin, 1920 x 1080, 4:3) the window went 640 x 480, 768 x
+576, 800 x 600, 960 x 720, 1024 x 768, 1068 x 800, 1200 x 900, Auto (1280 x
+960), 1400 x 1050, 1440 x 1080 and back, presses past either end changing
+nothing.
+
+**GPU: what SDL gives.** SDL 3.4.20's SDL_CreateGPUDevice takes a driver
+name, not a device, and no property or hint names one. Its Vulkan backend
+ranks the devices: a separate card, then one in the processor, then
+virtual, then CPU, the one with more memory first among equals.
+SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN puts the processor's
+first. SDL_PROP_GPU_DEVICE_NAME_STRING says which device opened. On this
+PC Auto is the RTX 5070 Ti and low power the Radeon 8060S.
+
+**GPU: the choice.** Auto (the default) is SDL's choice, as before. The
+GPUs are listed by devices.c gpus_list. It opens Vulkan's loader itself
+(vulkan-1.dll or libvulkan.so.1, or SDL_HINT_VULKAN_LIBRARY's) and makes
+a bare instance. It keeps the separate, processor and virtual devices
+(llvmpipe and other CPU ones are left out) by their Vulkan names, cleaned
+of `#` and control characters (settings.txt's comment mark), with one
+entry per name. The game lists them only when it needs them: a GPU chosen
+at start, or the menu open. The launcher lists them the first time its
+Picture tab is drawn, since listing wakes every GPU. A chosen GPU opens
+so (main.c gpu_device_open):
+
+1. SDL's choice with low power preferred for a GPU in the processor, not
+   preferred for any other; the device that opened is checked by name.
+2. Not that one (two separate cards, say): VK_LOADER_DEVICE_ID_FILTER set
+   to its PCI device id while SDL opens it, then put back, and checked
+   again. On loader 1.4.363 the device id alone works, while vendor and
+   device together match nothing. It works on Linux and Windows but not
+   under Wine, where the Windows program's environment does not reach the
+   host's loader (winevulkan calls that).
+3. Still not: Auto for the run, logged ("cannot be had").
+4. Not there at the start (an external GPU unplugged): Auto for the run,
+   logged. The name stays in settings.txt and is used again once the GPU
+   is back.
+5. Opened, but it cannot show in the game's window: Auto for the run,
+   logged ("cannot show the window"). A failed claim used to quit the
+   game, so a GPU choice could have stopped the game from starting at
+   all. Found in testing: Mesa's X11 swapchain on the Radeon fails
+   (vkCreateSwapchainKHR VK_ERROR_INITIALIZATION_FAILED) when the X
+   server draws on the NVIDIA card, natively and under Wine alike. The
+   headless KWin of the tests renders on the NVIDIA, and its Xwayland
+   with it (glxinfo says so), and that X server does not take the
+   Radeon's pictures. On Wayland the same Radeon draws. On this PC's own
+   desktop KWin draws on the Radeon, so the case is other PCs': an X11 or
+   Proton game on a PC whose X server is on the card not chosen.
+
+The properties path sets SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN to
+false. It defaults to true, and the first version opened the chosen GPU
+in debug mode (it looked for validation layers) while Auto did not.
+
+The row shows Auto or the name, and "NAME (not found)" while a missing
+one is chosen; the description's note has the whole name, which the row
+cuts short. It shows only for the GPU renderer (greyed, with "The
+Software renderer does not use it." for Software). It applies at the
+next start (the menu's dot), and the menu's note says which GPU draws
+now, or that the chosen one could not be used and which one draws
+instead. Log: "GPU 1: NVIDIA GeForce RTX 5070 Ti (discrete, PCI
+10de:2c05)", "GPU: NAME, as the settings ask (...)" or "GPU: NAME (Auto:
+SDL's choice)", "renderer: GPU, W x H, on NAME".
+
+**Display.** The display the game opens on, windowed or fullscreen.
+Auto (the default) leaves it to the system, as before.
+
+- Names: SDL_GetDisplayName, cleaned as the GPU's are; with no name,
+  "Display N". Of two with the same name, the second (in SDL's order) is
+  "NAME (2)", and so on.
+- At the start the window is made at the center of the chosen display
+  (SDL_WINDOWPOS_CENTERED_DISPLAY) and sized for that screen's room
+  (Window size Auto). Fullscreen opens there.
+- In the menu it applies at once. A window goes to the center of that
+  display at its Window size there; a fullscreen one goes to that
+  display. Auto leaves it where it is.
+- F11 and Alt+Enter go fullscreen on the chosen display (fullscreen_to).
+- Not connected (at the start, or unplugged): Auto, logged. The name stays
+  in settings.txt and the row shows "NAME (not connected)". Displays that
+  come or go update the menu's list while it is open.
+- **Wayland:** a program cannot place its windows (SDL: "wayland cannot
+  position non-popup windows"), so a window goes where the compositor
+  puts it, and only fullscreen goes to the chosen display (SDL keeps the
+  display asked for and fullscreens there). The log and the description
+  say so. X11, Windows and Wine place the window.
+- Names depend on the video driver. Wayland gives the output's
+  description ("LG Electronics LG TV SSCR2"), X11 the EDID name with the
+  size in inches ('LG TV SSCR2 55"'; KWin's virtual outputs come out as
+  'Virtual-1 169093200"'), and Windows (and Wine: "Display2") its own.
+  The launcher and the game use SDL's default driver, so on one desktop
+  they agree; a name saved under another driver is not connected (Auto,
+  logged). No loose matching: two displays alike would be mixed up.
+- The window's moves are logged ("window: now on NAME", once a move;
+  "window: fullscreen", "fullscreen off"). While the menu is open, Window
+  size's sizes follow the screen the window is on.
+
+**settings.txt:** `gpu = auto` or a GPU's name, `display = auto` or a
+display's name, as the rows list them (case does not matter).
+
+**Files.** runtime/host/devices.c and devices.h list the GPUs and
+displays for the game and the launcher (in both CMake targets and
+build.py's units). The rows are in options.c, the menu's notes and live
+Display in menu.c and main.c, and the launcher's in launcher.c. Its
+renderer and window code are unchanged.
+
+**Tested** in headless KWin (kwin_wayland --virtual, one or two 1920 x
+1080 outputs side by side, Xwayland on), natively and with the Windows
+build under Wine 11 (a scratch prefix with Wine's audio driver off), and
+the launcher's Picture tab with --shot offscreen:
+
+| Case | Result |
+|---|---|
+| Window size stepped both ways, game and launcher | in order, ends dim and still |
+| Display chosen at start, Wayland, windowed | the compositor places it; F11 fullscreen on the chosen display, back on leaving |
+| Display chosen, fullscreen at start, Wayland | fullscreen on the chosen display |
+| Display chosen at start, X11 and Wine | opens centered on it; F11 fullscreen there |
+| Display changed in the menu, X11 and Wine | the window moves at once; F11 there |
+| Display changed in the menu, Wayland | logged as not placed; F11 there |
+| Display not connected | Auto, logged, kept; row "(not connected)" |
+| GPU: Radeon by name (Wayland) | low power: the Radeon draws |
+| GPU: RTX 5070 Ti by name, then Auto in the menu | drawn on it; saved as auto, the dot and the note |
+| GPU not there | Auto, logged, kept; note says which draws |
+| GPU: Radeon on X11 / under Wine (X server on the NVIDIA) | cannot show the window: Auto, logged, the game runs |
+| GPU list under Wine | both GPUs, through winevulkan |
+
+Not tested: the loader filter (step 2) on two separate cards of one kind,
+which this PC does not have; a real monitor unplugged while the game runs
+(the virtual outputs cannot be).

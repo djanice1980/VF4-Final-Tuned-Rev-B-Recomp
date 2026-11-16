@@ -24,7 +24,8 @@ static const int tab_rows[TABS][ROWS] = {
     [TAB_GAME] = { A_RESUME, A_CODE, OPT_CREDITS, OPT_NETWORK, OPT_REGION, A_TEST, A_RESTART, A_UPDATES, A_KOFI,
                    A_LAUNCHER, A_QUIT, -1 },
     [TAB_CARDS] = { OPT_CARD1, A_EDIT1, OPT_CARD2, A_EDIT2, OPT_CARDS, -1 },
-    [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
+    [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
+                      OPT_SCALE, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
 static int shown_rows[TABS][ROWS], nshown[TABS];   /* tab_rows without Updates and the launcher outside a release folder */
@@ -131,10 +132,11 @@ static int change(int d)
         return MENU_STAY;
     if (id == OPT_VOLUME && !run.sound)
         return MENU_STAY;
-    if (id == OPT_SCALE && s->renderer != RENDERER_GPU)
+    if ((id == OPT_SCALE || id == OPT_GPU) && s->renderer != RENDERER_GPU)
         return MENU_STAY;
     option_change(s, id, d);
-    return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_WINDOW || id == OPT_VOLUME
+    return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_WINDOW || id == OPT_VOLUME ||
+                   id == OPT_DISPLAY
                ? MENU_LIVE
                : MENU_STAY;
 }
@@ -499,6 +501,13 @@ int menu_mouse(int what, float px, float py, int d)
         if (r < 0)
             return -1;
         choose(r);
+        if (row_id(r) < OPT_COUNT) {
+            /* a choice's left half goes back, its right half on (ui_rows: the value's box ends 0.35
+             * rows in from the right), as in the card editor: Window size does not wrap */
+            float right = ROWS_X + ROWS_W - ROW_H * 0.35f, bw = SDL_min(ROWS_W * 0.42f, ROW_H * 5.6f);
+            if (x >= right - bw && x < right - bw / 2)
+                return menu_command(MENU_LEFT);
+        }
         return menu_command(MENU_OK);   /* Restart, Quit and Open the launcher: a second click */
     case MENU_MOUSE_RIGHT:
         if (r < 0)
@@ -635,6 +644,7 @@ static int later(int id)
     case OPT_REGION: return s->region != run.start.region;
     case OPT_RENDERER: return s->renderer != run.start.renderer;
     case OPT_SCALE: return s->scale != run.start.scale;
+    case OPT_GPU: return SDL_strcasecmp(s->gpu, run.start.gpu) != 0;
     case OPT_SOUND: return s->sound != run.start.sound;
     }
     return 0;
@@ -684,8 +694,26 @@ static void about_of(int id, const char **title, const char **text, const char *
                     "output, then quit and start the game again.";
         else if (id == OPT_VOLUME && !run.sound)
             *note = "Sound is off: turn it on below, for the next start.";
-        else if (id == OPT_SCALE && s->renderer != RENDERER_GPU)
+        else if ((id == OPT_SCALE || id == OPT_GPU) && s->renderer != RENDERER_GPU)
             *note = "The Software renderer does not use it.";
+        else if (id == OPT_GPU) {
+            /* the whole names: the row cuts a long one short */
+            static char gn[2 * GPU_NAME_MAX + 100];
+            if (later(id))
+                SDL_snprintf(gn, sizeof gn, "Changed to %s: applies the next time the game starts.",
+                             s->gpu[0] ? s->gpu : "Auto");
+            else if (run.gpu_now && s->gpu[0] && SDL_strcasecmp(s->gpu, run.gpu_now))
+                SDL_snprintf(gn, sizeof gn, "%s could not be used when the game started: drawing on %s instead. "
+                             "Applies the next time the game starts.", s->gpu, run.gpu_now);
+            else if (run.gpu_now)
+                SDL_snprintf(gn, sizeof gn, "Drawing on %s now. Applies the next time the game starts.", run.gpu_now);
+            else
+                SDL_strlcpy(gn, "Applies the next time the game starts.", sizeof gn);
+            *note = gn;
+        } else if (id == OPT_DISPLAY) {
+            static char dn[DISPLAY_NAME_MAX + 32];
+            *note = option_note(s, id, dn, sizeof dn);
+        }
         else if (id == OPT_FULLSCREEN && refresh_text())
             *note = refresh_text();
         else if (options[id].at_start)

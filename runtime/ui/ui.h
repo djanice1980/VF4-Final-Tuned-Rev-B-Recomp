@@ -186,7 +186,9 @@ typedef struct ui_row {
     int off;                /* greyed: does nothing now */
     int waiting;            /* PAD, KEYS: waits for its key or button */
     int strong;             /* TEXT: the value as a setting's (bright), not a note's: one to read off */
+    int ends;               /* CHOICE that does not wrap: UI_END_* (its arrow dim: that way goes no further) */
 } ui_row;
+enum { UI_END_LEFT = 1, UI_END_RIGHT = 2 };
 /* rows from y down, each row_h high; the list scrolls to keep sel in view
  * (*top: the first row shown, kept between calls) */
 void ui_rows(float x, float y, float w, float h, float row_h, const ui_row *rows, int n, int sel, int *top);

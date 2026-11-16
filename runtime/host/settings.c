@@ -218,6 +218,29 @@ static char *trim(char *p)
     return p;
 }
 
+void settings_name_clean(char *dst, size_t n, const char *src)
+{
+    size_t at = 0;
+    if (!n)
+        return;
+    while (*src && (*src == ' ' || *src == '#' || (unsigned char)*src < 0x20))
+        src++;
+    for (; *src && at + 1 < n; src++) {
+        unsigned char c = (unsigned char)*src;
+        dst[at++] = c == '#' || c < 0x20 || c == 0x7f ? ' ' : (char)c;
+    }
+    if (((unsigned char)*src & 0xc0) == 0x80) {
+        /* cut in the middle of a character: its first bytes go too */
+        while (at && ((unsigned char)dst[at - 1] & 0xc0) == 0x80)
+            at--;
+        if (at)
+            at--;
+    }
+    while (at && dst[at - 1] == ' ')
+        at--;
+    dst[at] = 0;
+}
+
 static int choice(const char *v, const char *const *names, int count, int *out)
 {
     for (int i = 0; i < count; i++)
@@ -412,6 +435,14 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "renderer")) {
                 if ((ok = choice(v, renderer_names, 2, &x)))
                     s->renderer = x;
+            } else if (!strcmp(name, "gpu") || !strcmp(name, "display")) {
+                char *to = name[0] == 'g' ? s->gpu : s->display;
+                size_t size = name[0] == 'g' ? sizeof s->gpu : sizeof s->display;
+                ok = 1;
+                if (!SDL_strcasecmp(v, "auto"))
+                    to[0] = 0;
+                else
+                    settings_name_clean(to, size, v);
             } else if (!strcmp(name, "scale")) {
                 x = atoi(v);
                 if ((ok = x >= 1 && x <= 4))
@@ -495,6 +526,14 @@ int settings_save(const settings *s, const char *path)
         settings_picture_name(s->picture));
     PUT("filter = %s           # smooth | sharp (how the picture is scaled to the window)\n", filter_names[s->filter]);
     PUT("renderer = %s         # gpu (Vulkan) | software (the CPU draws the picture)\n", renderer_names[s->renderer]);
+    PUT("gpu = %s              # the GPU renderer's GPU: auto (SDL's choice, a separate graphics card first) or\n"
+        "                         # a GPU's name as Vulkan gives it (the game's menu and the launcher list them);\n"
+        "                         # one not there at the start: auto for that run\n",
+        s->gpu[0] ? s->gpu : "auto");
+    PUT("display = %s          # the display the game opens on, windowed or fullscreen: auto (where the\n"
+        "                         # system puts it) or a display's name (listed as for gpu); one not connected:\n"
+        "                         # auto for that run\n",
+        s->display[0] ? s->display : "auto");
     PUT("scale = %d               # the GPU renderer's internal resolution: 1 to 4 times 640 x 480 (the\n"
         "                         # picture's width at a wide one), before it is scaled to the window\n", s->scale);
     PUT("sound = %s\n", onoff_names[s->sound]);

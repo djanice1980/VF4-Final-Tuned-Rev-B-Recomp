@@ -52,6 +52,7 @@
 
 #include "card_editor.h"
 #include "cards.h"
+#include "devices.h"
 #include "options.h"
 #include "settings.h"
 #include "ui.h"
@@ -1605,10 +1606,11 @@ static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sou
                                                  "Keyboard 2" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
-static const int tab_rows[T_COUNT][8] = {
+static const int tab_rows[T_COUNT][10] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, -1 },
     [T_CARDS] = { -1 },
-    [T_PICTURE] = { OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE, -1 },
+    [T_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
+                    OPT_SCALE, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEY1] = { -1 }, [T_KEY2] = { -1 },
 };
@@ -3180,16 +3182,47 @@ static void draw_edit(void)
     ui_hints(LW - 40 - w - 12 - cw - 24, 558, 24, save_hint, 1, 2);
 }
 
+/* the Picture tab's GPU and Display lists (devices.h). The GPUs are listed
+ * once, when the tab is first drawn (Vulkan's list takes a moment and wakes
+ * every GPU); the displays at every drawing, as they come and go */
+static void devices_for_options(void)
+{
+    static gpu_info gpus[GPUS_MAX];
+    static const char *gpu_list[GPUS_MAX];
+    static int gpu_n = -1;
+    static char names[DISPLAYS_MAX][DISPLAY_NAME_MAX];
+    static const char *list[DISPLAYS_MAX];
+    if (gpu_n < 0 && st_tab == T_PICTURE) {
+        char why[120];
+        gpu_n = gpus_list(gpus, GPUS_MAX, why, sizeof why);
+        for (int i = 0; i < gpu_n; i++) {
+            gpu_list[i] = gpus[i].name;
+            say("GPU %d: %s (%s)", i + 1, gpus[i].name, gpus[i].type == GPU_INTEGRATED ? "integrated"
+                                                          : gpus[i].type == GPU_DISCRETE ? "discrete" : "virtual");
+        }
+        if (!gpu_n)
+            say("GPUs: none listed (%s)", why);
+        options_gpu_names(gpu_list, gpu_n);
+    }
+    int n = displays_list(names, NULL, DISPLAYS_MAX);
+    for (int i = 0; i < n; i++)
+        list[i] = names[i];
+    options_display_names(list, n);
+}
+
 static void draw_settings(void)
 {
+    devices_for_options();
     {
         /* Window size's Auto and the sizes that fit: this screen's usable
          * area in pixels, less a window's frame (the launcher's own: the
          * game's is the same kind), as the game counts it (main.c
          * screen_room). The game's window opens on this screen too, as a
-         * rule */
+         * rule, or on Display's when that is connected */
         SDL_Rect r;
-        SDL_DisplayID d = SDL_GetDisplayForWindow(win);
+        SDL_DisplayID d = displays_find(st.display);
+        if (!d)
+            d = SDL_GetDisplayForWindow(win);
         window_room room = { 0, 0, SDL_GetWindowPixelDensity(win) };
         int top = 0, left = 0, bottom = 0, right = 0;
         if (room.density <= 0)
@@ -3240,7 +3273,12 @@ static void draw_settings(void)
         int o = tab_rows[st_tab][st_row];
         t = options[o].label;
         text = options[o].about;
-        if (options[o].at_start || o == OPT_CREDITS)
+        static char whole[GPU_NAME_MAX + DISPLAY_NAME_MAX];
+        if ((o == OPT_GPU || o == OPT_SCALE) && st.renderer != RENDERER_GPU)
+            note = "The Software renderer does not use it.";     /* as the game's menu says */
+        else if (option_note(&st, o, whole, sizeof whole))
+            note = whole;           /* GPU's or Display's whole name: the row cuts a long one short */
+        else if (options[o].at_start || o == OPT_CREDITS)
             note = "The game reads it when it starts.";
     } else {
         t = settings_action_text[st_row];
@@ -3586,8 +3624,14 @@ static void mouse_event(SDL_Event *e)
             st_row = r;             /* a card is only chosen: the bar acts on it */
             cp_focus_fix();
         } else if (r >= 0) {
+            /* a choice's left half goes back, as in the card editor (below):
+             * Window size does not wrap */
+            float right = 40 + 540 - 42 * 0.35f, bw = SDL_min(540 * 0.42f, 42 * 5.6f);
             st_row = r;
-            settings_press(r);
+            if (!controls_tab() && x >= right - bw && x < right - bw / 2)
+                option_change(&st, tab_rows[st_tab][r], -1);
+            else
+                settings_press(r);
         }
     }
     if (page == P_EDIT && !pop && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {

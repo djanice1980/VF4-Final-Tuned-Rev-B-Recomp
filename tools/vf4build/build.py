@@ -61,7 +61,7 @@ def units(gen_dirs, tables_cs, tc, version):
                                                      '-DVF4FT_VERSION="%s"' % version,
                                                      '-DVF4FT_SOURCE="sources %s"' % source_id()]
     for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c", "updates.c",
-              "art.c", "cards.c", "udp.c", "session.c", "snap_patch.c", "secure.c"):
+              "art.c", "cards.c", "udp.c", "session.c", "snap_patch.c", "secure.c", "devices.c"):
         out.append((R("host", s), hflags))
     for s in ("monocypher.c", "monocypher-ed25519.c"):    # the two-PC game's cryptography (runtime/crypto, ORIGIN.md)
         out.append((R("crypto", s), COMMON + ["-I" + R("crypto")]))

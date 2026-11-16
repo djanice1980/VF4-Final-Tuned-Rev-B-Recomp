@@ -105,6 +105,7 @@
 #include "art.h"
 #include "card_editor.h"
 #include "cards.h"
+#include "devices.h"
 #include "game_machine.h"
 #include "settings.h"
 #include "gpu_render.h"
@@ -1625,21 +1626,186 @@ static int live_fullscreen;
 static int live_window, live_picture;   /* the Window size and Picture the window has */
 static int window_later;                /* Window size changed in fullscreen: it applies as that ends */
 static int to_launcher;                 /* the menu's Open the launcher: the game quits for it */
+static char live_display[DISPLAY_NAME_MAX];     /* the Display the window was put on */
+static SDL_DisplayID win_on;                    /* the screen the log last said the window is on */
 
 static int fullscreen_wanted(void)
 {
     return settings_fullscreen_wanted(&cfg_);
 }
 
-/* the room for the window's picture on w's screen (the primary one before
- * there is a window) in pixels: the usable area less the window's frame
+/* ---- the GPU and Display settings (devices.h, docs/design.md section 51) ---- */
+
+static gpu_info gpus[GPUS_MAX];
+static const char *gpu_names[GPUS_MAX];
+static int gpus_n = -1;                 /* -1: not listed yet */
+static char gpu_now[GPU_NAME_MAX];      /* the GPU the GPU renderer draws on ("": none, Software) */
+
+/* Vulkan's GPUs, listed once (at the start for a GPU chosen by name, else
+ * as the menu first opens) */
+static void gpus_need(void)
+{
+    if (gpus_n >= 0)
+        return;
+    char why[120];
+    gpus_n = gpus_list(gpus, GPUS_MAX, why, sizeof why);
+    for (int i = 0; i < gpus_n; i++) {
+        gpu_names[i] = gpus[i].name;
+        logf_("GPU %d: %s (%s, PCI %04x:%04x)", i + 1, gpus[i].name,
+              gpus[i].type == GPU_INTEGRATED ? "integrated" : gpus[i].type == GPU_DISCRETE ? "discrete" : "virtual",
+              gpus[i].vendor, gpus[i].device);
+    }
+    if (!gpus_n)
+        logf_("GPUs: none listed (%s)", why);
+}
+
+static int gpu_chosen;     /* the device open is the GPU setting's choice (not Auto's) */
+
+/* SDL_GPU's Vulkan device, with low power preferred or not */
+static SDL_GPUDevice *gpu_open(int lowpower)
+{
+    if (!lowpower)
+        return SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, "vulkan");     /* Auto: as before */
+    SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    SDL_SetStringProperty(p, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
+    SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, true);
+    SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);    /* as Auto's (it defaults to on) */
+    SDL_GPUDevice *d = SDL_CreateGPUDeviceWithProperties(p);
+    SDL_DestroyProperties(p);
+    return d;
+}
+
+/* the GPU device d is on, as the GPU setting names it */
+static const char *gpu_name_of(SDL_GPUDevice *d, char *buf, size_t n)
+{
+    const char *s = SDL_GetStringProperty(SDL_GetGPUDeviceProperties(d), SDL_PROP_GPU_DEVICE_NAME_STRING, "");
+    settings_name_clean(buf, n, s ? s : "");
+    return buf;
+}
+
+/* The GPU renderer's Vulkan device (docs/design.md section 51): SDL's
+ * choice for Auto, else the GPU setting's. SDL 3.4 takes no device name or
+ * number: it ranks the GPUs by kind, a separate one first, or one in the
+ * processor first when low power is preferred. So a GPU in the processor
+ * is asked for with low power preferred and any other without; and when
+ * SDL still opens another (two separate GPUs), Vulkan's loader is told to
+ * list that one only (VK_LOADER_DEVICE_ID_FILTER, read by the Linux and
+ * Windows loaders; under Wine the Linux loader cannot see it). The name of
+ * the device SDL opened says which it is. A GPU that is not here, or that
+ * cannot be had: Auto, logged. NULL: no Vulkan device (SDL_GetError) */
+static SDL_GPUDevice *gpu_device_open(void)
+{
+    char name[GPU_NAME_MAX];
+    if (cfg_.gpu[0]) {
+        gpus_need();
+        const gpu_info *g = gpus_find(gpus, gpus_n, cfg_.gpu);
+        if (!g) {
+            logf_("settings: GPU \"%s\" is not here: Auto for this run (it is kept for the next)", cfg_.gpu);
+        } else {
+            int lowpower = g->type == GPU_INTEGRATED;
+            SDL_GPUDevice *d = gpu_open(lowpower);
+            if (d && !SDL_strcasecmp(gpu_name_of(d, name, sizeof name), g->name)) {
+                logf_("GPU: %s, as the settings ask (SDL's choice with low power %s)", g->name,
+                      lowpower ? "preferred" : "not preferred");
+                gpu_chosen = 1;
+                return d;
+            }
+            logf_("GPU: SDL chose %s, not %s: asking Vulkan's loader for that one only",
+                  d ? name : "no device", g->name);
+            if (d)
+                SDL_DestroyGPUDevice(d);
+            char id[16], old[64];
+            const char *was = SDL_getenv("VK_LOADER_DEVICE_ID_FILTER");
+            SDL_strlcpy(old, was ? was : "", sizeof old);
+            SDL_snprintf(id, sizeof id, "0x%04x", (unsigned)g->device);
+            SDL_setenv_unsafe("VK_LOADER_DEVICE_ID_FILTER", id, 1);
+            d = gpu_open(lowpower);
+            if (was)
+                SDL_setenv_unsafe("VK_LOADER_DEVICE_ID_FILTER", old, 1);
+            else
+                SDL_unsetenv_unsafe("VK_LOADER_DEVICE_ID_FILTER");
+            if (d && !SDL_strcasecmp(gpu_name_of(d, name, sizeof name), g->name)) {
+                logf_("GPU: %s, as the settings ask (through Vulkan's loader)", g->name);
+                gpu_chosen = 1;
+                return d;
+            }
+            logf_("GPU: %s cannot be had (SDL chose %s): Auto for this run", g->name, d ? name : "no device");
+            if (d)
+                SDL_DestroyGPUDevice(d);
+        }
+    }
+    SDL_GPUDevice *d = gpu_open(0);
+    if (d)
+        logf_("GPU: %s (Auto: SDL's choice)", gpu_name_of(d, name, sizeof name));
+    return d;
+}
+
+/* the displays as last listed: their names and ids, for the menu's Display
+ * row and to name one that has gone */
+static char disp_names[DISPLAYS_MAX][DISPLAY_NAME_MAX];
+static const char *disp_list[DISPLAYS_MAX];
+static SDL_DisplayID disp_ids[DISPLAYS_MAX];
+static int disp_n;
+
+/* lists the displays again; log 1: says which came or went since */
+static void displays_refresh(int log)
+{
+    char names[DISPLAYS_MAX][DISPLAY_NAME_MAX];
+    SDL_DisplayID ids[DISPLAYS_MAX];
+    int n = displays_list(names, ids, DISPLAYS_MAX);
+    for (int i = 0; log && i < disp_n; i++) {
+        int still = 0;
+        for (int k = 0; k < n; k++)
+            still |= ids[k] == disp_ids[i];
+        if (!still)
+            logf_("display: %s disconnected%s", disp_names[i],
+                  !SDL_strcasecmp(disp_names[i], cfg_.display) ? " (Display's: Auto until it is back)" : "");
+    }
+    for (int k = 0; log && k < n; k++) {
+        int had = 0;
+        for (int i = 0; i < disp_n; i++)
+            had |= ids[k] == disp_ids[i];
+        if (!had)
+            logf_("display: %s connected%s", names[k], !SDL_strcasecmp(names[k], cfg_.display) ? " (Display's)" : "");
+    }
+    disp_n = n;
+    for (int i = 0; i < n; i++) {
+        SDL_memcpy(disp_names[i], names[i], sizeof disp_names[i]);
+        disp_ids[i] = ids[i];
+        disp_list[i] = disp_names[i];
+    }
+}
+
+/* the display Display names now, or 0: Auto, or that display is not
+ * connected (the window stays where the system puts it) */
+static SDL_DisplayID display_wanted(void)
+{
+    return cfg_.display[0] ? displays_find(cfg_.display) : 0;
+}
+
+/* fullscreen on or off: on goes to Display's display when it is connected
+ * (SDL takes a window centered on a display as one for its fullscreen,
+ * Wayland's too), else to the one the window is on */
+static void fullscreen_to(SDL_Window *w, bool on)
+{
+    SDL_DisplayID want = on ? display_wanted() : 0;
+    if (want)
+        SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want));
+    SDL_SetWindowFullscreen(w, on);
+}
+
+/* the room for the window's picture on w's screen (before there is a
+ * window, Display's, or the primary one) in pixels: the usable area less the window's frame
  * when SDL knows it (an X11 window manager keeps a title bar on the screen,
  * so 1080 lines on a 1080 screen were 1052), in w's coordinates times its
  * pixel density (2 on a Wayland screen at 200%; 1 on Windows, whose
  * coordinates are pixels) */
 static window_room screen_room(SDL_Window *w)
 {
-    SDL_DisplayID d = w ? SDL_GetDisplayForWindow(w) : SDL_GetPrimaryDisplay();
+    SDL_DisplayID d = w ? SDL_GetDisplayForWindow(w) : display_wanted();
+    if (!d)
+        d = SDL_GetPrimaryDisplay();
     window_room room = { 0, 0, w ? SDL_GetWindowPixelDensity(w) : 1.0f };
     SDL_Rect r;
     int top = 0, left = 0, bottom = 0, right = 0;
@@ -1656,11 +1822,13 @@ static window_room screen_room(SDL_Window *w)
 
 /* the Window size setting (docs/design.md section 40): the window to its
  * size in pixels at the picture's shape (settings_window_size), in the
- * middle of its screen when it was there already (move 1). Fullscreen
- * keeps the screen: the size waits for it to end. A maximized window is
- * restored to it */
+ * middle of its screen when it was there already (move 1): of Display's
+ * screen when that is connected (section 51; moved there first, so that
+ * the size is that screen's). Fullscreen keeps the screen: the size waits
+ * for it to end. A maximized window is restored to it */
 static void window_to_setting(SDL_Window *w, int move)
 {
+    SDL_strlcpy(live_display, cfg_.display, sizeof live_display);
     live_window = cfg_.window;
     live_picture = cfg_.picture;
     if (!w)
@@ -1676,6 +1844,17 @@ static void window_to_setting(SDL_Window *w, int move)
         SDL_SyncWindow(w);
     }
     int pw, ph, cw, ch, ow = 0, oh = 0;
+    SDL_DisplayID want = move ? display_wanted() : 0, on = SDL_GetDisplayForWindow(w);
+    if (want && want != on) {
+        /* to Display's screen first (Wayland: SDL cannot place a window, and it stays) */
+        if (SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want),
+                                  (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want)))
+            SDL_SyncWindow(w);
+        else
+            logf_("window: cannot be placed on %s (%s): it stays where the system put it", cfg_.display,
+                  SDL_GetError());
+        on = SDL_GetDisplayForWindow(w);
+    }
     window_room room = screen_room(w);
     settings_window_size(&cfg_, &room, &pw, &ph);
     cw = (int)(pw / room.density + 0.5f);
@@ -1685,11 +1864,36 @@ static void window_to_setting(SDL_Window *w, int move)
         return;
     SDL_SetWindowSize(w, cw, ch);
     if (move) {
-        SDL_DisplayID d = SDL_GetDisplayForWindow(w);
+        SDL_DisplayID d = want && want == on ? want : on;
         SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(d), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(d));
     }
-    logf_("window: %d x %d pixels (Window size %s, room on the screen %d x %d, pixel density %.2f)", pw, ph,
-          cfg_.window == WINDOW_AUTO ? "Auto" : "set", room.w, room.h, room.density);
+    const char *dn = SDL_GetDisplayName(on);
+    logf_("window: %d x %d pixels on %s (Window size %s, room on the screen %d x %d, pixel density %.2f)", pw, ph,
+          dn ? dn : "?", cfg_.window == WINDOW_AUTO ? "Auto" : "set", room.w, room.h, room.density);
+}
+
+/* the Display setting changed in the menu: a window goes to the middle of
+ * that display at its Window size there, a fullscreen one to that display
+ * (Auto: it stays where it is) */
+static void display_to_setting(SDL_Window *w)
+{
+    SDL_DisplayID want = display_wanted();
+    if (!w)
+        return;
+    if (!want) {
+        SDL_strlcpy(live_display, cfg_.display, sizeof live_display);
+        if (cfg_.display[0])
+            logf_("display: %s is not connected: the window stays where it is", cfg_.display);
+        return;
+    }
+    if (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN) {
+        SDL_strlcpy(live_display, cfg_.display, sizeof live_display);
+        SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want));
+        SDL_SyncWindow(w);
+        logf_("display: fullscreen on %s", cfg_.display);
+        return;
+    }
+    window_to_setting(w, 1);
 }
 
 static float screen_hz_test;        /* --screen-hz */
@@ -1718,6 +1922,10 @@ static void menu_show_as(int notice)
         window_room room = screen_room(main_win);
         options_screen(&room);
     }
+    gpus_need();
+    options_gpu_names(gpu_names, gpus_n);
+    displays_refresh(0);
+    options_display_names(disp_list, disp_n);
     menu_run r;
     r.start = start_cfg;
     r.sound = audio != NULL;
@@ -1726,6 +1934,7 @@ static void menu_show_as(int notice)
     r.card_peek = card_peek;
     r.card_edit = card_edit_save;
     r.refresh = screen_refresh(main_win);
+    r.gpu_now = gpu_now[0] ? gpu_now : NULL;
     r.deck = settings_steam_deck();
     r.session = in_session;
     r.join_code = in_session && session_role() == SESSION_HOST ? session_code : NULL;    /* the same values */
@@ -1939,13 +2148,18 @@ static int menu_do(int a)
     switch (a) {
     case MENU_LIVE:
         game_machine_wide(settings_picture_width(cfg_.picture));
+        if (SDL_strcasecmp(cfg_.display, live_display)) {
+            display_to_setting(main_win);       /* another screen: its room for Window size too */
+            window_room room = screen_room(main_win);
+            options_screen(&room);
+        }
         if (cfg_.window != live_window ||
             settings_window_width(cfg_.picture, PIC_H) != settings_window_width(live_picture, PIC_H))
             window_to_setting(main_win, 1);     /* the size, or the new picture's shape */
         live_picture = cfg_.picture;
         if (cfg_.fullscreen != live_fullscreen) {
             live_fullscreen = cfg_.fullscreen;
-            SDL_SetWindowFullscreen(main_win, fullscreen_wanted());
+            fullscreen_to(main_win, fullscreen_wanted());
         }
         if (audio)
             SDL_SetAudioStreamGain(audio, cfg_.volume / 100.0f);
@@ -2556,6 +2770,7 @@ int main(int argc, char **argv)
           settings_picture_name(cfg_.picture), cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
           silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off",
           settings_region_text[cfg_.region]);
+    logf_("settings: gpu %s, display %s", cfg_.gpu[0] ? cfg_.gpu : "auto", cfg_.display[0] ? cfg_.display : "auto");
     logf_("image %s; DIMM %s%s%s", image_path ? image_path : "(from the DIMM image)", dimm_path,
           dimm_key ? ", key " : "", dimm_key ? dimm_key : "");
 
@@ -2595,6 +2810,13 @@ int main(int argc, char **argv)
          * taken as coordinates; then the size is set again for the screen
          * it opened on, in its own pixels (a scaled Wayland screen) */
         int ww, wh;
+        displays_refresh(0);
+        for (int i = 0; i < disp_n; i++)
+            logf_("display %d: %s%s", i + 1, disp_names[i], disp_ids[i] == SDL_GetPrimaryDisplay() ? " (primary)" : "");
+        SDL_DisplayID want = display_wanted();      /* Display (section 51); 0 Auto: the system places it */
+        if (cfg_.display[0] && !want)
+            logf_("settings: display \"%s\" is not connected: Auto for this run (it is kept for the next)",
+                  cfg_.display);
         window_room room = screen_room(NULL);
         game_machine_wide(settings_picture_width(cfg_.picture));
         settings_window_size(&cfg_, &room, &ww, &wh);
@@ -2602,15 +2824,44 @@ int main(int argc, char **argv)
                             : session_role() == SESSION_GUEST ? VF4FT_TITLE " (joining)"    /* its player once joined */
                             : session_host_side_get() ? VF4FT_TITLE " (player 2, hosting)"
                                                       : VF4FT_TITLE " (player 1, hosting)";
-        win = SDL_CreateWindow(title, ww, wh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                               (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+        SDL_PropertiesID wp = SDL_CreateProperties();
+        SDL_SetStringProperty(wp, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
+        SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, ww);
+        SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, wh);
+        SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+        if (want) {
+            /* in the middle of Display's display, and fullscreen there (SDL takes the display a
+             * window is centered on for its fullscreen, on Wayland too, which places windows itself) */
+            SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(want));
+            SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(want));
+        }
+        win = SDL_CreateWindowWithProperties(wp);
+        SDL_DestroyProperties(wp);
         if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
         main_win = win;
         SDL_SetWindowMinimumSize(win, MENU_MIN_W, MENU_MIN_H);  /* the menu always fits */
-        logf_("window: %d x %d pixels (Window size %s, primary screen %d x %d)%s", ww, wh,
-              cfg_.window == WINDOW_AUTO ? "Auto" : "set", room.w, room.h, fullscreen ? "; fullscreen" : "");
+        logf_("window: %d x %d pixels (Window size %s, %s screen %d x %d)%s", ww, wh,
+              cfg_.window == WINDOW_AUTO ? "Auto" : "set", want ? "Display's" : "primary", room.w, room.h,
+              fullscreen ? "; fullscreen" : "");
         SDL_SyncWindow(win);        /* its frame, for the room left (X11) */
         window_to_setting(win, 1);
+        {
+            /* where it opened. A Wayland window's screen is the compositor's
+             * choice and SDL knows it only once the window shows ("now on"
+             * below); a fullscreen one goes to Display's */
+            const char *drv = SDL_GetCurrentVideoDriver();
+            int fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
+            if (!fs && drv && !SDL_strcmp(drv, "wayland")) {
+                logf_("window: on the screen Wayland chooses%s", display_wanted() ? " (Display: fullscreen only)" : "");
+            } else {
+                int wx = 0, wy = 0;
+                win_on = SDL_GetDisplayForWindow(win);
+                const char *dn = SDL_GetDisplayName(win_on);
+                SDL_GetWindowPosition(win, &wx, &wy);
+                logf_("window: on %s at %d, %d%s", dn ? dn : "?", wx, wy, fs ? ", fullscreen" : "");
+            }
+        }
     }
     /* The GPU renderer's shaders are SPIR-V: a Vulkan device (natively, or
      * Proton's winevulkan). Without one the software picture is shown, on
@@ -2618,7 +2869,7 @@ int main(int argc, char **argv)
     SDL_GPUDevice *gpu = NULL;
     int use_gpu = cfg_.renderer == RENDERER_GPU && !(gpu_name && SDL_strcasecmp(gpu_name, "vulkan"));
     if (use_gpu) {
-        gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, "vulkan");
+        gpu = gpu_device_open();
         if (!gpu) {
             logf_("no Vulkan device (%s): the software picture instead", SDL_GetError());
             use_gpu = 0;
@@ -2628,7 +2879,24 @@ int main(int argc, char **argv)
         gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_name);
     if (!gpu) { logf_("SDL_CreateGPUDevice(%s) failed: %s", gpu_name ? gpu_name : "default", SDL_GetError()); return 1; }
     logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
-    if (win && !SDL_ClaimWindowForGPUDevice(gpu, win)) { logf_("claim window failed: %s", SDL_GetError()); return 1; }
+    int claimed = !win || SDL_ClaimWindowForGPUDevice(gpu, win);
+    if (!claimed && gpu_chosen) {
+        /* the GPU setting's choice cannot show in this window: on X11 (and
+         * Proton) the X server draws on one GPU and takes another's pictures
+         * only as that GPU's driver allows (Mesa's swapchain on the Radeon
+         * when Xwayland is on an NVIDIA card fails so). Auto, as for a GPU
+         * that is not there */
+        char was[GPU_NAME_MAX];
+        logf_("GPU: %s cannot show the window (%s): Auto for this run", gpu_name_of(gpu, was, sizeof was),
+              SDL_GetError());
+        SDL_DestroyGPUDevice(gpu);
+        gpu_chosen = 0;
+        gpu = gpu_open(0);
+        if (!gpu) { logf_("SDL_CreateGPUDevice(vulkan) failed: %s", SDL_GetError()); return 1; }
+        logf_("GPU: %s (Auto: SDL's choice)", gpu_name_of(gpu, was, sizeof was));
+        claimed = SDL_ClaimWindowForGPUDevice(gpu, win);
+    }
+    if (!claimed) { logf_("claim window failed: %s", SDL_GetError()); return 1; }
     if (use_gpu && gpu_render_init(gpu, cfg_.scale)) {
         logf_("the GPU renderer cannot start (%s): the software picture instead", SDL_GetError());
         gpu_render_quit();
@@ -2637,7 +2905,8 @@ int main(int argc, char **argv)
     int shown_w = art_dir ? PIC_W : settings_picture_width(cfg_.picture);
     if (use_gpu) {
         game_machine_gpu(gpu_render_submit);
-        logf_("renderer: GPU, %d x %d", shown_w * cfg_.scale, PIC_H * cfg_.scale);
+        gpu_name_of(gpu, gpu_now, sizeof gpu_now);
+        logf_("renderer: GPU, %d x %d, on %s", shown_w * cfg_.scale, PIC_H * cfg_.scale, gpu_now);
     } else {
         logf_("renderer: software, %d x %d", shown_w, PIC_H);
     }
@@ -2709,14 +2978,44 @@ int main(int argc, char **argv)
                 running = 0;
                 break;
             case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+                logf_("window: fullscreen off");
                 if (window_later)
                     window_to_setting(win, 1);  /* Window size, changed while it was fullscreen */
+                break;
+            case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+                logf_("window: fullscreen");    /* its screen: "now on" when it moved (Wayland: after this) */
+                break;
+            case SDL_EVENT_WINDOW_DISPLAY_CHANGED: {
+                /* where it is now (moved, shown by Wayland, fullscreen on
+                 * Display's screen), and Window size's sizes for that screen */
+                SDL_DisplayID on = SDL_GetDisplayForWindow(win);
+                if (on == win_on)
+                    break;                      /* SDL tells some moves more than once */
+                win_on = on;
+                const char *dn = SDL_GetDisplayName(on);
+                logf_("window: now on %s", dn ? dn : "?");
+                if (menu_on && win) {
+                    window_room room = screen_room(win);
+                    options_screen(&room);
+                    ov_dirty = 1;
+                }
+                break;
+            }
+            case SDL_EVENT_DISPLAY_ADDED:
+            case SDL_EVENT_DISPLAY_REMOVED:
+                displays_refresh(1);            /* the window stays where the system puts it */
+                if (menu_on && win) {
+                    window_room room = screen_room(win);
+                    options_display_names(disp_list, disp_n);
+                    options_screen(&room);
+                    ov_dirty = 1;
+                }
                 break;
             case SDL_EVENT_KEY_DOWN: {
                 SDL_Keycode key = ev.key.key;
                 int cmd = -1;
                 if (!ev.key.repeat && (key == SDLK_F11 || (key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
-                    SDL_SetWindowFullscreen(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
+                    fullscreen_to(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
                 else if (menu_on && menu_typing()) {
                     /* the ring name's note: the letters come as text (SDL_EVENT_TEXT_INPUT) */
                     if (!ev.key.repeat && (key == SDLK_RETURN || key == SDLK_KP_ENTER))

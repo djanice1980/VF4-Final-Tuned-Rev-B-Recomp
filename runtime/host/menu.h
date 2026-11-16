@@ -68,6 +68,7 @@ typedef struct menu_run {
     int (*card_peek)(const char *name, Uint8 *card, int *held);
     void (*card_edit)(const char *name, const card_fields *from, const card_fields *to, int fresh);
     float refresh;          /* the window's screen's refresh rate in Hz (0 not known; section 44) */
+    const char *gpu_now;    /* the GPU the GPU renderer draws on in this run (NULL: none, Software) */
     int deck;               /* settings_steam_deck() */
     int session;            /* a two-PC game (session.h): no test menu, restart or card changes */
     /* the host of a two-PC game: its join code (docs/design.md section 50), for the Game tab's Join

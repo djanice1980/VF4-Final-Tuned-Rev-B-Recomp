@@ -30,6 +30,8 @@ enum {
 #define BIND_MAX 4          /* inputs one action can have */
 #define CARD_NAME_MAX 32    /* a card profile's name, with its 0 (user/cards/NAME.card) */
 #define BIND_NAME 24        /* an SDL key or gamepad button name */
+#define GPU_NAME_MAX 128    /* a GPU's name (Vulkan's), with its 0: a longer one is cut */
+#define DISPLAY_NAME_MAX 128    /* a display's name (SDL's), with its 0 */
 
 typedef struct binding {
     char name[BIND_MAX][BIND_NAME];     /* SDL_GetScancodeName / SDL_GetGamepadStringForButton (or a
@@ -54,6 +56,10 @@ typedef struct settings {
     int picture;            /* PICTURE_* */
     int filter;             /* FILTER_* */
     int renderer;           /* RENDERER_*: the GPU (Vulkan) by default, the software picture when it cannot */
+    char gpu[GPU_NAME_MAX]; /* the GPU the GPU renderer draws on, by its name (devices.h); "" Auto: SDL's
+                             * choice. One not there at the start: Auto for that run, kept for the next */
+    char display[DISPLAY_NAME_MAX]; /* the display the game opens on, by its name (devices.h); "" Auto:
+                                     * where the system puts it. One not connected: Auto, kept as for gpu */
     int scale;              /* the GPU renderer's resolution: 1..4 times 640 x 480 */
     int sound;              /* 1 on */
     int volume;             /* 0..100 (%), the game's menu changes it while it plays */
@@ -106,6 +112,13 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg));
 
 /* writes the whole file (through path.tmp and a rename); 0 or -1 */
 int settings_save(const settings *s, const char *path);
+
+/* a GPU's or a display's name as settings.txt keeps it (gpu, display): src
+ * with '#' (settings.txt's comments) and control characters as spaces,
+ * spaces at the ends dropped, cut to n - 1 bytes at a whole character. The
+ * lists of GPUs and displays (devices.h) hold their names so, so that a
+ * saved name and a listed one compare equal */
+void settings_name_clean(char *dst, size_t n, const char *src);
 
 /* name can be a card profile's: a file name on every system and a value in
  * settings.txt (1 to 31 characters, no / \ : * ? " < > | # or control

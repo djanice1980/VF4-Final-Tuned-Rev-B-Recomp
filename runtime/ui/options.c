@@ -31,11 +31,16 @@ const option_info options[OPT_COUNT] = {
                          "elsewhere. F11 or Alt+Enter switches while the game runs.", 0 },
     [OPT_WINDOW] = { "Window size",
                      "The game's window, at the picture's shape, in the usual screens' sizes (1366" NB "x" NB "768, "
-                     "1920" NB "x" NB "1080, 2560" NB "x" NB "1080 at 21:9 and so on). Auto is the largest size "
-                     "that leaves a "
-                     "tenth of the screen free; only the sizes that fit the screen are offered. Fullscreen "
+                     "1920" NB "x" NB "1080, 2560" NB "x" NB "1080 at 21:9 and so on), smallest first. "
+                     "Auto is the largest size that leaves a tenth of the screen free; only the sizes that fit "
+                     "the screen are offered. Fullscreen "
                      "fills the screen whatever this is, and the window has this size outside it. Dragging "
                      "the window's edges still resizes it.", 0 },
+    [OPT_DISPLAY] = { "Display",
+                      "The display the game opens on, in a window or fullscreen. Auto leaves it to the system "
+                      "(the main display, as a rule). One not connected is passed over (Auto) until it is back. "
+                      "A Linux desktop with Wayland places windows itself: there only fullscreen goes to the "
+                      "display chosen.", 0 },
     [OPT_PICTURE] = { "Picture",
                       "4:3 is the cabinet's screen, with bars at the sides of a wide one. 16:10 (the Steam "
                       "Deck's, its default there), 16:9 and 21:9 are wide: the cabinet's screen in the middle, "
@@ -47,6 +52,10 @@ const option_info options[OPT_COUNT] = {
     [OPT_RENDERER] = { "Renderer",
                        "GPU draws the game with Vulkan at the internal resolution below. Software draws it on "
                        "the processor at the cabinet's 640 x 480 (wider with a wide picture).", 1 },
+    [OPT_GPU] = { "GPU",
+                  "The graphics card the GPU renderer draws on. Auto lets SDL choose: a separate graphics card "
+                  "before one in the processor. One not there when the game starts (an external one "
+                  "unplugged) is passed over (Auto) until it is back. Software does not use it.", 1 },
     [OPT_SCALE] = { "Internal resolution",
                     "The size the GPU renderer draws the game at, before the picture is scaled to the window "
                     "or the screen: 1 to 4 times the cabinet's 640 x 480, or a wide picture's (854 x 480 for "
@@ -101,33 +110,94 @@ void options_screen(const window_room *room)
     screen = *room;
 }
 
-/* Window size: Auto, then the listed heights that fit the screen. A height
- * from a hand edit goes to the next listed one each way */
-static void window_change(settings *s, int d)
+static const char *const *gpu_names;
+static const char *const *display_names;
+static int gpu_n, display_n;
+
+void options_gpu_names(const char *const *names, int n)
 {
-    int list[WINDOW_SIZES + 1], n = 0, at = -1;
-    list[n++] = WINDOW_AUTO;
-    for (int i = 0; i < WINDOW_SIZES; i++)
-        if (settings_window_fits(s->picture, settings_window_heights[i], &screen) ||
-            settings_window_heights[i] == s->window)
-            list[n++] = settings_window_heights[i];
+    gpu_names = names;
+    gpu_n = n;
+}
+
+void options_display_names(const char *const *names, int n)
+{
+    display_names = names;
+    display_n = n;
+}
+
+static int name_in(const char *const *names, int n, const char *name)
+{
+    for (int i = 0; i < n; i++)
+        if (!SDL_strcasecmp(names[i], name))
+            return i;
+    return -1;
+}
+
+/* GPU or Display: Auto (""), then the names there now; a chosen one that
+ * is not there now stays in the list after them while it is chosen */
+static void name_change(char *v, size_t size, const char *const *names, int n, int d)
+{
+    int at = v[0] ? name_in(names, n, v) : -1, count = n + 1 + (v[0] && at < 0);
+    int pos = !v[0] ? 0 : at >= 0 ? at + 1 : n + 1;
+    pos = wrap(pos, d, count);
+    if (pos == 0)
+        v[0] = 0;
+    else if (pos <= n)
+        SDL_strlcpy(v, names[pos - 1], size);
+}
+
+/* the window's height in pixels for Window size value v (settings_window_size) */
+static int window_height(const settings *s, int v)
+{
+    settings t = *s;
+    int w, h;
+    t.window = v;
+    settings_window_size(&t, &screen, &w, &h);
+    return h;
+}
+
+/* Window size (docs/design.md section 51): the listed heights that fit the
+ * screen, smallest first, with Auto in the place of the size it gives (in
+ * the place of the listed height of that size, which it stands for). Left
+ * is always a smaller window and Right a larger one: the ends do not wrap.
+ * A value not in the list (a hand edit, another screen's size, a listed
+ * height that is Auto's size here) steps from the window it gives to the
+ * next smaller or larger one, so no size shows twice. The value after Left
+ * (d -1) or Right (+1): s->window itself at that end */
+static int window_step(const settings *s, int d)
+{
+    int list[WINDOW_SIZES + 1], hs[WINDOW_SIZES + 1], n = 0, auto_h = window_height(s, WINDOW_AUTO), auto_in = 0;
+    for (int i = 0; i < WINDOW_SIZES; i++) {
+        int h = settings_window_heights[i];
+        if (!settings_window_fits(s->picture, h, &screen))
+            continue;
+        if (!auto_in && h >= auto_h) {      /* Auto's place; a listed height of its size gives way to it */
+            list[n] = WINDOW_AUTO, hs[n++] = auto_h, auto_in = 1;
+            if (h == auto_h)
+                continue;
+        }
+        list[n] = h, hs[n++] = h;
+    }
+    if (!auto_in)
+        list[n] = WINDOW_AUTO, hs[n++] = auto_h;
+    int at = -1;
     for (int i = 0; i < n; i++)
         if (list[i] == s->window)
             at = i;
-    if (at >= 0) {
-        s->window = list[wrap(at, d, n)];
-        return;
+    if (at >= 0)
+        return at + d >= 0 && at + d < n ? list[at + d] : s->window;
+    int now = window_height(s, s->window);
+    if (d > 0) {
+        for (int i = 0; i < n; i++)
+            if (hs[i] > now)
+                return list[i];
+    } else {
+        for (int i = n - 1; i >= 0; i--)
+            if (hs[i] < now)
+                return list[i];
     }
-    int next = WINDOW_AUTO;
-    for (int i = 1; i < n; i++) {
-        if (d > 0 && list[i] > s->window) {
-            next = list[i];
-            break;
-        }
-        if (d < 0 && list[i] < s->window)
-            next = list[i];
-    }
-    s->window = next;
+    return s->window;
 }
 
 #define CARD_CHOICES 72
@@ -198,6 +268,8 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
             SDL_snprintf(buf, n, "Auto (%d x %d)", w, h);
         else
             SDL_strlcpy(buf, "Auto", n);
+        row->ends = (window_step(s, -1) == s->window ? UI_END_LEFT : 0) |
+                    (window_step(s, 1) == s->window ? UI_END_RIGHT : 0);
         break;
     }
     case OPT_PICTURE: {
@@ -211,6 +283,20 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_snprintf(buf, n, "%d x %d", settings_picture_width(s->picture) * s->scale, 480 * s->scale);
         row->off = s->renderer != RENDERER_GPU;
         break;
+    case OPT_GPU:
+        if (!s->gpu[0])
+            SDL_strlcpy(buf, "Auto", n);    /* which GPU that is: option_note */
+        else
+            SDL_snprintf(buf, n, name_in(gpu_names, gpu_n, s->gpu) >= 0 ? "%s" : "%s (not found)", s->gpu);
+        row->off = s->renderer != RENDERER_GPU;
+        break;
+    case OPT_DISPLAY:
+        if (!s->display[0])
+            SDL_strlcpy(buf, "Auto", n);
+        else
+            SDL_snprintf(buf, n, name_in(display_names, display_n, s->display) >= 0 ? "%s" : "%s (not connected)",
+                         s->display);
+        break;
     case OPT_SOUND: row->kind = UI_ROW_TOGGLE; row->on = s->sound; break;
     case OPT_VOLUME:
         row->kind = UI_ROW_SLIDER;
@@ -218,6 +304,18 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         row->off = !s->sound;
         break;
     }
+}
+
+const char *option_note(const settings *s, int o, char *buf, size_t n)
+{
+    if (o == OPT_GPU && s->gpu[0])
+        SDL_snprintf(buf, n, name_in(gpu_names, gpu_n, s->gpu) >= 0 ? "%s." : "%s: not found.", s->gpu);
+    else if (o == OPT_DISPLAY && s->display[0])
+        SDL_snprintf(buf, n, name_in(display_names, display_n, s->display) >= 0 ? "%s." : "%s: not connected.",
+                     s->display);
+    else
+        return NULL;
+    return buf;
 }
 
 void option_change(settings *s, int o, int d)
@@ -230,11 +328,13 @@ void option_change(settings *s, int o, int d)
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;
-    case OPT_WINDOW: window_change(s, d); break;
+    case OPT_WINDOW: s->window = window_step(s, d); break;
     case OPT_PICTURE: s->picture = wrap(s->picture, d, PICTURES); break;
     case OPT_FILTER: s->filter = wrap(s->filter, d, 2); break;
     case OPT_RENDERER: s->renderer = wrap(s->renderer, d, 2); break;
     case OPT_SCALE: s->scale = wrap(s->scale - 1, d, 4) + 1; break;
+    case OPT_GPU: name_change(s->gpu, sizeof s->gpu, gpu_names, gpu_n, d); break;
+    case OPT_DISPLAY: name_change(s->display, sizeof s->display, display_names, display_n, d); break;
     case OPT_SOUND: s->sound = !s->sound; break;
     case OPT_VOLUME:
         s->volume += 10 * d;

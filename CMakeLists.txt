@@ -15,7 +15,7 @@ find_package(SDL3 3.4 REQUIRED CONFIG COMPONENTS SDL3-shared)
 # Steam. It holds no game code, so it builds without the translation.
 # The drawing kit it shares with the game's menu (runtime/ui).
 set(VF4FT_UI runtime/ui/ui.c runtime/ui/fonts.c runtime/ui/options.c runtime/ui/kofi_badge.c runtime/ui/card_editor.c)
-add_executable(vf4ft-launcher runtime/launcher/launcher.c runtime/host/settings.c runtime/host/cards.c
+add_executable(vf4ft-launcher runtime/launcher/launcher.c runtime/host/settings.c runtime/host/cards.c runtime/host/devices.c
                ${VF4FT_UI})
 target_include_directories(vf4ft-launcher PRIVATE runtime/host runtime/ui)
 target_link_libraries(vf4ft-launcher PRIVATE SDL3::SDL3)
@@ -107,7 +107,7 @@ if(TARGET vf4ft_gen_main AND TARGET vf4ft_gen_test)
     add_executable(vf4ft runtime/host/main.c runtime/host/game_machine.c runtime/host/dimm_image.c
                          runtime/host/settings.c runtime/host/gpu_render.c runtime/host/menu.c runtime/host/updates.c
                          runtime/host/art.c runtime/host/cards.c runtime/host/udp.c runtime/host/session.c
-                         runtime/host/snap_patch.c runtime/host/secure.c runtime/crypto/monocypher.c
+                         runtime/host/snap_patch.c runtime/host/secure.c runtime/host/devices.c runtime/crypto/monocypher.c
                          runtime/crypto/monocypher-ed25519.c ${VF4FT_UI})
     target_include_directories(vf4ft PRIVATE runtime/host runtime/ui runtime/crypto)
     target_link_libraries(vf4ft PRIVATE SDL3::SDL3 vf4ft_machine)

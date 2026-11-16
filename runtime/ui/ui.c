@@ -1461,8 +1461,8 @@ void ui_rows(float x, float y, float w, float h, float row_h, const ui_row *rows
         switch (r->kind) {
         case UI_ROW_CHOICE: {
             float bw = SDL_min(w * 0.42f, row_h * 5.6f), bx = right - bw, as = row_h * 0.34f;
-            ui_icon(UI_I_LEFT, bx + as / 2, mid, as, arrow);
-            ui_icon(UI_I_RIGHT, right - as / 2, mid, as, arrow);
+            ui_icon(UI_I_LEFT, bx + as / 2, mid, as, r->ends & UI_END_LEFT ? UI_LINE : arrow);
+            ui_icon(UI_I_RIGHT, right - as / 2, mid, as, r->ends & UI_END_RIGHT ? UI_LINE : arrow);
             ui_text_in(UI_MEDIUM, vsize, bx + as, mid, bw - 2 * as, 1, 0, r->off ? UI_FAINT : UI_TEXT, r->value);
             if (r->later)
                 ui_icon(UI_I_DOT, bx - row_h * 0.25f, mid, row_h * 0.36f, UI_ACCENT);

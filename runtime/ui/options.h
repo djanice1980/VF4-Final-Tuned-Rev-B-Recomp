@@ -11,7 +11,7 @@
 
 enum {
     OPT_CREDITS, OPT_CARDS, OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE,
-    OPT_SOUND, OPT_VOLUME, OPT_NETWORK, OPT_REGION, OPT_CARD1, OPT_CARD2, OPT_COUNT
+    OPT_SOUND, OPT_VOLUME, OPT_NETWORK, OPT_REGION, OPT_CARD1, OPT_CARD2, OPT_DISPLAY, OPT_GPU, OPT_COUNT
 };
 
 typedef struct option_info {
@@ -36,5 +36,19 @@ void options_card_names(const char *const *names, int n);
  * size: its Auto, and the sizes that fit (settings.h; 0 x 0: not known,
  * every size the smallest window allows is offered) */
 void options_screen(const window_room *room);
+
+/* the GPUs GPU goes through (Auto, then these; devices.h gpus_list's
+ * names). The names stay the caller's */
+void options_gpu_names(const char *const *names, int n);
+
+/* GPU and Display: the whole name of the choice (a row cuts a long one
+ * short), for the description panel's note: "NAME." (with "not found" or
+ * "not connected" when it is not there), or NULL for Auto and the other
+ * options. buf holds it (n bytes) */
+const char *option_note(const settings *s, int o, char *buf, size_t n);
+
+/* the displays Display goes through (Auto, then these; devices.h
+ * displays_list's names). The names stay the caller's */
+void options_display_names(const char *const *names, int n);
 
 #endif
