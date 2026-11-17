@@ -53,6 +53,11 @@
  *   --deck-product FILE  for tests: the firmware's product name from FILE (Jupiter: a Steam
  *                     Deck LCD; Galileo: the OLED) instead of /sys/class/dmi/id/product_name
  *   --screen-hz HZ    for tests: the screen's refresh rate is HZ, not the one SDL reports
+ *   --pace-ppm N      for tests: the game's own timer runs N parts in a million fast (N may be
+ *                     negative), as a screen that many slow would look to it (docs/design.md
+ *                     section 58)
+ *   --sync-log FILE   for tests: when each frame the game drew was handed to the window's thread
+ *                     ("M frame ns") and which frame each present showed ("P frame ns"), into FILE
  *   --hash-every N    for tests: logs the machine's fingerprint (main RAM and the registers) every N
  *                     vertical blanks, to compare two runs (docs/design.md section 45)
  *   --snapshot-at N FILE  for tests: the whole machine at the end of vertical blank N into FILE
@@ -122,6 +127,8 @@
 #include "snap_patch.h"
 #include "ui.h"
 #include "updates.h"
+#include "view.h"
+#include "vsync.h"
 
 #define VF4FT_TITLE "Virtua Fighter 4 Final Tuned"
 #ifndef VF4FT_VERSION
@@ -131,6 +138,8 @@
 #define PIC_W_MAX GAME_PICTURE_W_MAX
 #define PIC_H GAME_PICTURE_H
 #define FRAME_NS (1000000000ull / 60)   /* the machine's vertical blank (runtime/machine/machine.h) */
+static Uint64 frame_ns = FRAME_NS;      /* the timer's (--pace-ppm: a little off, for tests) */
+static FILE *sync_log;                  /* --sync-log */
 
 static FILE *log_file;
 
@@ -166,8 +175,11 @@ static struct {
     unsigned char pic[PIC_W_MAX * PIC_H * 3];   /* the newest picture, RGB, pic_w x PIC_H */
     int pic_w;
     unsigned pic_frame;                         /* its vertical blank; 0 = none yet */
+    int pic_taken;                              /* the window's thread has copied it */
     game_input in;                              /* the controls, as this thread last read them */
 } shared;
+static unsigned pics_made, pics_lost;           /* machine thread: software pictures, and those never taken */
+static SDL_AtomicInt presents_n;                /* the window's presents */
 
 static const char *image_path, *dimm_path, *dimm_key;
 static const char *art_dir;             /* --art: Steam's artwork, no window (art.h) */
@@ -993,6 +1005,32 @@ static Uint32 machine_event;            /* an SDL event type: the machine has st
 static Uint64 due, busy_since, busy_ns, busy_max_ns;
 static unsigned busy_frames, resyncs;
 
+/* How long after its start a frame is handed over to the window's thread
+ * (the GPU renderer's list when the game has drawn it, the software picture
+ * at the vertical blank): the highest and the lowest of late, each let go
+ * slowly (about 8 seconds). The pace by the screen's refresh puts their
+ * middle halfway between two refreshes (vsync.h) */
+static Uint64 handed_ns, lead_lo, lead_hi;
+
+/* machine thread: the GPU renderer's frame (view.c's hook) */
+static void gpu_frame(const struct view_gpu_frame *f)
+{
+    gpu_render_submit(f);
+    handed_ns = SDL_GetTicksNS();
+    if (sync_log)
+        fprintf(sync_log, "M %u %llu\n", f->frame, (unsigned long long)handed_ns);
+}
+
+static void lead_note(Uint64 s)
+{
+    if (s > FRAME_NS)
+        s = FRAME_NS;
+    if (!lead_hi)
+        lead_lo = lead_hi = s;
+    lead_hi = s > lead_hi ? s : lead_hi - (lead_hi - s) / 512;
+    lead_lo = s < lead_lo ? s : lead_lo + (s - lead_lo) / 512;
+}
+
 /* ---- a PC joining a game going on (docs/design.md section 49) ---- */
 
 /* machine thread: the reference, the machine at the end of the first
@@ -1155,6 +1193,27 @@ static void late_host(unsigned frame)
           "vertical blank %u", frame, side + 1, late_card_in ? late_p.name : "none", f + 1);
 }
 
+/* machine thread, with the machine's line every 600 vertical blanks: the
+ * frames the game drew since the line before, those of them never shown (a
+ * newer one came before a present took them), the presents, and what paces
+ * the machine (docs/design.md section 58). Nothing without a window */
+static void screen_line(void)
+{
+    static unsigned made0, lost0, presents0;
+    unsigned sub = 0, rep = 0, presents = (unsigned)SDL_GetAtomicInt(&presents_n);
+    gpu_render_counts(&sub, &rep);
+    unsigned made = sub + pics_made, lost = rep + pics_lost;
+    if (presents != presents0) {
+        char by[160];
+        vsync_describe(by, sizeof by);
+        logf_("screen: %u frames drawn, %u of them never shown; %u presents; paced by %s", made - made0, lost - lost0,
+              presents - presents0, by);
+    }
+    made0 = made;
+    lost0 = lost;
+    presents0 = presents;
+}
+
 /* machine thread, once per vertical blank (game_frame_fn) */
 static void on_frame(unsigned frame, const unsigned char *rgb, int w, int booting, game_input *in)
 {
@@ -1173,20 +1232,29 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
         busy_ns += b;
         if (b > busy_max_ns)
             busy_max_ns = b;
+        if (machine_path != 1)
+            lead_note(b);                           /* the software picture goes over below */
+        else if (handed_ns > busy_since)
+            lead_note(handed_ns - busy_since);      /* a frame the game drew */
         if (++busy_frames == 600) {
             logf_("machine: vertical blank %u; %.2f ms a frame on average, %.2f ms at most; %u times behind by "
                   "more than 1/4 s; audio queue %.0f ms", frame, busy_ns / 1e6 / busy_frames, busy_max_ns / 1e6, resyncs,
                   audio_level / 44.1);
             busy_ns = busy_max_ns = 0;
             busy_frames = 0;
+            screen_line();
         }
     }
     audio_frame((booting && !real_boot) || unpaced);
     SDL_LockMutex(shared.lock);
     if (rgb && machine_path != 1 && w >= PIC_W && w <= PIC_W_MAX) {     /* the GPU renderer's: not this */
+        if (shared.pic_frame && !shared.pic_taken)
+            pics_lost++;                /* the one before was never taken: never shown */
+        pics_made++;
         memcpy(shared.pic, rgb, (size_t)w * PIC_H * 3);
         shared.pic_w = w;
         shared.pic_frame = frame;
+        shared.pic_taken = 0;
     }
     *in = shared.in;
     SDL_UnlockMutex(shared.lock);
@@ -1331,7 +1399,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
      * the GPU renderer, or the software picture, from the next one on */
     int path = SDL_GetAtomicInt(&gpu_path);
     if (path != machine_path) {
-        game_machine_gpu(path ? gpu_render_submit : NULL);
+        game_machine_gpu(path ? gpu_frame : NULL);
         if (machine_path >= 0)
             logf_("vertical blank %u: the machine draws for the %s from now on", frame,
                   path ? "GPU renderer" : "software picture");
@@ -1375,17 +1443,42 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
      * is not caught up in a burst. The game's first start-up step runs as
      * fast as it can unless --real-boot: pacing never changes the run. The
      * time is taken again here: the two-PC game may have waited above. Ahead
-     * of the other PC (both guessing), a little later (pace_more) */
-    if (booting && !real_boot)
+     * of the other PC (both guessing), a little later (pace_more).
+     * Alone, the frame is due by the screen's refresh when that can be
+     * followed (vsync.h, docs/design.md section 58): a two-PC game keeps
+     * the timer, since both PCs must go at one rate */
+    if (booting && !real_boot) {
         due = 0;
-    else if (!unpaced) {
+        vsync_free("the game is starting up");
+    } else if (unpaced) {
+        vsync_free("--unpaced");
+    } else {
         now = SDL_GetTicksNS();
+        int fresh = 0;
         if (!due || now > due + 250000000ull) {
             if (due)
                 resyncs++;
             due = now;
+            fresh = 1;
         }
-        due += FRAME_NS + pace_more;
+        Uint64 by_screen = 0;
+        if (in_session)
+            vsync_free("a two-PC game");
+        else if (start_cfg.pace == PACE_TIMER)
+            vsync_free("settings.txt says pace = timer");
+        else
+            by_screen = vsync_next(now, due, frame_ns, (lead_lo + lead_hi) / 2, fresh);
+        due = by_screen ? by_screen : due + frame_ns + pace_more;
+        /* what paces it, said when it changes (not more than every 2 seconds) */
+        static int said = -1;
+        static Uint64 said_at;
+        if ((by_screen != 0) != said && (said < 0 || now - said_at > 2000000000ull)) {
+            char by[160];
+            vsync_describe(by, sizeof by);
+            logf_("pace: vertical blank %u: by %s", frame, by);
+            said = by_screen != 0;
+            said_at = now;
+        }
         if (due > now && !skip_wait)
             SDL_DelayPrecise(due - now);
     }
@@ -1574,7 +1667,7 @@ static int art_loop(SDL_GPUDevice *gpu, SDL_Thread *machine)
         }
         Uint32 w = 0, h = 0;
         unsigned gf = 0;
-        SDL_GPUTexture *t = gpu_render_frame(cmd, &w, &h, &gf);
+        SDL_GPUTexture *t = gpu_render_frame(cmd, &w, &h, &gf, 1);
         SDL_SubmitGPUCommandBuffer(cmd);
         if (t && ++turns >= 3) {
             ctx.frame = art_list[sp - 1];
@@ -3004,6 +3097,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--refresh-notice") && v) refresh_frame = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--deck-product") && v) settings_steam_deck_test(argv[++i]);
         else if (!strcmp(a, "--screen-hz") && v) screen_hz_test = (float)SDL_atof(argv[++i]);
+        else if (!strcmp(a, "--pace-ppm") && v)
+            frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
+        else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");
         else if (!strcmp(a, "--hash-every") && v) hash_every = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--snapshot-at") && v && i + 2 < argc) {
             snap_at = (unsigned)strtoul(argv[++i], NULL, 10);
@@ -3329,7 +3425,7 @@ int main(int argc, char **argv)
         return 1;
     }
     if (use_gpu)
-        game_machine_gpu(gpu_render_submit);
+        game_machine_gpu(gpu_frame);
     if (art_dir && !use_gpu) {
         logf_("art: no GPU renderer, so no artwork");
         return 3;
@@ -3368,6 +3464,7 @@ int main(int argc, char **argv)
 
     Uint64 t0 = SDL_GetTicksNS(), chord_since = 0, dir_next = 0;
     unsigned shown_frame = 0, pictures = 0, presents = 0;
+    int last_sc = 0;                    /* the turn before presented (the window is not minimized) */
     int have_picture = 0, running = 1, reported_start = 0;
     int chord_used = 0, last_dir = -1, last_program = 0, key_turns = 0;
     compositor_watch_start(logf_, window_stuck);    /* section 54 */
@@ -3404,6 +3501,7 @@ int main(int argc, char **argv)
                 if (on == win_on)
                     break;                      /* SDL tells some moves more than once */
                 win_on = on;
+                vsync_reset();                  /* another screen's refresh */
                 const char *dn = SDL_GetDisplayName(on);
                 logf_("window: now on %s", dn ? dn : "?");
                 if (menu_on && win) {
@@ -3698,12 +3796,20 @@ int main(int argc, char **argv)
             SDL_UnlockMutex(shared.lock);
         }
         unsigned frame;
+        /* this present takes the newest frame: the software picture here, the GPU renderer's
+         * after the swapchain's wait. The machine's pace follows these moments when it can
+         * (vsync.h); on a screen that refreshes several times to a frame, only the first of them
+         * takes a new one */
+        int take = 1;
+        if (!use_gpu && last_sc)
+            take = vsync_take(SDL_GetTicksNS());
         SDL_LockMutex(shared.lock);
         shared.in = in;
-        frame = shared.pic_frame;
+        frame = take ? shared.pic_frame : shown_frame;
         if (frame != shown_frame) {
             rgb_w = shared.pic_w;
             memcpy(rgb, shared.pic, (size_t)rgb_w * PIC_H * 3);
+            shared.pic_taken = 1;
         }
         SDL_UnlockMutex(shared.lock);
 
@@ -3829,11 +3935,16 @@ int main(int argc, char **argv)
             SDL_CancelGPUCommandBuffer(cmd);
             break;
         }
+        last_sc = sc != NULL;
         SDL_GPUTexture *src_tex = pic_tex;
         Uint32 src_w = (Uint32)rgb_w, src_h = PIC_H;
         if (use_gpu) {
             unsigned gf = 0;
-            SDL_GPUTexture *t = gpu_render_frame(cmd, &src_w, &src_h, &gf);
+            if (sc)
+                take = vsync_take(SDL_GetTicksNS());
+            SDL_GPUTexture *t = gpu_render_frame(cmd, &src_w, &src_h, &gf, take);
+            if (sync_log && sc && t)
+                fprintf(sync_log, "P %u %llu\n", gf, (unsigned long long)SDL_GetTicksNS());
             if (t) {
                 src_tex = t;
                 if (gf != shown_frame)
@@ -3857,6 +3968,7 @@ int main(int argc, char **argv)
                 if (ovl.grab)
                     compose(cmd, ovl.grab, w, h, src_tex, src_w, src_h, have_picture, 0);
             }
+            SDL_AddAtomicInt(&presents_n, 1);
             if (presents++ == 0)
                 logf_("first present: swapchain %ux%u", w, h);
             if (window_shot) {
@@ -3910,6 +4022,8 @@ int main(int argc, char **argv)
     if (in_session)
         session_end();                      /* the other PC is told */
     double secs = (SDL_GetTicksNS() - t0) / 1e9;
+    if (sync_log)
+        fclose(sync_log);
     logf_("%u pictures shown, %u presents in %.2f s (%.1f presents a second)", pictures, presents, secs,
           secs > 0 ? presents / secs : 0.0);
     int failed = SDL_GetAtomicInt(&machine_state) == 2 ? 1 : SDL_GetAtomicInt(&machine_state) == 4 ? 4 : 0;

@@ -27,6 +27,7 @@ static void set(binding *b, const char *a, const char *c)
 const char *const settings_card_default[2] = { "p1", "p2" };
 const char *const settings_region_text[REGIONS] = { "Japan", "USA", "Export", "Korea", "Australia" };
 const char *const settings_latency_name[LATENCIES] = { "auto", "on", "off" };
+const char *const settings_pace_name[PACES] = { "screen", "timer" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -141,6 +142,7 @@ void settings_defaults(settings *s)
     s->network = 0;
     s->region = REGION_JAPAN;
     s->latency = LATENCY_AUTO;
+    s->pace = PACE_SCREEN;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -475,6 +477,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "latency")) {
                 if ((ok = choice(v, settings_latency_name, LATENCIES, &x)))
                     s->latency = x;
+            } else if (!strcmp(name, "pace")) {
+                if ((ok = choice(v, settings_pace_name, PACES, &x)))
+                    s->pace = x;
             } else {
                 /* key1.punch, key2.punch, pad.punch */
                 char *dot = strchr(name, '.');
@@ -560,6 +565,10 @@ int settings_save(const settings *s, const char *path)
         "                       # instead of waiting; auto turns it on when the connection needs it. It\n"
         "                       # takes processor time: a Steam Deck may not be fast enough (off there)\n",
         settings_latency_name[s->latency]);
+    PUT("pace = %s           # screen | timer: screen starts each frame by the screen's refresh when that is\n"
+        "                       # 60 Hz or a multiple of it (59.94, 120, 240), so every frame is shown once;\n"
+        "                       # timer always uses the game's own 60 a second, as before 0.5.12\n",
+        settings_pace_name[s->pace]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

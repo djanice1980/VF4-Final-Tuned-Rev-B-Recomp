@@ -2879,7 +2879,9 @@ their player changes Picture once).
 **The refresh rate.** The game shows 60 pictures a second, paced by its
 own timer (`FRAME_NS`), and the window presents with vsync. A screen
 refreshing at a multiple of 60 (60, 120, 240) shows each picture for
-the same number of refreshes; at 90 Hz (the OLED's top rate) pictures are
+the same number of refreshes (only while the timer and the screen keep
+the same time, which they do not for long: section 58, where the pace
+follows such a screen instead); at 90 Hz (the OLED's top rate) pictures are
 shown for one or two refreshes in turn, at 144 Hz for two or three, and
 the motion judders. The game cannot set the screen's rate: on a Deck it
 is Steam's (the Quick Access button, Performance, Use per-game profile,
@@ -4734,3 +4736,186 @@ Not covered here: the Windows build (the release check runs it under
 Wine against the Linux build); a real Deck; a real slow connection (only
 the loopback with `--net-lag`); losing datagrams (`--net-lag`'s third
 number), which the controls' resending covers as before.
+
+## 58. The game's pace from the screen's refresh (2026-11-17)
+
+A report (issue 1: Windows 10, an i9-12900K, an RTX 3080 Ti): "Game is
+smooth and stable until it drops to half frame rate. Feels like a VSYNC
+issue." Asked, the reporter added: choppy with no loss of game speed, at
+random and most often in the first seconds of a match, on a screen at
+just under 60 Hz; and sent the game's log.
+
+**The fault** is ours. The machine drew 60 frames a second by its own
+timer (`FRAME_NS`, section 44), and the window presents on the screen's
+refresh, each present taking the newest frame. Nothing tied the two. No
+screen refreshes at exactly the timer's 60: the moment a frame is handed
+over slides slowly against the moment a present takes one, and while the
+two are close, small differences in how long a frame took decide whether
+it makes its present. Then some frames are shown twice and others never.
+The slower the slide, the longer each such stretch and the longer between
+them.
+
+**Measured** (the headless KWin, the GPU renderer, the scripted fight; a
+test-only record of when each frame was handed over and which frame each
+present showed, `--sync-log`). KWin's virtual screen refreshes at exactly
+60 Hz by the same clock as the game's timer (it takes no other rate from
+its output config), so the slide was made by running the game's timer a
+little fast (`--pace-ppm`), which is the same thing seen from the game:
+
+| The game's timer against the screen | Frames never shown | How |
+|---|---|---|
+| the same (no slide) | 0.13% | around loading only |
+| 1,000 parts in a million fast (as a 59.94 Hz screen) | 1.0% | one or two seconds about every 17 s; the worst second showed 51 of 60 |
+| 100 parts in a million fast (as a 60.006 Hz screen) | 1.3% | stretches of 15 to 35 s losing 10 to 20% of the frames, about every 167 s; the worst second showed 45 of 61 |
+
+For every frame never shown another is shown twice. The machine itself
+never fell behind (3 to 7 ms a frame). On this desktop a frame's time
+varies by about 1 ms from one to the next; a PC where it varies more
+loses more in each stretch.
+
+**The reporter's log** (0.5.11, a window on a screen SDL gives as 59.99
+Hz; presents came at 59.98 a second) fits: the machine took 6 to 7.5 ms a
+frame in fights and was never behind in 17 minutes, and the game's own
+frame count went up by one every vertical blank in the matches, so the
+game drew every frame. But the longest frame in most 10-second spans was
+13 to 17 ms, far more varied than here, and of about 59,900 frames the
+game ran the renderer drew 58,640: up to 2% never shown (frames while
+loading are in that count too). That log could not say more: it had no
+count of frames shown.
+
+**The fix: the machine follows the screen** (`runtime/host/vsync.c`), when
+the screen refreshes at 60 Hz or a multiple of it.
+
+- *What the screen does.* The window's thread tells `vsync_take` the
+  moment each present takes its frame (the GPU renderer's after the
+  swapchain's wait; the software picture's where it is copied). From
+  those it keeps the refresh's period and phase. The first period is from
+  the first 16 intervals (their median, then all of them over the
+  refreshes they span by it). Each take is then compared with where the
+  period says it should be. One that fits (within a quarter of a refresh,
+  up to 4 refreshes after the one before) moves the phase by an eighth of
+  its error. The period is first moved by the error too (a 64th), then,
+  once the run of takes that fit spans half a second, measured across the
+  run (up to the last 512 takes), with no take's error counted for more
+  than 0.5 ms. So one present held up (KWin's virtual screen delivers one
+  about 3 ms late every 6 seconds or so) hardly moves it; with the
+  period moved by each error alone, those knocked it past the limit below
+  every few seconds. A take that does not fit changes nothing by itself
+  (the grid goes on by its period: a present missed, a stall); 3 in a row
+  start the phase again, and 16 the period.
+- *When it is followed.* Once takes have fitted for a second, the newest
+  is no more than 8 refreshes old, and k refreshes (k a whole number) are
+  within 0.25% of the machine's 1/60 s (0.5% once followed): 59.85 to
+  60.15 Hz, and the same around 120, 180 and 240. So 59.94 Hz is followed
+  (the game then runs 0.1% slow, sound and all, as a console does on such
+  a screen; the sound's rate already bends by up to 0.5% to keep its
+  queue, section 16), and 144, 90, 75 and 50 Hz are not.
+- *How.* The machine's thread asks `vsync_next` once a frame for when the
+  next is due. The period is the screen's (k refreshes), and the phase is
+  set so that a frame is *handed over* halfway between two takes: as far
+  from both as it can be. How long after its start a frame is handed over
+  differs by PC and by scene (under 1 ms in menus, 4 to 10 ms in a fight
+  here, 13 to 17 ms at most on the reporter's PC), so main.c keeps the
+  highest and the lowest of late (each let go over about 8 seconds) and
+  gives their middle (`lead`). A first version started each frame a fixed
+  2 ms after a take instead: in the model below it lost 3.7% of the frames
+  of a PC that takes 12 ms a frame, give or take 1.5, where this loses
+  none. What is left of the phase's error goes a quarter a frame, at most
+  0.5 ms a frame, or all at once when the pace starts again (after the
+  menu, a pause, or falling far behind).
+- *Several refreshes to a frame.* On a 120 Hz screen (k = 2) two presents
+  come to a frame. Only the first of each two takes a new frame
+  (`vsync_take` says which); the other shows the same one again. So a
+  frame handed over at any time in those two refreshes is shown for
+  exactly two, not for one or three.
+- *Otherwise the timer, as before:* a screen at another rate (the refresh
+  notice of section 44 still says to set 60 Hz); presents that are not
+  steady; nothing presented (the window minimized or hidden: the game and
+  its sound go on); a two-PC game, where both PCs must go at one rate
+  (section 46) and the session does its own pacing (section 57); and
+  `pace = timer` in `settings.txt` (the default is `screen`; the setting
+  is in the file only, for a PC where following goes wrong). Going from
+  one to the other needs no step: the next frame is due from the last one
+  either way. A screen whose rate changes while the game runs is measured
+  again (the takes stop fitting), and the window moving to another screen
+  starts the measuring again.
+
+Pacing never changes the run: the same controls give the same game.
+
+**The log** says what paces the machine when it changes (`pace: vertical
+blank N: by the screen's refresh (59.940 Hz)`, or `by the game's own
+timer (...)` with why), and with the machine's line every 600 vertical
+blanks: `screen: 600 frames drawn, 0 of them never shown; 600 presents;
+paced by ...`. A frame is counted never shown when the next one reached the
+window's thread before a present had taken it. So a report like issue 1 can
+be read from `vf4ft.log`.
+
+**Checked: a model** (not in the repository): a screen whose presents
+take the newest frame at each refresh, and a machine that works on a frame,
+hands it over and paces itself with `vsync_next` as main.c does, both
+around the real `vsync.c`; 10 minutes each, a frame taking 6 ms give or
+take 1 unless said, takes 0.3 ms uneven.
+
+| Screen | By the timer (before) | Following |
+|---|---|---|
+| 60.006 Hz | 1,078 of 36,000 frames never shown | 0; followed from 1.3 s on |
+| 59.94 Hz | 1,286 | 0 |
+| 60.000, 60.1 Hz | | 0 |
+| 59.94 Hz, a frame 0.7 ms (menus) | | 0 |
+| 60 Hz, takes 1.5 ms uneven | | 0 |
+| 60 Hz, a present 3 or 5 ms late every 342 | | 0 |
+| 60 Hz, a frame 12 ms give or take 1.5 | | 19, all at the start |
+| 60 Hz, a frame 15 ms give or take 2 (some longer than a refresh) | | 121 |
+| 60 Hz, a present missed now and then | | one frame for each missed present, no more |
+| 120, 240 Hz | | 0; every frame shown for 2, or for 4, refreshes |
+| 120 Hz, a frame 12 ms give or take 1.5 | | 0 |
+| 144, 90, 75, 61, 50, 30 Hz | not followed: as before | |
+
+A screen that changes rate while the game runs (the same model, the
+change at 100 s): 60 to 120 Hz and 60 to 59.94 Hz, no frame lost; 120 to
+60 Hz, 18 lost in the change and 240 to 60 Hz, 24; 60 or 120 to 144 Hz,
+none lost and the timer from then on; 144 to 60 Hz, followed 1.5 s after
+the change.
+
+**Checked: the game** (the scripted fight; the log's own counts unless
+said; "frames" are those the game drew from vertical blank 4,500 on):
+
+| Screen | Renderer | The game's timer | By the timer (`pace = timer`) | Following |
+|---|---|---|---|---|
+| KWin, 60 Hz | GPU | 100 ppm fast, to vertical blank 24,000 | 216 of 18,823 frames never shown (1.1%) | 3 of 18,880; the machine at 60.0004 a second, the screen's |
+| KWin, 60 Hz | GPU | 1,000 ppm fast, to 16,000 | 93 of 11,014 | 1 of 11,003 |
+| KWin, 60 Hz | software | 100 ppm fast, to 20,000 | 283 of 17,400 | 9 of 17,400 |
+| gamescope, 60 Hz (X11) | GPU | 100 ppm fast, to 9,000 | | 0 of 4,333; shown for one present 99.93% |
+| gamescope, 120 Hz | GPU | 100 ppm fast, to 14,000 | 0 of 9,179; shown for 1, 2, 3 presents: 1.5%, 97.0%, 1.5% | 2 of 9,179; for 2 presents: 99.89% |
+| gamescope, 144 Hz | GPU | 100 ppm fast, to 9,000 | | not followed: for 2 or 3 presents, 60% and 40%, as before |
+
+("Frames never shown" in the first two rows is frames drawn less frames
+shown in the sync log; the rest are the log's counts.) With the first
+kind of period (moved by each take's error alone) the same two fights
+lost 1 and 1 frames but went back to the timer for 2 seconds every 6 or
+so, as said above; with the period measured across the run, the 24,000
+vertical blank fight was followed from the start to the end without a
+break, and the 16,000 one but for 2 seconds once.
+
+- *The same run.* The machine's fingerprints (`--hash-every 2000`) of the
+  1,000 ppm fight following and by the timer are the same, all 8, and the
+  100 ppm one's first 8 the same again.
+- *A two-PC game* (both latency optimization On, 30 ms give or take 10
+  each way, to vertical blank 9,000): both logs say `by the game's own
+  timer (a two-PC game)`; 149 checks agreed, and the two logs' 18
+  fingerprints are the same. Its frames are still lost as before (23 and
+  34 in 600 at worst here): following the screen in a two-PC game is not
+  done.
+- *The Windows build* under plain Wine (the headless KWin through Xwayland,
+  a test prefix with no sound device), the timer 100 ppm fast, to vertical
+  blank 9,000: followed from the start (`by the screen's refresh`), 0 of
+  4,333 frames never shown, each shown for one present (99.93%).
+- *The builder*: a test package's builder built the Linux game with
+  `vsync.c` in it (126 files; its log line is in the game).
+
+Not covered: Windows itself and a real screen (every run here was on a
+virtual screen whose clock is the game's, the slide made with
+`--pace-ppm`); the reporter's PC; a screen changing rate while the real
+game runs (the model only); G-Sync or FreeSync; a Steam Deck. (gamescope's
+headless backend crashed each time as it exited, after the game had ended
+cleanly; not looked into.)

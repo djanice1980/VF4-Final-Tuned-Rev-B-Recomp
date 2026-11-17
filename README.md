@@ -334,6 +334,11 @@ Hz, and the game's 60 pictures a second look uneven at that rate: the
 first start on an OLED says how to set 60 Hz for this game (the Quick
 Access button, Performance, Use per-game profile, Refresh rate 60). A PC
 whose screen runs at a rate like 144 or 75 Hz gets the same note once.
+On a screen at 60 Hz or a multiple of it (59.94, 120, 240) the game
+follows the screen's refresh from 0.5.12, so that every frame is shown
+once and none twice
+([how](docs/design.md#58-the-games-pace-from-the-screens-refresh-2026-11-17));
+a two-PC game keeps its own timer.
 
 On the Deck's controls the game's defaults are the PlayStation 2 versions'
 layout: X guard, Y and A punch, B kick, L1 throw (P+G), R1 P+K, L2 P+K+G,
@@ -593,6 +598,10 @@ with only a gamepad, the menu's Operator test menu does the same.
   check), `region` (japan | usa | export | korea | australia; default
   japan: the board's region, as the cabinet's BIOS gives it), `latency`
   (auto | on | off: a two-PC game's latency optimization; default auto),
+  `pace` (screen | timer; default screen: the game starts each frame by
+  the screen's refresh when that is 60 Hz or a multiple of it, so every
+  frame is shown once; timer always uses the game's own 60 a second, as
+  before 0.5.12; in this file only),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad.*` for gamepads, with SDL's key
@@ -632,7 +641,10 @@ with `--code CODE` (the joining PC: the six digits the host's game shows),
 `--delay N` (its input delay in vertical blanks, 2 by default), and
 for tests `--net-lag MS[,JITTER[,LOSS]]` (in a two-PC game, each datagram
 this PC sends goes MS ms later, give or take JITTER, and LOSS in 100 are
-dropped), `--hash-every N` (the machine's fingerprint in the log every N
+dropped), `--pace-ppm N` (the game's own timer N parts in a million fast)
+and `--sync-log FILE` (when each frame was handed over and which frame
+each present showed; [design.md s58](docs/design.md#58-the-games-pace-from-the-screens-refresh-2026-11-17)),
+`--hash-every N` (the machine's fingerprint in the log every N
 vertical blanks), `--snapshot-at N FILE` (the whole machine at the end of
 vertical blank N into FILE) and `--resume FILE` (the run goes on from
 FILE, made by the same build; [design.md s48](docs/design.md#48-the-whole-machine-saved-and-resumed-in-another-process-2026-11-15);
@@ -645,7 +657,9 @@ DIR, as Add to Steam makes them; [design.md s36](docs/design.md#36-steams-pictur
 vertical blank on, as `6400:Insert,Down,shot=menu.bmp,pad:guide`, with
 `shot=FILE` saving the window, menu included). Every 600
 frames `vf4ft.log` (beside the program) records how long the machine took
-per frame, on average and at most, and how much audio is queued. Sound
+per frame, on average and at most, how much audio is queued, how many
+frames the game drew and how many of them were never shown, and what
+paces the game (the screen's refresh or its own timer, and why). Sound
 plays from the warning screen on.
 
 The shaders' SPIR-V is committed (`runtime/host/gpu_shaders.h`), so

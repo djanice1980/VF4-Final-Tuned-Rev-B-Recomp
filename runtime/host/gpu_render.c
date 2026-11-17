@@ -54,6 +54,7 @@ typedef struct packet {
 static SDL_Mutex *lock;
 static packet pk[3];
 static int pk_ready = -1, pk_reading = -1;     /* which packet is newest, which the window draws */
+static unsigned stat_submitted, stat_replaced;  /* frames from the machine; those replaced before they were drawn */
 /* texel uploads waiting: [at, n, n texels] after one another */
 static Uint32 *up;
 static size_t up_n, up_cap;
@@ -102,6 +103,9 @@ void gpu_render_submit(const view_gpu_frame *f)
         SDL_memcpy(up + up_n, f->arena + at, (size_t)n * 4);
         up_n += n;
     }
+    stat_submitted++;
+    if (pk_ready >= 0)
+        stat_replaced++;        /* the newest was not drawn yet: it never will be */
     int w = 0;
     while (w == pk_ready || w == pk_reading)
         w++;
@@ -618,10 +622,10 @@ static void draw(SDL_GPUCommandBuffer *cmd, const view_gpu_frame *f)
         stat_tvol_frames++;
 }
 
-SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame)
+SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame, int take)
 {
     SDL_LockMutex(lock);
-    int r = pk_ready;
+    int r = take ? pk_ready : -1;
     if (r >= 0) {
         pk_reading = r;
         pk_ready = -1;
@@ -637,6 +641,14 @@ SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h
     *h = t_h;
     *frame = last_frame;
     return have_picture ? t_color : NULL;
+}
+
+void gpu_render_counts(unsigned *submitted, unsigned *replaced)
+{
+    SDL_LockMutex(lock);
+    *submitted = stat_submitted;
+    *replaced = stat_replaced;
+    SDL_UnlockMutex(lock);
 }
 
 void gpu_render_stats(unsigned *frames, unsigned *max_tris, unsigned *tvol)

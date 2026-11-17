@@ -18,9 +18,14 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale);
 void gpu_render_submit(const struct view_gpu_frame *f);
 
 /* on the window's thread, before the swapchain is drawn: draws the newest
- * frame if one came since the last call. Returns the picture (NULL before
+ * frame if one came since the last call, unless take is 0 (this present
+ * shows the frame before again: vsync.h). Returns the picture (NULL before
  * the first) with its size in pixels and the game's vertical blank. */
-SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame);
+SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame, int take);
+
+/* any thread: the frames the machine handed over, and those of them never
+ * drawn (a newer one came first) */
+void gpu_render_counts(unsigned *submitted, unsigned *replaced);
 
 /* frames drawn, and the most triangles in one, for the log */
 void gpu_render_stats(unsigned *frames, unsigned *max_tris, unsigned *translucent_volume_frames);
