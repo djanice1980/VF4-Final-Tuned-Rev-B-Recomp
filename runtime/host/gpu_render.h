@@ -17,11 +17,21 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale);
  * copied, the textures that changed are kept for the next upload */
 void gpu_render_submit(const struct view_gpu_frame *f);
 
+/* the same, with when the frame is to be shown by the game's clock (ns;
+ * vsync.h's vsync_pick). Two frames can wait to be drawn; a third puts the
+ * oldest out */
+void gpu_render_submit_at(const struct view_gpu_frame *f, Uint64 pts);
+
+/* any thread: the frames waiting, oldest first: their vertical blanks and
+ * times. Returns how many (0 to 2) */
+int gpu_render_waiting(unsigned frame[2], Uint64 pts[2]);
+
 /* on the window's thread, before the swapchain is drawn: draws the newest
- * frame if one came since the last call, unless take is 0 (this present
- * shows the frame before again: vsync.h). Returns the picture (NULL before
- * the first) with its size in pixels and the game's vertical blank. */
-SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame, int take);
+ * frame waiting whose vertical blank is no more than upto (0: none, this
+ * present shows the picture before again; ~0u: the newest), passing over
+ * the ones before it. Returns the picture (NULL before the first) with its
+ * size in pixels and the game's vertical blank. */
+SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame, unsigned upto);
 
 /* any thread: the frames the machine handed over, and those of them never
  * drawn (a newer one came first) */

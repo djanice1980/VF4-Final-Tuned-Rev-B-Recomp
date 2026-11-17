@@ -82,6 +82,12 @@ const option_info options[OPT_COUNT] = {
                       "the game waits for them. Auto turns it on when the connection needs it. Each PC chooses "
                       "for itself. A Steam Deck may not be fast enough for it: if the game slows down there, "
                       "choose Off on the Deck.", 0 },
+    [OPT_PACING] = { "Frame pacing",
+                     "How the game's 60 frames a second meet the screen's refresh. Game clock: the game keeps "
+                     "its own time; when the screen's is a little off, one frame is passed over or shown again "
+                     "now and then. Screen refresh: the game follows a screen at 60 Hz or a multiple of it, "
+                     "with no frame passed over, a touch fast or slow. Off: as before 0.5.12. A two-PC game "
+                     "uses the host's choice.", 0 },
 };
 
 static int wrap(int v, int d, int n)
@@ -263,6 +269,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_strlcpy(buf, lt[s->latency], n);
         break;
     }
+    case OPT_PACING: {
+        static const char *const pt[PACINGS] = { "Game clock", "Screen refresh", "Off" };
+        SDL_strlcpy(buf, pt[s->pacing], n);
+        break;
+    }
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -340,6 +351,7 @@ void option_change(settings *s, int o, int d)
     case OPT_NETWORK: s->network = !s->network; break;
     case OPT_REGION: s->region = wrap(s->region, d, REGIONS); break;
     case OPT_LATENCY: s->latency = wrap(s->latency, d, LATENCIES); break;
+    case OPT_PACING: s->pacing = wrap(s->pacing, d, PACINGS); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;

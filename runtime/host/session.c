@@ -115,6 +115,7 @@ static SDL_Mutex *lock;
 static SDL_Condition *cond;
 static SDL_Thread *thread;
 static SDL_AtomicInt quit_thread, cancelled, paused_here;
+static SDL_AtomicInt pacing_here, pacing_theirs;    /* Frame pacing + 1 (0: not said, not heard) */
 
 /* under lock */
 static char status[320];
@@ -452,6 +453,7 @@ static void play_reset(void)
     started = 0;
     theirs_full = their_ack = 0;
     their_pause = 0;
+    SDL_SetAtomicInt(&pacing_theirs, 0);
     verified = agreed = 0;
     ended = left = 0;
     /* latency optimization: a new start, perhaps with another PC */
@@ -528,7 +530,7 @@ static void rtt_sample(double r)
 
 /* an INPUT datagram's body: the inputs (first, count, the values), the
  * newest of this PC's the other has with none missing, its flags (1 its menu
- * is open, 2 it guesses), its time as it sent this (ms, low 16 bits), the
+ * is open, 2 it guesses, 12 its Frame pacing + 1), its time as it sent this (ms, low 16 bits), the
  * newest of this PC's times it heard and how long it held it (0xffff none),
  * how late this PC's inputs come there (0.1 ms, signed), then its
  * fingerprints */
@@ -559,6 +561,8 @@ static void take_input(const unsigned char *p, int n)
         their_ack = ack;
     their_pause = p[4] & 1;
     their_guessing = p[4] >> 1 & 1;
+    if (p[4] >> 2 & 3)
+        SDL_SetAtomicInt(&pacing_theirs, p[4] >> 2 & 3);
     Uint16 sent = get16(p + 5), echo = get16(p + 7), held = get16(p + 9);
     lat_theirs = (Sint16)get16(p + 11) / 10.0;
     Uint64 now_ms = SDL_GetTicks();
@@ -600,7 +604,8 @@ static int make_input(unsigned char *b)
     for (unsigned i = 0; i < count; i++, n += 2)
         put16(b + n, mine[(first + i) % RING].v);
     put32(b + n, started ? theirs_full : 0);
-    b[n + 4] = (unsigned char)((SDL_GetAtomicInt(&paused_here) ? 1 : 0) | (guessing ? 2 : 0));
+    b[n + 4] = (unsigned char)((SDL_GetAtomicInt(&paused_here) ? 1 : 0) | (guessing ? 2 : 0) |
+                               (SDL_GetAtomicInt(&pacing_here) & 3) << 2);
     Uint64 now_ms = SDL_GetTicks();
     put16(b + n + 5, (Uint16)now_ms);
     put16(b + n + 7, echo_ms);
@@ -1690,6 +1695,16 @@ void session_test_lag(int ms, int jitter, int loss)
     lag_ms = ms;
     lag_jitter = jitter;
     lag_loss = loss;
+}
+
+void session_pacing(int mine)
+{
+    SDL_SetAtomicInt(&pacing_here, mine >= 0 && mine < 3 ? mine + 1 : 0);
+}
+
+int session_pacing_theirs(void)
+{
+    return SDL_GetAtomicInt(&pacing_theirs) - 1;
 }
 
 int session_round_trip(double *ms, double *jitter, int *on)

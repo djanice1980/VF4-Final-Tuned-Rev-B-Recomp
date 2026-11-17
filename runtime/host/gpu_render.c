@@ -46,14 +46,17 @@ typedef struct packet {
     size_t vol_cap;
     view_gpu_volume *vols;
     size_t vols_cap;
+    Uint64 pts;         /* when it is to be shown, by the game's clock (0: as it comes) */
+    size_t up_end;      /* the texel uploads up to here are this frame's and those before it */
 } packet;
 
 /* made once and kept: the machine's thread may hand a frame over while the
  * window's thread stops the renderer or starts it again (docs/design.md
  * section 53) */
 static SDL_Mutex *lock;
-static packet pk[3];
-static int pk_ready = -1, pk_reading = -1;     /* which packet is newest, which the window draws */
+static packet pk[4];
+static int pk_wait[2], pk_nwait;        /* the packets waiting to be drawn, oldest first (2 at most) */
+static int pk_reading = -1;             /* the one the window draws */
 static unsigned stat_submitted, stat_replaced;  /* frames from the machine; those replaced before they were drawn */
 /* texel uploads waiting: [at, n, n texels] after one another */
 static Uint32 *up;
@@ -81,6 +84,11 @@ static int grow(void **p, size_t *cap, size_t need, size_t elem)
 
 void gpu_render_submit(const view_gpu_frame *f)
 {
+    gpu_render_submit_at(f, 0);
+}
+
+void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
+{
     SDL_LockMutex(lock);
     /* the texels first: every frame's, in order, whether it is drawn or not.
      * After a start, all of the arena that is in use */
@@ -104,10 +112,8 @@ void gpu_render_submit(const view_gpu_frame *f)
         up_n += n;
     }
     stat_submitted++;
-    if (pk_ready >= 0)
-        stat_replaced++;        /* the newest was not drawn yet: it never will be */
     int w = 0;
-    while (w == pk_ready || w == pk_reading)
+    while (w == pk_reading || (pk_nwait > 0 && w == pk_wait[0]) || (pk_nwait > 1 && w == pk_wait[1]))
         w++;
     packet *p = &pk[w];
     if (GROW(p->v, p->v_cap, f->nv) || GROW(p->st, p->st_cap, f->nst) || GROW(p->d, p->d_cap, f->ndraws) ||
@@ -129,8 +135,29 @@ void gpu_render_submit(const view_gpu_frame *f)
     p->f.dirty = NULL;
     p->f.ndirty = 0;
     p->f.arena = NULL;
-    pk_ready = w;
+    p->pts = pts;
+    p->up_end = up_n;
+    if (pk_nwait == 2) {        /* no room: the oldest waiting is never drawn */
+        stat_replaced++;
+        pk_wait[0] = pk_wait[1];
+        pk_nwait = 1;
+    }
+    pk_wait[pk_nwait++] = w;
     SDL_UnlockMutex(lock);
+}
+
+int gpu_render_waiting(unsigned frame[2], Uint64 pts[2])
+{
+    if (!lock)
+        return 0;
+    SDL_LockMutex(lock);
+    int n = pk_nwait;
+    for (int i = 0; i < n; i++) {
+        frame[i] = pk[pk_wait[i]].f.frame;
+        pts[i] = pk[pk_wait[i]].pts;
+    }
+    SDL_UnlockMutex(lock);
+    return n;
 }
 
 /* ---- the GPU's side ---- */
@@ -307,7 +334,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     SDL_LockMutex(lock);
     up_n = 0;
     up_all = 1;
-    pk_ready = -1;
+    pk_nwait = 0;
     SDL_UnlockMutex(lock);
     if (!(SDL_GetGPUShaderFormats(gpu) & SDL_GPU_SHADERFORMAT_SPIRV))
         return SDL_SetError("the GPU device takes no SPIR-V (it is not Vulkan)"), -1;
@@ -433,11 +460,14 @@ static void rect(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, float x0, flo
     SDL_DrawGPUPrimitives(rp, 6, 1, 0, 0);
 }
 
-static void draw(SDL_GPUCommandBuffer *cmd, const view_gpu_frame *f)
+static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
 {
-    /* everything to the GPU: the texels that changed, the triangles, the states, the volumes */
+    const view_gpu_frame *f = &pkt->f;
+    /* everything to the GPU: the texels that changed up to this frame (those of frames still
+     * waiting stay for their turn), the triangles, the states, the volumes */
     SDL_LockMutex(lock);
-    size_t up_bytes = up_n * 4;
+    size_t up_take = pkt->up_end < up_n ? pkt->up_end : up_n;
+    size_t up_bytes = up_take * 4;
     Uint32 vb = f->nv * (Uint32)sizeof(view_gpu_vertex), sb = f->nst * (Uint32)sizeof(view_gpu_state);
     Uint32 volb = f->nvol_xyz * 3 * (Uint32)sizeof(float);
     Uint32 need = (Uint32)up_bytes + vb + sb + volb + 256;
@@ -469,14 +499,17 @@ static void draw(SDL_GPUCommandBuffer *cmd, const view_gpu_frame *f)
     static Uint32 *regs;
     static size_t regs_cap;
     size_t nregs = 0;
-    for (size_t i = 0; i < up_n; i += 2 + up[i + 1]) {
+    for (size_t i = 0; i < up_take; i += 2 + up[i + 1]) {
         if (GROW(regs, regs_cap, nregs + 3))
             break;
         regs[nregs++] = up[i];
         regs[nregs++] = up[i + 1];
         regs[nregs++] = (Uint32)((i + 2) * 4);
     }
-    up_n = 0;
+    SDL_memmove(up, up + up_take, (up_n - up_take) * 4);
+    up_n -= up_take;
+    for (int i = 0; i < pk_nwait; i++)
+        pk[pk_wait[i]].up_end = pk[pk_wait[i]].up_end > up_take ? pk[pk_wait[i]].up_end - up_take : 0;
     SDL_UnlockMutex(lock);
     Uint32 o_v = (Uint32)up_bytes, o_s = o_v + vb, o_vol = o_s + sb;
     SDL_memcpy(m + o_v, f->v, vb);
@@ -622,17 +655,23 @@ static void draw(SDL_GPUCommandBuffer *cmd, const view_gpu_frame *f)
         stat_tvol_frames++;
 }
 
-SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame, int take)
+SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame, unsigned upto)
 {
     SDL_LockMutex(lock);
-    int r = take ? pk_ready : -1;
-    if (r >= 0) {
-        pk_reading = r;
-        pk_ready = -1;
+    int r = -1, got = -1;
+    for (int i = 0; i < pk_nwait; i++)
+        if (pk[pk_wait[i]].f.frame <= upto)
+            got = i;
+    if (got >= 0) {
+        stat_replaced += (unsigned)got;         /* the ones before it are passed over */
+        r = pk_reading = pk_wait[got];
+        for (int i = got + 1; i < pk_nwait; i++)
+            pk_wait[i - got - 1] = pk_wait[i];
+        pk_nwait -= got + 1;
     }
     SDL_UnlockMutex(lock);
     if (r >= 0) {
-        draw(cmd, &pk[r].f);
+        draw(cmd, &pk[r]);
         SDL_LockMutex(lock);
         pk_reading = -1;
         SDL_UnlockMutex(lock);

@@ -9,7 +9,9 @@
 #define VS_SPAN_NS 500000000.0          /* once they span this long */
 #define VS_NUDGE_NS 500000.0            /* and then no take's error counts for more than this (one late present) */
 #define VS_MISS 4                       /* a take up to this many refreshes after the one before still fits */
-#define VS_MISFITS 3                    /* takes in a row that do not fit: the phase starts again */
+#define VS_BAD 6                        /* a take that does not fit counts 2, one that fits takes 1 off: at
+                                         * this the phase starts again (3 in a row, or most of a dozen) */
+#define VS_AGAIN 8                      /* takes fitting after that, with the period measured before: steady */
 #define VS_MULTI 16                     /* takes in a row more than a refresh apart: the period again */
 #define VS_STEADY_NS 1000000000ull      /* the refresh is steady once takes have fitted for this long */
 #define VS_STALE 8                      /* refreshes with no take: nothing is being shown */
@@ -26,7 +28,9 @@ static struct {
     double td;                  /* one refresh, smoothed (ns); 0: not known yet */
     Uint64 index;               /* refreshes counted, at the latest take */
     Uint64 steady_since;        /* the first take of the run that has fitted since (0: none) */
-    int misfits, multi;         /* takes in a row that did not fit; that fitted more than a refresh on */
+    int misfits, bad, multi;    /* takes in a row that did not fit; those weighed (VS_BAD); takes in a row
+                                 * that fitted more than a refresh on */
+    int measured;               /* the period has been measured across a run since it was last started */
     Uint64 iv[VS_SEED];         /* the latest raw intervals */
     unsigned niv;
     struct { Uint64 index; double anchor; } ring[VS_RING];     /* the run's fitted takes */
@@ -63,7 +67,17 @@ static double seed(void)
             n += m;
         }
     }
+    vs.measured = 0;
     return n >= VS_SEED / 2 ? sum / n : med;
+}
+
+/* the refresh is known: takes have fitted for a second, or, with the period measured before, for
+ * VS_AGAIN takes since the phase last started again */
+static int steady(void)
+{
+    if (vs.td <= 0 || !vs.steady_since)
+        return 0;
+    return vs.measured ? vs.run >= VS_AGAIN : vs.last - vs.steady_since >= VS_STEADY_NS;
 }
 
 /* the phase starts again at t: a new run */
@@ -81,7 +95,7 @@ void vsync_reset(void)
     vs.last = 0;
     vs.td = 0;
     vs.index = vs.slot = 0;
-    vs.misfits = 0;
+    vs.misfits = vs.bad = vs.measured = 0;
     vs.niv = 0;
     restart(0);
     SDL_UnlockSpinlock(&vs.lock);
@@ -98,23 +112,27 @@ int vsync_take(Uint64 t)
         if (vs.td <= 0) {
             if (vs.niv >= VS_SEED) {            /* the period from the first intervals */
                 vs.td = seed();
-                vs.misfits = 0;
+                vs.misfits = vs.bad = 0;
                 restart(t);
             }
         } else {
             double m = SDL_floor(((double)t - vs.anchor) / vs.td + 0.5);
             double err = (double)t - (vs.anchor + m * vs.td);
             if (m < 1 || m > VS_MISS || SDL_fabs(err) > vs.td / 4) {
-                /* not where the grid says. One such (a present held up, a stall) changes nothing: the
-                 * grid goes on by its period. Several in a row: the phase starts again here, and
-                 * after more the period too */
+                /* not where the grid says. One such (a present held up, a stall), or a few among many
+                 * that fit (presents that come unevenly), change nothing: the grid goes on by its
+                 * period. Three in a row, or most of a dozen: the phase starts again here. All of
+                 * VS_SEED in a row: the period too */
                 if (m >= 1) {
                     vs.anchor += m * vs.td;
                     vs.index += (Uint64)m;
                 }
-                if (++vs.misfits >= VS_MISFITS)
+                vs.bad += 2;
+                if (vs.bad >= VS_BAD) {
                     restart(t);
-                if (vs.misfits >= VS_SEED) {
+                    vs.bad = 0;
+                }
+                if (++vs.misfits >= VS_SEED) {
                     vs.td = seed();
                     vs.misfits = 0;
                 }
@@ -132,6 +150,10 @@ int vsync_take(Uint64 t)
                 vs.anchor += m * vs.td + err * VS_ALPHA;
                 vs.index += (Uint64)m;
                 vs.misfits = 0;
+                if (vs.bad > 0)
+                    vs.bad--;
+                if (measured)
+                    vs.measured = 1;
                 if (!vs.steady_since)
                     vs.steady_since = t;
                 vs.ring[vs.run % VS_RING].index = vs.index;
@@ -167,7 +189,7 @@ Uint64 vsync_next(Uint64 now, Uint64 due, Uint64 frame_ns, Uint64 lead_ns, int f
     double k = 1;
     SDL_LockSpinlock(&vs.lock);
     int why = WHY_FOLLOW;
-    if (vs.td <= 0 || !vs.steady_since || vs.last - vs.steady_since < VS_STEADY_NS) {
+    if (!steady()) {
         why = WHY_UNKNOWN;
     } else if ((double)((Sint64)now - (Sint64)vs.last) > VS_STALE * vs.td) {
         why = WHY_STALE;
@@ -241,4 +263,100 @@ void vsync_describe(char *buf, size_t n)
         SDL_snprintf(buf, n, "the game's own timer (the screen's refresh is not steady, or not measured yet)");
         break;
     }
+}
+
+/* ---- the game by its own clock: each frame on a refresh of the screen ----
+ *
+ * The machine keeps its own 60 a second, and each frame it hands over says
+ * when it is to be shown by that clock (pts). The refresh it is shown on is
+ * the one before, plus the whole number of refreshes that time is on from
+ * the frame before: frames go on the screen at even steps whatever small
+ * difference there is in how long each took. A frame keeps that step until
+ * its refresh comes more than VS_EDGE_NS before its time (it moves one
+ * later: on a 60 Hz screen the frame before is shown once more) or more than
+ * a refresh and VS_EDGE_NS after it (one sooner: the frame before is passed
+ * over). That is once for every whole refresh the two clocks have gone
+ * apart, which no pacing can do without, and nowhere else. */
+#define VS_EDGE_NS 750000.0
+
+static struct {
+    unsigned frame;             /* the newest frame given a refresh (0: none) */
+    Uint64 pts;
+    Uint64 r;                   /* its refresh, as the grid counts them */
+    struct { unsigned frame; Uint64 r; } q[4];     /* the latest few: those still waiting */
+    unsigned nq;
+    unsigned sooner, later;     /* steps moved one refresh sooner, one later */
+    int on;                     /* the last pick went by the grid */
+    double hz;
+} sch;
+
+unsigned vsync_pick(const unsigned *frame, const Uint64 *pts, int n)
+{
+    unsigned limit = n > 0 ? frame[n - 1] : 0;      /* no steady refresh: the newest, as it comes */
+    SDL_LockSpinlock(&vs.lock);
+    int on = steady();
+    if (on) {
+        double h = vs.td / 5 < VS_EDGE_NS ? vs.td / 5 : VS_EDGE_NS;
+        limit = 0;
+        for (int i = 0; i < n; i++) {
+            Uint64 r = 0;
+            int known = 0;
+            for (unsigned j = 0; j < 4 && !known; j++)
+                if (sch.q[j].frame == frame[i] && frame[i]) {
+                    r = sch.q[j].r;
+                    known = 1;
+                }
+            if (!known && frame[i] <= sch.frame)
+                known = 1;                          /* an old one: due */
+            if (!known) {
+                /* e: how long after its time the frame's refresh comes */
+                double e = 0;
+                int fresh = !sch.on || !sch.frame || pts[i] <= sch.pts;
+                if (!fresh) {
+                    r = sch.r + (Uint64)SDL_floor((double)(pts[i] - sch.pts) / vs.td + 0.5);
+                    e = vs.anchor + ((double)r - (double)vs.index) * vs.td - (double)pts[i];
+                    if (SDL_fabs(e) > 8 * vs.td)
+                        fresh = 1;                  /* a pause, a stall: from here again */
+                }
+                if (fresh) {
+                    double ahead = SDL_ceil(((double)pts[i] - vs.anchor) / vs.td);
+                    r = vs.index + (Uint64)(ahead > 0 ? ahead : 0);
+                } else {
+                    while (e < -h) {
+                        r++;
+                        e += vs.td;
+                        sch.later++;
+                    }
+                    while (e >= vs.td + h && r > 0) {
+                        r--;
+                        e -= vs.td;
+                        sch.sooner++;
+                    }
+                }
+                sch.frame = frame[i];
+                sch.pts = pts[i];
+                sch.r = r;
+                sch.q[sch.nq % 4].frame = frame[i];
+                sch.q[sch.nq % 4].r = r;
+                sch.nq++;
+            }
+            if (r <= vs.index)
+                limit = frame[i];
+        }
+        sch.hz = 1e9 / vs.td;
+    }
+    sch.on = on;
+    SDL_UnlockSpinlock(&vs.lock);
+    return limit;
+}
+
+int vsync_pick_stats(double *hz, unsigned *sooner, unsigned *later)
+{
+    SDL_LockSpinlock(&vs.lock);
+    int on = sch.on;
+    *hz = sch.hz;
+    *sooner = sch.sooner;
+    *later = sch.later;
+    SDL_UnlockSpinlock(&vs.lock);
+    return on;
 }

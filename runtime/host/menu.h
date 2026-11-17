@@ -79,6 +79,8 @@ typedef struct menu_run {
     /* a two-PC game: what latency optimization is doing now, for its row's note (buf, n bytes; ""
      * nothing to say). NULL: no note */
     void (*latency_now)(char *buf, size_t n);
+    /* Frame pacing's note in a two-PC game (the host's is used): text into buf, or NULL */
+    void (*pacing_now)(char *buf, size_t n);
 } menu_run;
 enum { MENU_CODE_NONE, MENU_CODE_SHOWN, MENU_CODE_GONE };
 

@@ -47,4 +47,17 @@ void vsync_free(const char *why);
  * or "the game's own timer (...)" with why */
 void vsync_describe(char *buf, size_t n);
 
+/* The other way (docs/design.md section 59): the machine keeps its own
+ * clock, and the window's thread puts each frame on a refresh. After
+ * vsync_take, with the n frames waiting (oldest first: their vertical
+ * blanks, and when each is to be shown by the game's clock, ns): returns
+ * the vertical blank of the newest one to show at this present (the ones
+ * before it are passed over), or 0 for none of them (the picture before
+ * stays). Without a steady refresh it is the newest waiting, as it comes */
+unsigned vsync_pick(const unsigned *frame, const Uint64 *pts, int n);
+
+/* for the log: 1 when vsync_pick goes by the screen's refresh (hz), and how
+ * many frames it has moved one refresh sooner and one later to keep in step */
+int vsync_pick_stats(double *hz, unsigned *sooner, unsigned *later);
+
 #endif

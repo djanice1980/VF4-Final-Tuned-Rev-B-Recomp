@@ -122,6 +122,13 @@ void session_fail(const char *why);
  * later (give or take jitter ms), and loss in a hundred are not sent */
 void session_test_lag(int ms, int jitter, int loss);
 
+/* Frame pacing in a two-PC game is the host's (docs/design.md section 59):
+ * each PC says its own (settings.h's PACING_*) with its controls. Any thread,
+ * any time. session_pacing_theirs: the other PC's as it last said (-1: not
+ * heard yet) */
+void session_pacing(int mine);
+int session_pacing_theirs(void);
+
 /* any thread: the round trip to the other PC as measured (ms) and how much
  * it varies (0, or -1 when there is none yet), and whether latency
  * optimization is on now (*on) */

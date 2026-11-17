@@ -334,11 +334,27 @@ Hz, and the game's 60 pictures a second look uneven at that rate: the
 first start on an OLED says how to set 60 Hz for this game (the Quick
 Access button, Performance, Use per-game profile, Refresh rate 60). A PC
 whose screen runs at a rate like 144 or 75 Hz gets the same note once.
-On a screen at 60 Hz or a multiple of it (59.94, 120, 240) the game
-follows the screen's refresh from 0.5.12, so that every frame is shown
-once and none twice
-([how](docs/design.md#58-the-games-pace-from-the-screens-refresh-2026-11-17));
-a two-PC game keeps its own timer.
+
+**Frame pacing** (Settings, Picture; the game's menu, Picture tab) is how
+the game's 60 frames a second meet the screen's refresh.
+
+- **Game clock** (the default, from 0.5.13): the game keeps its own time
+  and each frame is put on a refresh of the screen. Where the screen's
+  time is a little off the game's (59.94 Hz), one frame is passed over or
+  shown again each time the two have gone a whole refresh apart (about
+  every 17 seconds at 59.94 Hz), and every other frame is shown evenly.
+  It costs a few milliseconds of delay.
+- **Screen refresh** (0.5.12's way): on a screen at 60 Hz or a multiple of
+  it (59.94, 120, 240) the game follows the screen, so no frame is passed
+  over, and runs up to a quarter of a percent fast or slow with it.
+- **Off**: the newest frame at each refresh, as before 0.5.12 (uneven for
+  seconds or minutes at a time on a screen near 60 Hz).
+
+A two-PC game uses the host's choice on both PCs, and Game clock where
+the host chose Screen refresh, since both PCs must keep one time. How it
+works: design.md sections
+[58](docs/design.md#58-the-games-pace-from-the-screens-refresh-2026-11-17) and
+[59](docs/design.md#59-frame-pacing-the-game-by-its-own-clock-2026-11-17).
 
 On the Deck's controls the game's defaults are the PlayStation 2 versions'
 layout: X guard, Y and A punch, B kick, L1 throw (P+G), R1 P+K, L2 P+K+G,
@@ -598,10 +614,8 @@ with only a gamepad, the menu's Operator test menu does the same.
   check), `region` (japan | usa | export | korea | australia; default
   japan: the board's region, as the cabinet's BIOS gives it), `latency`
   (auto | on | off: a two-PC game's latency optimization; default auto),
-  `pace` (screen | timer; default screen: the game starts each frame by
-  the screen's refresh when that is 60 Hz or a multiple of it, so every
-  frame is shown once; timer always uses the game's own 60 a second, as
-  before 0.5.12; in this file only),
+  `pacing` (game | screen | off: Frame pacing, above; default game.
+  0.5.12's `pace = timer` is read as off),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad.*` for gamepads, with SDL's key

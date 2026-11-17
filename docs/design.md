@@ -4919,3 +4919,181 @@ virtual screen whose clock is the game's, the slide made with
 game runs (the model only); G-Sync or FreeSync; a Steam Deck. (gamescope's
 headless backend crashed each time as it exited, after the game had ended
 cleanly; not looked into.)
+
+## 59. Frame pacing: the game by its own clock (2026-11-17)
+
+Section 58 made the game follow the screen's refresh. That ties the game's
+speed to the screen (a quarter of a percent at most, but each PC's own),
+so it cannot be used in a two-PC game, where it left the old uneven
+stretches; and the point of the machine having its own thread and timer
+was that the game does not depend on the screen. So the other way round is
+now the default: **the game keeps its own clock, and each frame is put on
+a refresh of the screen.**
+
+**What cannot be had.** A game drawing exactly 60 frames a second on a
+screen showing 59.94 has 0.06 of a frame too many each second: about every
+17 seconds one frame is not shown. On a screen a little fast, one is shown
+twice now and then. No pacing avoids that one frame while the game keeps
+its own time. What was wrong before section 58 was not that frame but the
+stretch around it: as a frame's hand-over came close to the moment a
+present took one, small differences in how long each frame took decided
+which were shown, and for seconds or minutes some were shown twice and
+others never.
+
+**How** (`vsync_pick` in `runtime/host/vsync.c`).
+
+- Each frame the machine hands over says when it is to be shown by the
+  game's clock: when it was due (the timer's own time, steady whatever the
+  frame took), plus the longest a frame has taken to be handed over of
+  late (four fifths of a frame at most), plus 2 ms. By then it has come.
+- The window's thread knows the screen's refreshes as section 58's filter
+  keeps them (the period, the phase, a count). A frame's refresh is the
+  one given to the frame before it, plus the whole number of refreshes its
+  time is on from that frame's (1 at 60 Hz, 2 at 120 Hz, 2 or 3 in turn at
+  144 Hz). So frames go on the screen at even steps, whatever each took.
+- A frame keeps that step until its refresh would come more than 0.75 ms
+  before its time (then it moves one refresh later: at 60 Hz the frame
+  before is shown once more) or more than a refresh and 0.75 ms after it
+  (one sooner: the frame before is passed over). With the game a little
+  fast or slow against the screen, that happens once each time the two
+  have gone a whole refresh apart, and nowhere else: between two such
+  steps every frame is shown for the same number of refreshes.
+- At each present, the newest frame whose refresh has come is shown. One
+  that came in but is not due waits, so two can wait at once: the GPU
+  renderer keeps two frames (each with its own share of the texture
+  uploads, so a frame is drawn with the textures as they were at its own
+  time), and the software picture two pictures. A third puts the oldest
+  out.
+- Without a steady refresh (the first second, a screen changing its mode,
+  nothing presented) it is the newest frame at each present, as before.
+
+It needs nothing of the screen's rate: 60, 59.94, 120, 144, 90 and 75 Hz
+go the same way (at 144 Hz a frame is shown for 2 or 3 refreshes in a
+fixed turn). It is the same in a two-PC game, where the machine's pace is
+the session's.
+
+**The price** is time: a frame waits for its own refresh, not the next
+one after it came. In the model below a frame is on the screen 13.4 ms
+after it was handed over on average at 60 Hz, where the newest frame at
+each present gives 8.0 ms (and section 58's following 8.3).
+
+**The setting** is Frame pacing, on the Picture tab of the game's menu
+(applies at once) and of the launcher's Settings, `pacing` in
+`settings.txt`:
+
+- **Game clock** (`game`, the default): this section.
+- **Screen refresh** (`screen`): section 58, the game following a screen at
+  60 Hz or a multiple of it.
+- **Off** (`off`): the newest frame at each present, as before 0.5.12.
+
+**A two-PC game goes by the host's choice**, on both PCs, so that both
+players' pictures reach their screens the same way and as late. Each PC
+says its own Frame pacing with its controls (two bits of the INPUT
+datagram's flags, which had room; the two PCs are the same build anyway),
+and the joining PC goes by the host's from the first one it hears (by its
+own for the moment before). Where the host chose Screen refresh both use
+Game clock: the two machines must keep one time, the session's. The row's
+note in the menu says which is in use, and that the joining PC's own choice
+is kept for its own games.
+
+0.5.12's `pace` is read once more: `timer` there (a choice someone made)
+is Off; `screen` was only its default, and gives way to the new default.
+The launcher's Picture tab has nine rows with it, set a little closer (37
+units, not 42) so that all nine show without scrolling.
+
+The log's `pace:` line and the `screen:` line every 600 vertical blanks say
+which it is: `the game's own clock, each frame put on a refresh of the
+screen (59.940 Hz): 1 moved a refresh sooner, 0 later`.
+
+Also in `vsync.c`, for both ways: presents that do not fit the refresh's
+grid are now weighed (one that does not fit counts 2, one that fits takes
+1 off; at 6 the phase starts again: three in a row as before, or most of a
+dozen), so a few uneven presents among many even ones start nothing again;
+and after the phase has started again the period, measured before, is
+trusted after 8 presents that fit, not a second. On KWin's virtual screen
+the phase jumps by about half a refresh now and then (one interval of 6 to
+9 ms): each jump put the pace back to the newest frame for a second, twice
+in a 2-minute fight; after the change, for the 8 presents.
+
+**Checked: the model** (`vsync.c` between a machine by its own timer and a
+screen; 10 minutes each, the counts from the second 5; a frame taking 6 ms
+give or take 1, presents 0.3 ms uneven, unless said). "Before": the newest
+frame at each present.
+
+| Screen | Before: never shown, shown twice | Game clock: never shown, shown twice | Hand-over to screen |
+|---|---|---|---|
+| 59.94 Hz | 608, 590 | 18, 0 (one every 16.7 s: what cannot be had) | 13.4 ms (before: 8.0) |
+| 59.98 Hz | 627, 621 | 6, 0 | 13.4 ms |
+| 60.000 Hz | | 0, 0 | 17.2 ms (wherever it started: it never moves) |
+| 60.006 Hz | 685, 687 | 0, 2 | 13.0 ms |
+| 60.1 Hz | | 0, 30 | 11.9 ms |
+| 59.94 Hz, presents 1.5 ms uneven; one 3 ms late every 342 | | 18, 0 | 13.4 ms |
+| 59.94 Hz, a frame 12 ms give or take 1.5 | | 19, 1 | 12.4 ms |
+| 59.98 Hz, a frame 6 give or take 2 ms, every 37th 7 ms longer | 1,358, 1,351 | 9, 3 | 17.1 ms |
+| the same, every 11th 9 ms longer | | 55, 49 | 17.4 ms |
+| 120 Hz | shown for 1, 2, 3 refreshes: 1,211, 15,575, 1,214 | 0, 17,997, 3 | 8.5 ms (before: 4.2) |
+| 119.88 Hz | | 35, 17,964, 0 | 9.2 ms |
+| 240 Hz | | all for 4 refreshes but 6 | 6.3 ms |
+| 144, 165, 90, 75 Hz | | for 2 and 3 (60%, 40%), 2 and 3 (25%, 75%), 1 and 2 (half each), 1 and 2 (75%, 25%), in a fixed turn | 7 to 11 ms |
+| 50, 30 Hz | | 1 in 6 and 1 in 2 never shown: the screen has no room for them | |
+
+A screen that changes rate (60 to 120, 120 to 59.94, 60 to 144 Hz at 100
+s): the new rate is taken up and the counts after it are the new rate's
+own.
+
+**Checked: the game** (the scripted fight; "frames" are those the game drew
+from vertical blank 4,500 on, from the sync log, unless said; the game's
+timer set off the screen with `--pace-ppm`, as in section 58):
+
+| Screen | Renderer | The game's timer | Frame pacing | Frames never shown | Shown for |
+|---|---|---|---|---|---|
+| KWin, 60 Hz | GPU | 1,000 ppm fast | Off | 57 of 7,179 | one present 99.21%, two 0.70% |
+| KWin, 60 Hz | GPU | 1,000 ppm fast | Game clock | 8 of 7,179 (7.5 cannot be had in 125 s) | one present 99.92% |
+| KWin, 60 Hz | GPU | 1,000 ppm slow | Game clock | 6 of 7,179 | one 99.75%, two 0.17% |
+| KWin, 60 Hz | GPU | 100 ppm fast | Game clock | 2 of 7,179 | one 99.90% |
+| KWin, 60 Hz | GPU | 100 ppm fast | Screen refresh | 0 of 7,179 | one 99.92% |
+| KWin, 60 Hz | software | 1,000 ppm fast | Game clock | 12 of 9,000 (the log's count; 9 cannot be had) | |
+| gamescope, 60 Hz (X11) | GPU | 1,000 ppm fast | Game clock | 5 of 4,333 (4.5 cannot be had) | one 99.93% |
+| gamescope, 120 Hz | GPU | 1,000 ppm fast | Game clock | 0 of 4,333 | two 99.75%, one 0.18% (the steps) |
+| gamescope, 144 Hz | GPU | 1,000 ppm fast | Game clock | 0 of 4,333 | two 60.18%, three 39.75% |
+| KWin, 60 Hz, the Windows build under Wine | GPU | 100 ppm fast | Game clock | 0 of 4,333 | one 99.93% |
+
+(The 1,000 ppm slow run went back to the newest frame for 2 seconds once,
+at one of KWin's phase jumps, before the change above.)
+
+Two-PC games (both latency optimization On, 30 ms give or take 10 each
+way, both timers 1,000 ppm fast, to vertical blank 9,000; the joining
+PC's menu opened once on the Frame pacing row):
+
+| Host's choice | Joining PC's | Both logs say | Never shown in the last full 600 (host, joining) | Checks agreed |
+|---|---|---|---|---|
+| Game clock | Off | the game's own clock, each frame put on a refresh | 6, 5 | 150, 149; the 18 fingerprints the same |
+| Off | Game clock | the game's own timer (a two-PC game) | 22, 20 | 149, 149; the same |
+| Screen refresh | Off | the game's own clock, each frame put on a refresh | 2, 2 | 149, 149; the same |
+
+The joining PC's menu showed its own Off on the row and the note "A
+two-PC game uses the host's choice: Game clock now. Yours is kept for your
+own games."
+
+**Checked: a real screen** (with the maintainer's leave: this build's
+Windows game under Proton on the desktop's own 3840 x 2160 screen at 59.94
+Hz, HDMI, the GPU renderer at 4 x in a 3414 x 1920 window, sound off; the
+attract sequence for two minutes; frames from vertical blank 3,000 on, 110
+s). Presents there come evenly: half within 0.22 ms of the refresh's grid,
+99% within 1.2 ms.
+
+| Frame pacing | Frames never shown | Shown for | In each 10 s |
+|---|---|---|---|
+| Off | 75 of 6,590 | one present 98.91%, two 1.06% | 6, 0, 6, 13, 2, 2, 1, 16, 16, 0 |
+| Game clock | 10 of 6,590 (6.6 cannot be had) | one present 99.91% | 0, 1, 1, 1, 1, 0, 3, 1, 1, 1 |
+
+0.5.12's Screen refresh on the same screen (the release's own game, the
+run before this section): followed from 3.7 s to the end, 3 frames never
+shown in two minutes.
+
+Not covered: Windows itself; the reporter's PC; the real screen at 120 Hz
+(0.5.12 lost the screen four times in 20 s there in a run where the screen's
+mode was being changed by hand at times not noted; not run again); a screen with G-Sync or
+FreeSync (there the screen could follow the game, which is not done); a
+Steam Deck; a screen changing rate while the real game runs (the model
+only).
