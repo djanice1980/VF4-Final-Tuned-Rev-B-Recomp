@@ -5629,10 +5629,28 @@ to 83.6 Hz), and at 59.5 Hz it passes for a 60 Hz screen. Where the system
 rightly reports an uneven rate, the notice is then left out. Nothing was
 changed for it.
 
-**Not covered.** A real screen under Proton with this build: the run that
-showed the fault was 0.5.16's. A real change of a screen's rate as this
-build runs (the hidden desktops cannot change theirs, so the state after a
-change was put in by `--refresh-first`). Presents that are uneven in
-themselves and fit no grid: there the refresh stays unsteady as before,
-with the period now taken again at every third restart. A hidden window's
-presents near 59.5 Hz under Wine (above).
+**Not covered.** Presents that are uneven in themselves and fit no grid:
+there the refresh stays unsteady as before, with the period now taken
+again at every third restart. A hidden window's presents near 59.5 Hz
+under Wine (above). Windows itself. At the release, also a real screen
+under Proton with this build, and a real change of a screen's rate as it
+runs (the hidden desktops cannot change theirs, so the state after a
+change was put in by `--refresh-first`): the run below has both.
+
+**On a real screen, after the release (2026-11-18).** 0.5.17 under Proton
+on the screen of the run that showed the fault. The kernel's display log
+gives the times again: 50 Hz from a minute before the game started, 60 Hz
+(the 59.94 Hz mode) 55.1 s into the run, 100 Hz at 82.6 s, 120 Hz at
+108.9 s.
+
+| The screen | 0.5.16's run | 0.5.17's run |
+|---|---|---|
+| 50 Hz at the start | never steady in 83 s; no notice | steady at 49.89 Hz in the log's line 2.7 s in (not yet in those at 1.7 and 2.2 s); `screen: 49.92 Hz, by its presents (the system says 60.00 Hz) (not a multiple of 60: uneven)` and the notice at 7.4 s |
+| set to 60 Hz | steady within two seconds | set with the menu open; 59.941 Hz in the next line on the frames drawn |
+| set to 100 Hz | never steady in 52 s | not steady in the `pace:` line 0.4 s after the change; 99.998 Hz in the line on the frames drawn 2.1 s after it |
+| set to 120 Hz | steady within two seconds | not steady in the `pace:` line 0.5 s after the change; 120.097 Hz in the next one, 2.5 s after it |
+
+The log's lines come at set times (a `pace:` line when the pacing changes,
+but not more than one in two seconds; the line on the frames drawn every
+600 vertical blanks), so the times after a change are upper bounds. At 100 Hz each 600 frames went to
+1,000 presents and none was never shown. The game closed 0.2 s after Quit.
