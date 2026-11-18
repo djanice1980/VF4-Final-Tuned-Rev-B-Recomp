@@ -13,6 +13,8 @@
                                          * this the phase starts again (3 in a row, or most of a dozen) */
 #define VS_AGAIN 8                      /* takes fitting after that, with the period measured before: steady */
 #define VS_MULTI 16                     /* takes in a row more than a refresh apart: the period again */
+#define VS_RESEED 3                     /* the phase started again this often and was never steady between:
+                                         * the period again */
 #define VS_STEADY_NS 1000000000ull      /* the refresh is steady once takes have fitted for this long */
 #define VS_STALE 8                      /* refreshes with no take: nothing is being shown */
 #define VS_TOLERANCE 0.0025             /* k refreshes are a frame when within this of it */
@@ -35,6 +37,7 @@ static struct {
     int misfits, bad, multi;    /* takes in a row that did not fit; those weighed (VS_BAD); takes in a row
                                  * that fitted more than a refresh on */
     int measured;               /* the period has been measured across a run since it was last started */
+    int restarts;               /* the phase has started again this often since the refresh was last steady */
     Uint64 iv[VS_SEED];         /* the latest raw intervals */
     unsigned niv;
     struct { Uint64 index; double anchor; } ring[VS_RING];     /* the run's fitted takes */
@@ -96,13 +99,23 @@ static void restart(Uint64 t)
     vs.multi = 0;
 }
 
+static double test_td;      /* --refresh-first: the period the filter starts with (0: none) */
+
+void vsync_test_first(double hz)
+{
+    SDL_LockSpinlock(&vs.lock);
+    test_td = hz > 0 ? 1e9 / hz : 0;
+    vs.td = test_td;
+    SDL_UnlockSpinlock(&vs.lock);
+}
+
 void vsync_reset(void)
 {
     SDL_LockSpinlock(&vs.lock);
     vs.last = 0;
-    vs.td = 0;
+    vs.td = test_td;
     vs.index = vs.slot = 0;
-    vs.misfits = vs.bad = vs.measured = 0;
+    vs.misfits = vs.bad = vs.measured = vs.restarts = 0;
     vs.niv = 0;
     vs.rate_hz = 0;
     restart(0);
@@ -130,7 +143,10 @@ int vsync_take(Uint64 t)
                 /* not where the grid says. One such (a present held up, a stall), or a few among many
                  * that fit (presents that come unevenly), change nothing: the grid goes on by its
                  * period. Three in a row, or most of a dozen: the phase starts again here. All of
-                 * VS_SEED in a row: the period too */
+                 * VS_SEED in a row: the period too. And the period too when the phase has started again
+                 * VS_RESEED times with the refresh never steady between: with a period that is not the
+                 * screen's, fits and misfits can take turns for good (a period of 12.5 ms and presents
+                 * every 20 ms: every other one fits), so neither count in a row is ever reached */
                 if (m >= 1) {
                     vs.anchor += m * vs.td;
                     vs.index += (Uint64)m;
@@ -139,10 +155,11 @@ int vsync_take(Uint64 t)
                 if (vs.bad >= VS_BAD) {
                     restart(t);
                     vs.bad = 0;
+                    vs.restarts++;
                 }
-                if (++vs.misfits >= VS_SEED) {
+                if (++vs.misfits >= VS_SEED || (vs.restarts >= VS_RESEED && vs.niv >= VS_SEED)) {
                     vs.td = seed();
-                    vs.misfits = 0;
+                    vs.misfits = vs.restarts = 0;
                 }
             } else {
                 /* the phase a little towards it. The period: while the run is young, by the error
@@ -182,6 +199,7 @@ int vsync_take(Uint64 t)
     }
     vs.last = t;
     if (steady()) {
+        vs.restarts = 0;
         /* section 61: a steady rate higher than the one kept is the screen's from now; the same one
          * is measured again; a lower one (presents held back, or the screen slower now) takes its
          * place only once the higher has not been measured for VS_RATE_KEEP_NS */

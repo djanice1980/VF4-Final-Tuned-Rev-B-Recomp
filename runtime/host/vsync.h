@@ -24,6 +24,12 @@
 /* nothing is known any more (the start; the window on another screen) */
 void vsync_reset(void);
 
+/* for tests (--refresh-first): the filter starts, now and after each
+ * vsync_reset, holding the period of a screen at hz (0: none), as it does
+ * after presents that were not the screen's (a window's first ones under
+ * Wine) or after the screen's rate was changed (docs/design.md section 63) */
+void vsync_test_first(double hz);
+
 /* window thread: a present takes the newest frame now (ns, SDL_GetTicksNS).
  * 0 when this one is to show the frame before again: the machine follows the
  * screen, the screen refreshes several times to a frame, and this is not

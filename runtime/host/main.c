@@ -56,6 +56,8 @@
  *                     presents show
  *   --system-hz HZ    for tests: SDL reports HZ for the screen (a report that is wrong: it is
  *                     held against the presents' rate, docs/design.md section 61)
+ *   --refresh-first HZ  for tests: the refresh's filter starts holding a screen of HZ's period,
+ *                     as after presents that were not the screen's (docs/design.md section 63)
  *   --pace-ppm N      for tests: the game's own timer runs N parts in a million fast (N may be
  *                     negative), as a screen that many slow would look to it (docs/design.md
  *                     section 58)
@@ -3364,6 +3366,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--deck-product") && v) settings_steam_deck_test(argv[++i]);
         else if (!strcmp(a, "--screen-hz") && v) screen_hz_test = (float)SDL_atof(argv[++i]);
         else if (!strcmp(a, "--system-hz") && v) system_hz_test = (float)SDL_atof(argv[++i]);
+        else if (!strcmp(a, "--refresh-first") && v) vsync_test_first(SDL_atof(argv[++i]));
         else if (!strcmp(a, "--pace-ppm") && v)
             frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
         else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");

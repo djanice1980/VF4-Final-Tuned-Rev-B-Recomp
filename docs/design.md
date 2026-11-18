@@ -5502,3 +5502,137 @@ case the game is not told of under Wine), the report made its own 60, 50,
 **Not covered.** Windows itself. A Steam Deck. A screen with G-Sync or
 FreeSync. An empty virtual desktop on a desktop with a shell. Why Proton
 reports 60.
+
+## 63. The refresh's period, taken again when the phase keeps starting again (2026-11-17)
+
+**What was seen.** A 0.5.16 game under Proton on a screen at 50 Hz, set to
+60, 100 and 120 Hz as it ran. The kernel's display log gives the times: 50
+Hz from five seconds before the game started, 60 Hz at 83.6 s, 100 Hz at
+147.0 s, 120 Hz at 198.6 s. At 60 and at 120 Hz the game's log has the
+refresh steady within two seconds. At 50 Hz, for all of 83 seconds, and at
+100 Hz, for 52, it has "the screen's refresh is not steady, or not
+measured yet".
+
+Two things go by a steady refresh. Frame pacing's Game clock (section 59)
+showed "the newest frame at each present" all that time, which is what the
+game did before section 58. And section 62's notice had no settled rate to
+go by: `screen: 60.00 Hz (the system's report: the presents gave no
+settled rate)`, and nothing was shown on the 50 Hz screen. The run before
+it, 0.5.15 on the same screen at 50 Hz, was steady in 2.5 seconds, and
+vsync.c is the same in both.
+
+**Why.** The filter (section 58) takes its period from the first 16
+intervals. It takes it again when 16 takes in a row do not fit its grid
+(VS_SEED), or when 16 in a row come two refreshes or more on (VS_MULTI).
+Fewer takes that do not fit (each counts 2, each that fits takes 1 off: at
+VS_BAD, 6, so three in a row) only start the phase again. But with a
+period that is not the screen's, takes
+that fit and takes that do not can take turns:
+
+- A period of 12.5 ms (80 a second: about what a window's first presents
+  come at under Wine, before it is shown) and presents every 20 ms: every
+  other take is within a quarter of a period of the grid.
+- A period of 16.7 ms and presents every 10 ms (the screen set from 60 to
+  100 Hz): two do not fit, the third does.
+
+Then neither count in a row is ever reached. The phase starts again every
+quarter of a second, no run grows long enough to be steady, and the wrong
+period is kept for good. Which first period the filter gets is a matter of
+the window's first presents: the 0.5.15 run's happened to be 50 Hz's.
+
+A model (the repository's vsync.c, the presents made up, each 0.3 ms off
+its refresh) with the filter as it was:
+
+| The period held | The screen then | The refresh |
+|---|---|---|
+| 80 Hz's, from 0.4 s of presents | 50, 60 or 120 Hz | never steady |
+| 104 Hz's, the same way | 60 Hz | never steady |
+| 80, 62 or 104 Hz's | six other pairs with 50, 100, 120, 144 Hz | steady 0.8 to 6.0 s after the screen took its rate |
+| a screen's, changed 60 to 100, 60 to 90, 90 to 60, 240 to 144 Hz | | never steady again |
+| a screen's, changed in 14 other ways between 50 and 240 Hz | | steady again 0.8 to 7.6 s after the change |
+
+**What is done.** The filter counts how often the phase has started again
+since the refresh was last steady (`vs.restarts`). At the third
+(VS_RESEED) it takes the period again from the latest 16 intervals, as
+after 16 misfits in a row. The count is cleared whenever the refresh is
+steady. So a phase that starts again now and then on a screen whose period
+is right costs nothing new (on KWin's virtual screen the phase jumps by
+about half a refresh now and then: section 59): there the refresh is
+steady again after 8 takes that fit, before a third restart.
+
+**Checked.**
+
+The model with this filter: the ten first periods (80, 62 and 104 Hz's,
+then a screen at 50 to 144 Hz) are steady 0.6 to 1.1 s after the screen
+took its rate, and the 18 changes of rate 0.6 to 1.4 s after the change.
+None is left unsteady.
+
+Section 58's and section 59's models (28 cases each: jitter, late
+presents, spikes, slow and fast screens, a change of rate) give the same
+output as before, to the character, in 27 cases each. The one in each that
+changes the screen's rate differs. Section 58's (60 to 120 Hz) loses less
+in the change: no frame never shown where there was one, 41 takes
+repeating a frame where there were 91. Section 59's (60 to 144 Hz) shows
+every frame for as many presents as before; of its 18,000 frames 11,941
+were moved a refresh later where 11,857 were. Section 61's model of the
+rate kept settles as before or sooner.
+
+The real game, with `--refresh-first HZ` (for tests: the filter starts
+holding HZ's period, as after presents that were not the screen's, or
+after a change of the screen's rate), left to itself for 20 s on screens
+that run at a rate (gamescope's headless backend; a headless KWin for 60
+Hz). "Without" is the same build with VS_RESEED out of reach:
+
+| Screen | First taken for | Without the new rule | With it |
+|---|---|---|---|
+| 50 Hz, reported as 60 | 80 Hz | never steady; no notice | steady 2.8 s into the run; `screen: 50.00 Hz, by its presents (the system says 60.00 Hz)`, and the notice |
+| 100 Hz | 60 Hz | never steady | steady at 2.8 s |
+| 60 Hz | 90 Hz | never steady | steady at 3.0 s |
+| 60 Hz, the Linux game and the Windows game under Wine | 80 Hz | | steady at 2.9 s and at 1.7 s |
+| 120 Hz | 80 Hz | | steady at 2.8 s |
+| 144 Hz | 240 Hz | | steady at 2.9 s |
+| 90 Hz | 60 Hz | | steady at 2.9 s |
+
+(The times are those of the log's first `pace:` line, about 2.8 s into a
+run. In the four runs whose logs were kept, the log's lines on the frames
+drawn have the screen's rate from 1.5 s on.)
+
+The release's own games (0.5.17, built by its builder from its zip): the
+eight cases again, 8 of 8, steady by 3.1 s (1.9 s under Wine), and section
+62's ten real-rate cases, 10 of 10.
+
+The hidden-window cases again, since a refresh that is steady sooner gives
+the notice's rule (sections 61 and 62) a settled rate sooner:
+
+- The window hidden before the game starts (a lock screen), the Linux
+  game, six reports: 6 of 6, the presents at 19.3 to 19.8 Hz and never
+  taken.
+- The game covered three seconds in (another window, the lock screen, the
+  other virtual desktop), the Windows game under Wine and the Linux game:
+  6 of 6, no notice.
+- The window hidden before the game starts, the Windows game under Wine,
+  six reports twice: 11 of 12 as before (the presents at about 62 Hz, not
+  taken). In the twelfth, with 50 Hz reported, the hidden window's
+  presents came at about 59.5 a second for its first twelve seconds, and
+  at 62 after that as in the other runs. Section 61's rule for an uneven
+  report and presents at an even rate (the screen was set to an even rate
+  since the report) took that: `screen: 59.43 Hz, by its presents (the
+  system says 50.00 Hz)`, and no notice where the test wanted one.
+
+That twelfth run is not this section's doing. Presents like its own (62 Hz
+for 0.4 s, then 59.5 Hz) give 59.56 Hz, settled 5.9 s in, with the filter
+as released and with this one, the same to the digit; the first period was
+near enough to be kept either way. It is the hole section 62 left open, a
+window hidden with the game not told, with a second way to go wrong: the
+hidden window's timer under Wine is known by its rates (60.6 to 62.7, 76
+to 83.6 Hz), and at 59.5 Hz it passes for a 60 Hz screen. Where the system
+rightly reports an uneven rate, the notice is then left out. Nothing was
+changed for it.
+
+**Not covered.** A real screen under Proton with this build: the run that
+showed the fault was 0.5.16's. A real change of a screen's rate as this
+build runs (the hidden desktops cannot change theirs, so the state after a
+change was put in by `--refresh-first`). Presents that are uneven in
+themselves and fit no grid: there the refresh stays unsteady as before,
+with the period now taken again at every third restart. A hidden window's
+presents near 59.5 Hz under Wine (above).

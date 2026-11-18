@@ -664,9 +664,11 @@ with `--code CODE` (the joining PC: the six digits the host's game shows),
 `--delay N` (its input delay in vertical blanks, 2 by default), and
 for tests `--net-lag MS[,JITTER[,LOSS]]` (in a two-PC game, each datagram
 this PC sends goes MS ms later, give or take JITTER, and LOSS in 100 are
-dropped), `--pace-ppm N` (the game's own timer N parts in a million fast)
-and `--sync-log FILE` (when each frame was handed over and which frame
-each present showed; [design.md s58](docs/design.md#58-the-games-pace-from-the-screens-refresh-2026-11-17)),
+dropped), `--pace-ppm N` (the game's own timer N parts in a million fast),
+`--sync-log FILE` (when each frame was handed over and which frame
+each present showed; [design.md s58](docs/design.md#58-the-games-pace-from-the-screens-refresh-2026-11-17))
+and `--refresh-first HZ` (the screen's refresh is taken for HZ at first:
+[design.md s63](docs/design.md#63-the-refreshs-period-taken-again-when-the-phase-keeps-starting-again-2026-11-17)),
 `--hash-every N` (the machine's fingerprint in the log every N
 vertical blanks), `--snapshot-at N FILE` (the whole machine at the end of
 vertical blank N into FILE) and `--resume FILE` (the run goes on from
