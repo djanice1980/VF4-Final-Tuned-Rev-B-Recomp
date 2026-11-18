@@ -333,7 +333,12 @@ screen (Settings, Picture changes it). The OLED's screen can run at 90
 Hz, and the game's 60 pictures a second look uneven at that rate: the
 first start on an OLED says how to set 60 Hz for this game (the Quick
 Access button, Performance, Use per-game profile, Refresh rate 60). A PC
-whose screen runs at a rate like 144 or 75 Hz gets the same note once.
+whose screen runs at a rate like 144 or 75 Hz gets the same note once. The
+game checks the rate the system reports against how fast its own pictures
+reach the screen, since the report can be out of date (under Proton it can
+be the rate the screen had when the launcher started). Where it goes by
+its own count, the note says so as a guess
+([design.md s61](docs/design.md#61-the-screens-rate-for-its-notice-held-against-the-presents-2026-11-17)).
 
 **Frame pacing** (Settings, Picture; the game's menu, Picture tab) is how
 the game's 60 frames a second meet the screen's refresh.

@@ -550,18 +550,26 @@ static float notice_button(float x, float y, const char *label, int on)
  * is even (or not known, off a Steam Deck OLED) */
 static const char *refresh_text(void)
 {
-    static char t[400];
+    static char t[520];
     if (run.deck == STEAM_DECK_OLED)
         SDL_snprintf(t, sizeof t,
                      "The game shows 60 pictures a second, and a Steam Deck OLED's screen can refresh 90 times a "
                      "second: then the motion is uneven. Press the Quick Access button (the one with three dots), "
                      "open Performance, turn on Use per-game profile, and set Refresh rate to 60. At 60 already, "
                      "nothing needs to change.");
+    else if (settings_refresh_uneven(run.refresh) && run.refresh_own)
+        SDL_snprintf(t, sizeof t,
+                     "The game shows 60 pictures a second, and this screen seems to refresh about %.0f times a "
+                     "second, which is not a multiple of 60: the motion may look uneven. If it does, set the "
+                     "screen to a multiple of 60 Hz (60, 120, 180, 240) in the system's display settings. "
+                     "FreeSync or G-Sync, where the screen has it, can smooth it in fullscreen too.",
+                     (double)run.refresh);
     else if (settings_refresh_uneven(run.refresh))
         SDL_snprintf(t, sizeof t,
                      "The game shows 60 pictures a second, and this screen refreshes %.0f times a second: the "
-                     "motion is uneven. Set the screen to 60 Hz (or 120) in the system's display settings. "
-                     "FreeSync or G-Sync, where the screen has it, can smooth it in fullscreen too.",
+                     "motion is uneven. Set the screen to a multiple of 60 Hz (60, 120, 180, 240) in the "
+                     "system's display settings. FreeSync or G-Sync, where the screen has it, can smooth it in "
+                     "fullscreen too.",
                      (double)run.refresh);
     else
         return NULL;
@@ -579,7 +587,10 @@ static void draw_refresh_notice(void)
     const float H = 84 + 23 * (float)ui_wrap_lines(UI_REGULAR, 15.5f, W - 2 * P, t) + 58 + 128;
     const float X = (1180 - W) / 2, Y = (680 - H) / 2;
     ui_round_line(X, Y, W, H, 20, 1, UI_LINE, UI_PANEL);
-    ui_text(UI_BOLD, 21, X + P, Y + 44, UI_TEXT, "Set the screen to 60 Hz");
+    ui_text(UI_BOLD, 21, X + P, Y + 44, UI_TEXT,
+            run.deck == STEAM_DECK_OLED ? "Set the screen to 60 Hz"
+            : run.refresh_own           ? "The screen may not be at a multiple of 60 Hz"
+                                        : "Set the screen to a multiple of 60 Hz");
     float y = Y + 84;
     y += 23 * (float)ui_wrap(UI_REGULAR, 15.5f, X + P, y, W - 2 * P, 23, UI_MUTED, t);
     ui_text_in(UI_REGULAR, 13.5f, X, y + 16, W, 1, 0, UI_FAINT,

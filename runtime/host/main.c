@@ -52,7 +52,10 @@
  *                     vertical blank N when it is due, even when it was shown before
  *   --deck-product FILE  for tests: the firmware's product name from FILE (Jupiter: a Steam
  *                     Deck LCD; Galileo: the OLED) instead of /sys/class/dmi/id/product_name
- *   --screen-hz HZ    for tests: the screen's refresh rate is HZ, not the one SDL reports
+ *   --screen-hz HZ    for tests: the screen's refresh rate is HZ, whatever SDL reports and the
+ *                     presents show
+ *   --system-hz HZ    for tests: SDL reports HZ for the screen (a report that is wrong: it is
+ *                     held against the presents' rate, docs/design.md section 61)
  *   --pace-ppm N      for tests: the game's own timer runs N parts in a million fast (N may be
  *                     negative), as a screen that many slow would look to it (docs/design.md
  *                     section 58)
@@ -2548,15 +2551,81 @@ static void display_to_setting(SDL_Window *w)
 }
 
 static float screen_hz_test;        /* --screen-hz */
+static float system_hz_test;        /* --system-hz */
 
-/* the refresh rate of w's screen in Hz (0: not known) */
+/* the refresh rate the system reports for w's screen in Hz (0: not known) */
 static float screen_refresh(SDL_Window *w)
 {
     if (screen_hz_test > 0)
         return screen_hz_test;
+    if (system_hz_test > 0)
+        return system_hz_test;
     SDL_DisplayID d = w ? SDL_GetDisplayForWindow(w) : 0;
     const SDL_DisplayMode *m = d ? SDL_GetCurrentDisplayMode(d) : NULL;
     return m && m->refresh_rate > 0 ? m->refresh_rate : 0;
+}
+
+/* The screen's refresh rate for its notice and the menu's note (docs/design.md
+ * sections 44 and 61), in Hz; 0: not known. The system's report can be old:
+ * under Proton it is the rate the screen had when the launcher started. So
+ * it is held against the presents' own steady rate once that is settled
+ * (vsync_screen_hz), which the screen's rate cannot be below:
+ *   more presents than the report's refreshes, by more than a tenth (a
+ *     covered window under Xwayland is shown 62 times a second on a 60 Hz
+ *     screen) and up to SCREEN_RATE_MAX (more are presents not held to the
+ *     refresh at all): the report is old, and the presents' rate is taken
+ *     for the screen's. It is a guess, and the notice says it as one;
+ *   fewer: nothing is known by that (an overlay holds presents back, a
+ *     covered window is shown 20 times a second on a 60 Hz screen, a slow
+ *     PC misses refreshes), so the report stands. But for one case: the
+ *     report is of an uneven rate and the presents come steadily at 60 Hz
+ *     or a multiple of it. Then the screen was set to that since the report
+ *     (as the notice asks), and no notice is due.
+ * The presents' rate counts only while the window has the keyboard: behind
+ * another window it may be covered. *sys and *seen: the report and the
+ * presents' rate (0: none, or not to be counted); *settled: it is settled,
+ * or nothing is to be waited for; *own: the rate returned is the presents',
+ * not the report */
+#define SCREEN_RATE_MAX 400.0
+#define SCREEN_RATE_MORE 1.10
+
+static float screen_rate(float *sys_out, double *seen_out, int *settled_out, int *own_out)
+{
+    float sys = screen_refresh(main_win);
+    int settled = 1;
+    double seen = screen_hz_test > 0 ? 0 : vsync_screen_hz(SDL_GetTicksNS(), &settled);
+    if (screen_hz_test > 0) {
+        settled = 1;
+    } else if (!settled) {
+        seen = 0;                               /* not settled: it says nothing yet */
+    } else if (main_win && !(SDL_GetWindowFlags(main_win) & SDL_WINDOW_INPUT_FOCUS)) {
+        seen = 0;                               /* nor behind another window */
+        settled = 0;
+    }
+    if (sys_out)
+        *sys_out = sys;
+    if (seen_out)
+        *seen_out = seen;
+    if (settled_out)
+        *settled_out = settled;
+    if (own_out)
+        *own_out = 0;
+    if (seen <= 0)
+        return sys;
+    if (!(sys > 0)) {
+        if (seen < 48 || seen > SCREEN_RATE_MAX)
+            return 0;                           /* no report, and presents plainly not the screen's */
+    } else if (SDL_fabs(seen - (double)sys) <= 0.01 * (double)sys) {
+        return sys;                             /* they agree: the report's figure */
+    } else if (seen > (double)sys) {
+        if (seen <= SCREEN_RATE_MORE * (double)sys || seen > SCREEN_RATE_MAX)
+            return sys;
+    } else if (!(settings_refresh_uneven(sys) && seen >= 59 && !settings_refresh_uneven((float)seen))) {
+        return sys;
+    }
+    if (own_out)
+        *own_out = 1;
+    return (float)seen;
 }
 
 /* Frame pacing as the window's thread goes by it (docs/design.md section 59): this PC's own,
@@ -2632,7 +2701,7 @@ static void menu_show_as(int notice)
     r.test_program = SDL_GetAtomicInt(&program_now);
     r.card_peek = card_peek;
     r.card_edit = card_edit_save;
-    r.refresh = screen_refresh(main_win);
+    r.refresh = screen_rate(NULL, NULL, NULL, &r.refresh_own);
     r.gpu_now = gpu_now;                /* as it is now: video_switch changes it while the menu is open */
     r.deck = settings_steam_deck();
     r.session = in_session;
@@ -2721,6 +2790,9 @@ static void kofi_turn(int have_picture, Uint64 now_ms)
 static unsigned refresh_frame;      /* --refresh-notice: at this vertical blank (a test: nothing is written) */
 static int refresh_due;             /* 1 until it is checked */
 static Uint64 refresh_after;        /* not before this (ms) */
+static Uint64 refresh_limit;        /* and at this, settled or not (ms) */
+
+#define REFRESH_WAIT_MS 20000       /* how long the presents' rate is waited for (section 61) */
 
 #define REFRESH_FILE "refresh-notice"
 
@@ -2769,28 +2841,47 @@ static void refresh_setup(int test)
 }
 
 /* called every turn of the window's loop, after kofi_turn: checks the
- * screen's rate two seconds into the picture (or the Ko-fi notice's
- * closing), and shows the notice when it is uneven */
+ * screen's rate (screen_rate) once the presents' rate has settled, two
+ * seconds into the picture (or the Ko-fi notice's closing) at the earliest
+ * and REFRESH_WAIT_MS at the latest, and shows the notice when it is
+ * uneven */
 static void refresh_turn(int have_picture, Uint64 now_ms)
 {
     if (!refresh_due || !have_picture || menu_on || kofi_due)
         return;
+    int deck = settings_steam_deck();
+    float sys = 0;
+    double seen = 0;
+    int settled = 1;
     if (refresh_frame) {
         if ((unsigned)SDL_GetAtomicInt(&frame_now) < refresh_frame)
             return;
     } else {
-        if (!refresh_after)
+        if (!refresh_after) {
             refresh_after = now_ms + 2000;
+            refresh_limit = now_ms + REFRESH_WAIT_MS;
+        }
         if (now_ms < refresh_after)
             return;
     }
+    float hz = screen_rate(&sys, &seen, &settled, NULL);
+    /* the presents' rate has not stood long enough yet (an OLED Deck's notice does not go by it) */
+    if (!refresh_frame && !settled && deck != STEAM_DECK_OLED && now_ms < refresh_limit)
+        return;
     refresh_due = 0;
-    float hz = screen_refresh(main_win);
-    int deck = settings_steam_deck();
     int uneven = settings_refresh_uneven(hz);
-    char key[48];
+    char key[48], how[112] = "";
     refresh_key(hz, key, sizeof key);
-    logf_("screen: %.2f Hz%s", (double)hz, hz <= 0 ? " (not known)" : uneven ? " (not a multiple of 60: uneven)" : "");
+    if (seen > 0 && hz != sys && sys > 0)
+        SDL_snprintf(how, sizeof how, ", by its presents (the system says %.2f Hz)", (double)sys);
+    else if (seen > 0 && hz != sys)
+        SDL_snprintf(how, sizeof how, ", by its presents (the system reports no rate)");
+    else if (seen > 0 && SDL_fabs(seen - (double)sys) > 0.01 * (double)sys)
+        SDL_snprintf(how, sizeof how, " (the presents come at %.2f Hz: held back, or the window is covered)", seen);
+    else if (seen <= 0 && hz > 0 && screen_hz_test <= 0)
+        SDL_snprintf(how, sizeof how, " (the system's report: the presents gave no settled rate)");
+    logf_("screen: %.2f Hz%s%s", (double)hz, how,
+          hz <= 0 ? " (not known)" : uneven ? " (not a multiple of 60: uneven)" : "");
     if (!uneven && deck != STEAM_DECK_OLED)
         return;
     if (!refresh_frame) {
@@ -3302,6 +3393,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--refresh-notice") && v) refresh_frame = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--deck-product") && v) settings_steam_deck_test(argv[++i]);
         else if (!strcmp(a, "--screen-hz") && v) screen_hz_test = (float)SDL_atof(argv[++i]);
+        else if (!strcmp(a, "--system-hz") && v) system_hz_test = (float)SDL_atof(argv[++i]);
         else if (!strcmp(a, "--pace-ppm") && v)
             frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
         else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");
@@ -3698,6 +3790,9 @@ int main(int argc, char **argv)
                 break;
             case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
                 logf_("window: fullscreen");    /* its screen: "now on" when it moved (Wayland: after this) */
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                vsync_rate_forget();            /* what its presents did behind others says nothing (section 61) */
                 break;
             case SDL_EVENT_WINDOW_DISPLAY_CHANGED: {
                 /* where it is now (moved, shown by Wayland, fullscreen on

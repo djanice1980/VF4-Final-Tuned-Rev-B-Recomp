@@ -60,4 +60,20 @@ unsigned vsync_pick(const unsigned *frame, const Uint64 *pts, int n);
  * many frames it has moved one refresh sooner and one later to keep in step */
 int vsync_pick_stats(double *hz, unsigned *sooner, unsigned *later);
 
+/* The presents' steady rate in Hz, for the notice about a screen whose rate
+ * is not a multiple of 60 (docs/design.md section 61); 0 when the takes
+ * gave no steady rate in the last ten seconds. It is the highest steady
+ * rate of that time. Presents that are shown do not come faster than the
+ * screen refreshes, so the screen's rate is at least a settled one; they
+ * can come slower (an overlay drawing its notice shows every other one; a
+ * covered window is shown a few times a second), so it may be more.
+ * *settled: the rate has stood for five seconds and is the rate now (now:
+ * SDL_GetTicksNS). One that is not settled says nothing yet: a window's
+ * first presents, before it is shown, can come faster than the screen */
+double vsync_screen_hz(Uint64 now, int *settled);
+
+/* window thread: the rate kept is forgotten. The window has just come to the
+ * front, and what its presents did behind others says nothing */
+void vsync_rate_forget(void);
+
 #endif

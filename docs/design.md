@@ -2891,16 +2891,21 @@ Refresh rate), elsewhere the system's. So it says so, once:
   a multiple of 60 (59.94 and 120 are even; 90, 75, 144 and 165 are not).
 - Two seconds into the picture (after the Ko-fi notice, section 26, when
   that shows), main.c reads the window's screen's rate
-  (`SDL_GetCurrentDisplayMode`, logged as `screen: 144.00 Hz`). When it
+  (`SDL_GetCurrentDisplayMode`, logged as `screen: 144.00 Hz`; since
+  section 61 that report is held against the rate the presents show, as
+  it can be an old one, and the notice waits for that rate to settle). When it
   is uneven, or on a Deck OLED whatever it reports (the per-game rate is
   Steam's, and what gamescope reports to the game is not known to follow
   it), the menu opens as a notice (`MENU_NOTICE_REFRESH`): "Set the
-  screen to 60 Hz", the steps, and OK.
+  screen to 60 Hz", the steps, and OK. (Off a Deck the advice is "a
+  multiple of 60 Hz" since section 61, and a rate the game counted itself
+  is said as a guess.)
 - `user/refresh-notice` says what it was shown for, `Steam Deck OLED` or
   the rate (`144 Hz`), on its first line: it shows again only for
   another screen. Test runs (`--frames`, `--keys` and so on) show it only
   with `--refresh-notice N` and write nothing; `--deck-product FILE` and
-  `--screen-hz HZ` stand in for the firmware's name and the rate.
+  `--screen-hz HZ` stand in for the firmware's name and the rate
+  (`--system-hz HZ` for the system's report alone: section 61).
 - The Picture tab's Fullscreen row says the same in its note, every
   time, while it applies.
 
@@ -5215,3 +5220,158 @@ Renderer and GPU too: it draws only its pages, and a first device that
 drew only the boot's screens did not bring the stall on, but its closing
 was not timed. Why the driver waits: not found, and not reported to
 NVIDIA.
+
+## 61. The screen's rate for its notice, held against the presents (2026-11-17)
+
+**What was seen.** A 0.5.14 game under Proton on a screen at 120 Hz logged
+`screen: 60.00 Hz`. The pacing was right all the same (1,200 presents to
+600 frames: sections 58 and 59 go by the presents they measure). But that
+figure, the system's report (`SDL_GetCurrentDisplayMode`), is what section
+44's notice and the Fullscreen row's note go by. A wrong one fails both
+ways: a 144 or 90 Hz screen reported as 60 gets no notice, and a screen
+the player has just set to a multiple of 60 Hz, as the notice told them
+to, still gets it while the report says 144.
+
+**Why the report was wrong.** The kernel's display log and Steam's log
+give the times of two runs on the same PC:
+
+| Run | The screen went to 120 Hz | Steam started the launcher | The game logged |
+|---|---|---|---|
+| 0.5.13 | 17:44:36 | 17:48:07, 3.5 minutes later | `screen: 120.00 Hz` |
+| 0.5.14 | 18:56:51 | 18:56:39, 12.7 seconds earlier | `screen: 60.00 Hz` |
+
+In the second the game itself started 85 seconds after the change and was
+still told 60. So under Proton the report looks to be the rate the screen
+had when the launcher's Wine session started. (Two runs; no test made the
+change on purpose, and where the old figure is kept, Xwayland or Wine, was
+not looked for.) A Steam Deck OLED's report was not trusted already
+(section 44).
+
+**What the presents can say, and what they cannot.** vsync.c keeps the
+highest steady rate the presents have shown in the last ten seconds
+(`vsync_screen_hz`), and says when it is settled: it has stood for five
+seconds and is the rate now. Three things were learned by testing, each
+from a wrong notice:
+
+- Presents can come slower than the screen, steadily. With Steam's overlay
+  drawing its notice (a controller connected), two 120 Hz runs had about
+  half their presents for 2 to 6 seconds. A window that is covered, on
+  Wayland, is shown about 20 times a second: under a lock screen in a
+  headless KWin, on a 60 Hz screen, the presents came at a steady 19.7 Hz.
+  So fewer presents than the report says nothing about the screen.
+- A window's first presents can come faster than the screen: under Wine,
+  about 80 a second for the first second on a 60 Hz screen. So only a
+  settled rate counts.
+- A covered window under Xwayland (Wine, Proton) is shown by a timer of
+  Xwayland's, not by the screen: 62 a second and 80 a second were both
+  seen on a 60 Hz screen, steadily, and with the keyboard still the
+  window's. So more presents than the report is not proof that the report
+  is old. It is a guess.
+
+**What is done** (`screen_rate` in main.c). The system's report is held
+against the presents' settled rate, while the window has the keyboard:
+
+- More presents than the report, by more than a tenth and up to 400 Hz:
+  the presents' rate is taken for the screen's. It is a guess, and where a
+  notice comes of it, the notice says so: "The screen may not be at a
+  multiple of 60 Hz", "this screen seems to refresh about 144 times a
+  second ... the motion may look uneven. If it does, set the screen to a
+  multiple of 60 Hz (60, 120, 180, 240)".
+- The report is of an uneven rate, and the presents come steadily at 60 Hz
+  or a multiple of it: the screen was set to that since the report, as the
+  notice asks, and no notice is due. This can only take a notice away.
+- Otherwise the report stands: fewer presents, presents within a tenth
+  above it (the 62 on a 60 Hz screen), no settled rate, or the window not
+  in front. The two within 1% of each other: the report's figure. No
+  report at all: the presents' rate, between 48 and 400 Hz.
+- The notice waits for the presents' rate to settle: two seconds into the
+  picture at the earliest, as before, and twenty at the latest, where it
+  goes by the report. When the window comes to the front, the rate kept is
+  forgotten (`vsync_rate_forget`): what the presents did behind other
+  windows does not count.
+- The notice's advice is "a multiple of 60 Hz (60, 120, 180, 240)" in both
+  wordings, where it was "60 Hz (or 120)": 180 and 240 Hz screens are even
+  too.
+- The log says which: `screen: 144.00 Hz, by its presents (the system says
+  60.00 Hz)`, `screen: 60.00 Hz (the presents come at 19.73 Hz: held back,
+  or the window is covered)`, or `(the system's report: the presents gave
+  no settled rate)`.
+- For tests: `--screen-hz HZ` is the screen's rate outright, as before;
+  `--system-hz HZ` is what the system reports, with the presents measured
+  as ever.
+
+**Two rules that were wrong**, both caught before any release. The first
+took the presents' rate wherever it differed from the report. The release
+check for it ran while the desktop's session was locked: KWin then starts
+a lock screen in the test's hidden desktop too, over the game's window,
+and that version logged `screen: 19.74 Hz, by its presents (the system
+says 60.00 Hz) (not a multiple of 60: uneven)` and showed the notice on a
+60 Hz screen. The second took any higher rate as proof of an old report,
+and stated it as a fact: a covered window under Wine gave `screen: 61.83
+Hz, by its presents (the system says 60.00 Hz)` and the notice again. The
+test's KWin now runs with `--no-lockscreen`, and with `--lockscreen` where
+a covered window is wanted.
+
+**A model** of the rate kept (the repository's vsync.c with made-up
+presents, each 0.3 ms off its refresh):
+
+| Presents | Settled at | On |
+|---|---|---|
+| every refresh, at 120, 59.94 and 144 Hz | 5.7 to 5.9 s | 120.00, 59.94, 144.00 |
+| 144 Hz as the 0.5.13 run began: uneven, every 2nd for 2.2 s, uneven, then every refresh | 9.6 s | 144.00 |
+| 144 Hz as the 0.5.14 run began: 3 s of every refresh, then uneven and every 2nd for 6 s | 7.5 s | 144.00, kept through the 6 s |
+| 180 Hz, every 2nd for 4 s in the middle | 5.6 s | 180.00, kept |
+| 120 Hz, each refresh presented with a chance of 0.6 throughout | 7.9 s | 120.01 |
+| the screen raised from 60 to 144 Hz | 3.9 s after it | 144, settled 5 s later |
+| the screen lowered from 144 to 120 Hz | 10.2 s after it | 120, settled 5 s later |
+| 144 Hz, every 2nd for the first 8 s | 5.8 s | 72.00, until 144 at 9.4 s |
+
+**Checked** with this build, in a headless KWin (its screen is 60 Hz) and
+under gamescope's headless backend (120 and 144 Hz), sound off. "Test run"
+checks at a set vertical blank (3,000, or 3,400 where covered) without
+waiting for the rate to settle; the others have no test option, and the
+notice comes or not by itself.
+
+| Screen | The system made to report | The game | Logged | Notice |
+|---|---|---|---|---|
+| 144 Hz | 60 | Linux, test run | `144.00 Hz, by its presents (the system says 60.00 Hz) (not a multiple of 60: uneven)` | shown as a guess: "seems to refresh about 144 times a second" |
+| 144 Hz | 60 | Linux, no test option | the same, 6.5 s into the run | shown by itself; `refresh-notice` says `144 Hz` |
+| 144 Hz | its own (143.79) | Linux, test run | `143.79 Hz (not a multiple of 60: uneven)` | shown, in the plain wording |
+| 120 Hz | 60 | Linux, test run | `120.00 Hz, by its presents (the system says 60.00 Hz)` | none |
+| 60 Hz | 144 | Linux, test run | `59.94 Hz, by its presents (the system says 144.00 Hz)` | none |
+| 60 Hz | 144 | Linux, no test option | `60.00 Hz, by its presents (...)`, 6.5 s into the run | none, and no `refresh-notice` file |
+| 60 Hz | 144 | Windows under Wine, no test option | `59.91 Hz, by its presents (...)`, 7.1 s into the run | none |
+| 60 Hz | 144 | Windows under Wine, test run, twice | once `59.97 Hz, by its presents (...)`; once the rate had not settled by then: `144.00 Hz (the system's report: the presents gave no settled rate)` | none; shown, by the report |
+| 60 Hz, the window covered | its own (60) | Linux, no test option | at the twenty seconds: `60.00 Hz (the system's report: ...)`; the presents came at 19.6 Hz, and the window had not the keyboard | none |
+| 60 Hz, the window covered | 144 | Linux, no test option | at the twenty seconds: `144.00 Hz (the system's report: ...) (not a multiple of 60: uneven)` | shown, by the report, as before this section |
+| 60 Hz, the window covered | its own (60) | Windows under Wine, no test option | at the twenty seconds: `60.00 Hz (the system's report: ...)`; the presents came near 80 Hz at times and did not settle | none |
+| 60 Hz, the window covered | its own (60) | Windows under Wine, test run | `60.00 Hz (the system's report: ...)` | none |
+| 60 Hz, the window covered | 50 | Windows under Wine, test run | `61.92 Hz, by its presents (the system says 50.00 Hz) (not a multiple of 60: uneven)` | shown as a guess, wrongly: the first of the cases below |
+
+The notice in both wordings, and the Fullscreen row's note with the longer
+one, were looked at in the window's own pictures: the text fits.
+
+**What stays wrong.**
+
+- A covered window under Xwayland whose timer's rate settles at more than
+  a tenth above the report, with the keyboard still the window's: the
+  notice is shown, as a guess, where none may be due. It was made to
+  happen with the report set to 50 (62 seen). With a right report of 60,
+  the 62 is within the tenth, and the 80 did not settle in the runs made;
+  it could.
+- Presents held back from the first one on for longer than the five
+  seconds, with a report that is too low as well (a 144 Hz screen showing
+  every other present, reported as 60): the guess names 72.
+- A report that is too high for a screen now at another uneven rate (144
+  reported, 90 now): the notice names 144.
+- A report that is too low while the window is behind another from the
+  start: no notice in that run.
+- A frame limiter holding the presents at a steady 60 or 120 on a 144 Hz
+  screen: no notice.
+
+**Not covered.** A real change of a real screen's rate while the launcher
+is open, under Proton, with this build (the case it is for: the hidden
+desktops cannot change their rate, so the wrong report was put in by
+`--system-hz`). Windows itself. A Steam Deck. A screen with G-Sync or
+FreeSync, where the presents may not come at one steady rate. Where the
+old report is kept, so that it could be put right at its source.

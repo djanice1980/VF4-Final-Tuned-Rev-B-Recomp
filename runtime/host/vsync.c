@@ -18,6 +18,10 @@
 #define VS_TOLERANCE 0.0025             /* k refreshes are a frame when within this of it */
 #define VS_TOLERANCE_HELD 0.005         /* and stay one within this, once followed */
 #define VS_SLEW_NS 500000.0             /* the machine's phase is moved by at most this a frame */
+#define VS_RATE_SAME 0.01               /* section 61: steady rates within this of each other are one rate */
+#define VS_RATE_KEEP_NS 10000000000ull  /* the highest steady rate stands this long after it was last measured */
+#define VS_RATE_SETTLE_NS 5000000000ull /* and is settled once it has stood this long */
+#define VS_RATE_NOW_NS 500000000ull     /* and was measured this lately */
 
 enum { WHY_FOLLOW, WHY_UNKNOWN, WHY_STALE, WHY_RATE, WHY_FREE };
 
@@ -41,6 +45,9 @@ static struct {
     int why;
     double why_hz;
     const char *free_why;
+    /* the screen's rate for its notice (section 61) */
+    double rate_hz;             /* the highest steady rate of late (0: none) */
+    Uint64 rate_first, rate_last;       /* when it was first measured, and last measured again */
 } vs;
 
 /* one refresh from the latest raw intervals: their median, then all of them over the refreshes
@@ -97,6 +104,7 @@ void vsync_reset(void)
     vs.index = vs.slot = 0;
     vs.misfits = vs.bad = vs.measured = 0;
     vs.niv = 0;
+    vs.rate_hz = 0;
     restart(0);
     SDL_UnlockSpinlock(&vs.lock);
 }
@@ -173,6 +181,19 @@ int vsync_take(Uint64 t)
         }
     }
     vs.last = t;
+    if (steady()) {
+        /* section 61: a steady rate higher than the one kept is the screen's from now; the same one
+         * is measured again; a lower one (presents held back, or the screen slower now) takes its
+         * place only once the higher has not been measured for VS_RATE_KEEP_NS */
+        double hz = 1e9 / vs.td;
+        if (vs.rate_hz <= 0 || hz > vs.rate_hz * (1 + VS_RATE_SAME) || t - vs.rate_last > VS_RATE_KEEP_NS) {
+            vs.rate_hz = hz;
+            vs.rate_first = vs.rate_last = t;
+        } else if (hz >= vs.rate_hz * (1 - VS_RATE_SAME)) {
+            vs.rate_hz = hz;
+            vs.rate_last = t;
+        }
+    }
     if (vs.following && vs.k > 1) {     /* several refreshes to a frame: the first of them takes it */
         Uint64 slot = vs.index / (Uint64)vs.k;
         take = slot != vs.slot;
@@ -348,6 +369,28 @@ unsigned vsync_pick(const unsigned *frame, const Uint64 *pts, int n)
     sch.on = on;
     SDL_UnlockSpinlock(&vs.lock);
     return limit;
+}
+
+double vsync_screen_hz(Uint64 now, int *settled)
+{
+    SDL_LockSpinlock(&vs.lock);
+    double hz = vs.rate_hz;
+    Uint64 first = vs.rate_first, last = vs.rate_last;
+    SDL_UnlockSpinlock(&vs.lock);
+    if (settled)
+        *settled = 0;
+    if (hz <= 0 || (now > last && now - last > VS_RATE_KEEP_NS))
+        return 0;
+    if (settled)
+        *settled = now >= first && now - first >= VS_RATE_SETTLE_NS && (now <= last || now - last <= VS_RATE_NOW_NS);
+    return hz;
+}
+
+void vsync_rate_forget(void)
+{
+    SDL_LockSpinlock(&vs.lock);
+    vs.rate_hz = 0;
+    SDL_UnlockSpinlock(&vs.lock);
 }
 
 int vsync_pick_stats(double *hz, unsigned *sooner, unsigned *later)
