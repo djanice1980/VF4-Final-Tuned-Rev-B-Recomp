@@ -532,7 +532,10 @@ the ultrawide screens' own widths; Auto is the largest of the sizes that
 leaves a tenth of the screen free); Internal resolution is the size the GPU renderer draws at, before
 the picture is scaled to the window or the screen. Picture, window size,
 scaling, fullscreen, display, renderer, GPU, internal resolution and volume
-change at once (the launcher's window follows Renderer and GPU too); the
+change at once (the launcher's window follows Renderer and GPU too). A GPU
+the game has drawn on stays open in the game until it quits, also after
+you choose another
+([why](docs/design.md#60-one-device-a-gpu-for-the-whole-run-2026-11-17)). The
 card units are kept for the next start (marked with a dot until then),
 and credits (free play or arcade coins), Network and Region apply at the
 next restart. Network is the game's own network setting, off by default: off,

@@ -3947,6 +3947,8 @@ resolution apply at once (no dot now). The menu pauses the game (section
   (video_redo). The loop closes the renderer and its device (video_close)
   and opens them again by the order (video_open). Internal resolution
   alone, on the same GPU, only restarts the GPU renderer on its device.
+  (Since section 60 the device is not closed there: it gives the window
+  back and is held, and a GPU's device is opened only once in a run.)
 - The machine's thread either hands its passes to the GPU renderer or
   keeps them for the software picture (game_machine_gpu), and may only
   change that on its own thread. So the window's loop publishes the
@@ -5097,3 +5099,119 @@ mode was being changed by hand at times not noted; not run again); a screen with
 FreeSync (there the screen could follow the game, which is not done); a
 Steam Deck; a screen changing rate while the real game runs (the model
 only).
+
+## 60. One device a GPU for the whole run (2026-11-17)
+
+**What was seen.** The 0.5.13 release under Proton, played for eight
+minutes on a 120 Hz screen, with Renderer and GPU changed in the menu on
+the way (the GeForce, the Radeon, Software, the Radeon, Auto, the GeForce),
+took 33 seconds to close after Quit. Its log has the machine stopped and
+saved at once, and then 33.2 s between the last line of statistics and
+"clean exit". Every run before, with no change in the menu, closed in 0.06
+to 0.25 s.
+
+**Where the time goes.** It was made to happen again in a headless KWin,
+with no Steam: Proton Experimental and plain Wine 11.22, NVIDIA's driver
+620.70.06, an RTX 5070 Ti. Each step of the closing was timed:
+
+| Step | Usually | In the slow closing |
+|---|---|---|
+| the GPU has nothing left to do (SDL_WaitForGPUIdle) | 1 ms | 1 ms |
+| SDL_ReleaseWindowFromGPUDevice | 20 ms | 22.0 s |
+| SDL_DestroyGPUDevice | 60 ms | 11.2 s |
+
+Wine's trace of the Vulkan calls (`WINEDEBUG=+timestamp,+vulkan`) names
+them: `vkDestroySwapchainKHR` 22.01 s and `vkDestroyDevice` 11.15 s. The
+game's main thread is not asleep in that time. It runs, inside NVIDIA's
+`libnvidia-glcore`, reading the clock (two samples of it under gdb: one in
+the clock's read, one in the driver's own code). The times are nearly the
+same run after run (22.01 to 22.06 s and 11.16 to 11.22 s over six runs): a
+wait that gives up after about 11 seconds, three times. What the driver
+waits for is not to be seen from outside it.
+
+**What brings it on.** The same steps by the game's `--keys` (the Renderer
+row to Software and back, then Quit), changed one thing at a time:
+
+| Case | The closing |
+|---|---|
+| Renderer to Software and back at vertical blank 3000 (the attract sequence's 3D scenes), Quit at 3040 or at 3400; Proton and plain Wine | 33.2 s |
+| GPU to the Radeon at 3000 (it cannot show the window there, so a new device on the GeForce), Renderer changed at 3400 | 33.2 s, in the menu: the window stands still that long |
+| the same with NVIDIA's shader cache on disk off (`__GL_SHADER_DISK_CACHE=0`) | 33.2 s |
+| the same with 0.5.12 | 33.2 s |
+| Renderer to Software and back at 400 (the boot's screens), Quit at 3040 | 0.15 s |
+| started with Software, GPU at 3000 (the first device to draw with the GPU renderer, made in the middle of the game) | 0.09 s |
+| Internal resolution 4x to 3x at 3000 (the renderer made again on the same device, every texture sent again) | 0.13 s |
+| the Linux game, the same steps, on Wayland and on X11 through Xwayland | 0.15 s, 0.09 s |
+
+So it takes a second device on the GeForce in one process, after a first
+one that drew the game's 3D scenes and was closed. Closing the second one
+stalls, at the quit or at the next change in the menu. Only under Wine.
+
+It is not Steam's overlay (there was no Steam; in the maintainer's run
+Steam did start an overlay process for each new device). It is not the
+external GPU's link (the kernel's log has nothing from NVIDIA's driver or
+PCIe at that time). It is not section 59's pacing (0.5.12 does the same;
+Renderer and GPU have been changed at once since section 53).
+
+**What is done.** No GPU gets a second device. A device that has shown the
+window is kept open until the game ends (`held` in `runtime/host/main.c`):
+
+- When Renderer or GPU changes, the device gives the window back
+  (video_close: its swapchain is closed, which on a first device is quick
+  each time) and is held.
+- video_open takes a held device when its order comes to that GPU, in
+  place of opening the GPU again. The log says "GPU: NAME: the device
+  opened before is used again". The Software renderer's picture goes
+  through a device as before, so GPU, Software and GPU again on one GPU is
+  one device throughout.
+- A device that never became the window's (it could not show the window,
+  or was opened only to see which GPU SDL takes) is closed at once as
+  before: it drew nothing.
+- SDL gives a device's memory back as it submits a command buffer. After
+  the window is given back an empty one is submitted, so the held device
+  keeps none of what the renderer had. Measured on the GeForce, the Linux
+  game at 4x with GPU changed to the Radeon (48 MiB in use with nothing
+  running, 135 with the test's compositor): 532 MiB with the game drawing
+  on it; after the change 259 MiB, and 531 MiB without the empty command
+  buffer.
+- At the end video_end closes the window's device and every held one.
+- A step of a closing that takes a second or more is logged by its name,
+  as "closing: giving the window back on NAME took 22.0 s", so a driver
+  that stalls is found by the step.
+
+**What it costs.** A GPU the game has drawn on stays open in the game
+until it quits, also after the menu moved to another. An external GPU is
+then still in use by the game. (A GPU that goes away as the game runs was
+not handled before either.)
+
+**Checked** in the headless KWin, this build, 3416 x 1920 in a 3414 x 1920
+window, sound off:
+
+| Case | Changes in the menu | The closing |
+|---|---|---|
+| plain Wine: Software and back at 3000, Quit at 3040 (33.2 s before) | 0.10 s, 0.06 s | 0.06 s |
+| Proton: the maintainer's run (the Radeon, Software, GPU, Auto, the GeForce), Quit at 3900. Under Wine there the Radeon cannot show the window (section 53), so the GeForce's one device serves all of it | 0.06 to 0.12 s each | 0.08 s |
+| the Linux game, the same: the GeForce and the Radeon both drew, each held while the other did | 0.01 to 0.11 s each | 0.17 s, both devices closed |
+| the picture at vertical blank 3500 with Software and back at 3000, against a run with no change; the Linux game and plain Wine | | the four pictures are the same file, byte for byte |
+
+**Checked: a real desktop** (with the maintainer's leave: this build's
+Windows game under Proton on the desktop's own 3840 x 2160 screen at 59.94
+Hz, sound off, the same changes by `--keys`, Quit at vertical blank 4850).
+There Xwayland takes the Radeon's pictures, so both GPUs drew: the GeForce,
+the Radeon (a second device, the GeForce's held), Software through the
+GeForce's again, the Radeon's again, then Auto and the GeForce on its first
+device still. Each change took 0.06 to 0.09 s, and the closing 0.13 s with
+both devices closed. These are the changes that ended in the 33.2 s closing
+with 0.5.13. In the last full count of 600 frames, on the GeForce again,
+600 were drawn and none was never shown, in 599 presents.
+
+**Not covered.** Windows itself (the stall is in NVIDIA's Linux driver;
+whether Windows' has one was not tried). Other versions of NVIDIA's driver.
+A screen at 120 Hz with this build: the 0.5.13 run that was slow to close
+had about 90 presents a second, not 120, in its last 14 seconds, after its
+last change of GPU; whether that came from the same state of the driver
+was not looked into. The launcher, which makes its renderer again with
+Renderer and GPU too: it draws only its pages, and a first device that
+drew only the boot's screens did not bring the stall on, but its closing
+was not timed. Why the driver waits: not found, and not reported to
+NVIDIA.

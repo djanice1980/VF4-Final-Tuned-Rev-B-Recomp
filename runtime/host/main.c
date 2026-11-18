@@ -2068,6 +2068,79 @@ static int video_claim(SDL_GPUDevice *d)
     return !main_win || SDL_ClaimWindowForGPUDevice(d, main_win);
 }
 
+/* ---- one device a GPU for the whole run (docs/design.md section 60) ----
+ *
+ * A device that has shown the window is not closed before the game ends.
+ * When Renderer or GPU changes it gives the window back and is held, and
+ * video_open takes it again when its order comes to that GPU. Under Wine,
+ * NVIDIA's driver (620.70) takes 33 seconds to close the second device a
+ * process makes on a GeForce, once the first has drawn the game and been
+ * closed (vkDestroySwapchainKHR 22 s, vkDestroyDevice 11 s): at the quit, or
+ * at the next change in the menu. So no GPU gets a second device */
+enum { DEV_LISTED, DEV_OWN, DEV_ANY };      /* how video_open came by one: a GPU of the list, SDL's own choice, any driver */
+static struct {
+    SDL_GPUDevice *dev;
+    int how;
+    char name[GPU_NAME_MAX];
+} held[GPUS_MAX + 2];
+static int held_n;
+static int gpu_how;                     /* the window's device: how video_open came by it */
+
+/* the device held for a GPU of the list (by its name), or the one held of
+ * another kind (name NULL); NULL when there is none */
+static SDL_GPUDevice *held_take(int how, const char *name)
+{
+    for (int i = 0; i < held_n; i++) {
+        if (held[i].how != how || (name && SDL_strcasecmp(held[i].name, name)))
+            continue;
+        SDL_GPUDevice *d = held[i].dev;
+        logf_("GPU: %s: the device opened before is used again", held[i].name);
+        held[i] = held[--held_n];
+        return d;
+    }
+    return NULL;
+}
+
+static void held_put(SDL_GPUDevice *d, int how)
+{
+    if (held_n == (int)SDL_arraysize(held)) {   /* never: one a GPU and kind */
+        SDL_DestroyGPUDevice(d);
+        return;
+    }
+    held[held_n].dev = d;
+    held[held_n].how = how;
+    gpu_name_of(d, held[held_n].name, sizeof held[held_n].name);
+    held_n++;
+}
+
+/* a device video_open does not take: closed if it never showed the window
+ * (it drew nothing), else held as before */
+static void dev_drop(SDL_GPUDevice *d, int how, int old)
+{
+    if (old)
+        held_put(d, how);
+    else
+        SDL_DestroyGPUDevice(d);
+}
+
+/* a closing's step that takes a second or more is logged by its name: a
+ * driver that stalls is found by the step (section 60) */
+static Uint64 close_t0;
+
+static void close_begin(void)
+{
+    close_t0 = SDL_GetTicksNS();
+}
+
+static void close_step(const char *what, const char *on)
+{
+    Uint64 now = SDL_GetTicksNS();
+    if (now - close_t0 >= (Uint64)SDL_NS_PER_SECOND)
+        logf_("closing: %s%s%s took %.1f s", what, on && on[0] ? " on " : "", on && on[0] ? on : "",
+              (double)(now - close_t0) / SDL_NS_PER_SECOND);
+    close_t0 = now;
+}
+
 /* The device for the window and the renderer on it, by Renderer and GPU:
  * the GPU chosen, then the others in the list's order (Vulkan's; Auto
  * starts at its top), then a device SDL opens itself (a GPU not listed:
@@ -2076,15 +2149,17 @@ static int video_claim(SDL_GPUDevice *d)
  * the software picture is shown through the first that showed the window.
  * Software passes the GPU setting by: the first in the list that shows the
  * window. Last, for the software picture, any device SDL_GPU has (Direct3D
- * 12 on Windows without Vulkan; --gpu names one). Sets gpu, use_gpu,
- * gpu_now, pic_tex and upload, the window claimed; 0, or -1 when nothing
- * can show the window */
+ * 12 on Windows without Vulkan; --gpu names one). A device held from
+ * before (section 60) is taken in place of opening its GPU again. Sets gpu,
+ * use_gpu, gpu_now, pic_tex and upload, the window claimed; 0, or -1 when
+ * nothing can show the window */
 static int video_open(void)
 {
     SDL_Window *win = main_win;
     char name[GPU_NAME_MAX];
     int want_gpu = cfg_.renderer == RENDERER_GPU && !(gpu_driver && SDL_strcasecmp(gpu_driver, "vulkan"));
     SDL_GPUDevice *keep = NULL;     /* the first that showed the window, where the GPU renderer did not start */
+    int keep_how = 0, keep_old = 0;
     const char *why = "";
     gpu = NULL;
     use_gpu = 0;
@@ -2106,14 +2181,18 @@ static int video_open(void)
                 order[n++] = &gpus[i];
         order[n++] = NULL;          /* SDL's own choice */
         for (int i = 0; i < n && !gpu; i++) {
-            SDL_GPUDevice *d = order[i] ? gpu_open_named(order[i]) : gpu_open(0);
+            int how = order[i] ? DEV_LISTED : DEV_OWN;
+            SDL_GPUDevice *d = held_take(how, order[i] ? order[i]->name : NULL);
+            int old = d != NULL;        /* it showed the window before: not closed before the end */
+            if (!d)
+                d = order[i] ? gpu_open_named(order[i]) : gpu_open(0);
             if (!d) {
                 if (!order[i])
                     logf_("GPU: SDL opens no Vulkan device (%s)", SDL_GetError());
                 continue;
             }
             gpu_name_of(d, name, sizeof name);
-            if (!order[i] && gpus_find(gpus, gpus_n, name)) {
+            if (!old && !order[i] && gpus_find(gpus, gpus_n, name)) {
                 SDL_DestroyGPUDevice(d);        /* one of the list's, tried already */
                 continue;
             }
@@ -2122,15 +2201,17 @@ static int video_open(void)
                  * another's pictures only as that GPU's driver allows (Mesa's
                  * swapchain on the Radeon when Xwayland is on an NVIDIA card fails so) */
                 logf_("GPU: %s cannot show the window (%s)", name, SDL_GetError());
-                SDL_DestroyGPUDevice(d);
+                dev_drop(d, how, old);
                 continue;
             }
             if (!want_gpu) {
                 gpu = d;
+                gpu_how = how;
                 break;
             }
             if (gpu_render_init(d, cfg_.scale) == 0) {
                 gpu = d;
+                gpu_how = how;
                 use_gpu = 1;
                 why = chosen && order[i] == chosen ? " (the GPU chosen)"
                       : chosen                     ? " (the GPU chosen could not be used)"
@@ -2142,31 +2223,39 @@ static int video_open(void)
             gpu_render_quit();
             if (win)
                 SDL_ReleaseWindowFromGPUDevice(d, win);
-            if (!keep)
+            if (!keep) {
                 keep = d;
-            else
-                SDL_DestroyGPUDevice(d);
+                keep_how = how;
+                keep_old = old;
+            } else {
+                dev_drop(d, how, old);
+            }
         }
     }
     if (!gpu && keep) {
         if (video_claim(keep)) {
             gpu = keep;
+            gpu_how = keep_how;
             keep = NULL;
         } else {
             logf_("GPU: %s cannot show the window again (%s)", gpu_name_of(keep, name, sizeof name), SDL_GetError());
         }
     }
     if (keep)
-        SDL_DestroyGPUDevice(keep);
+        dev_drop(keep, keep_how, keep_old);
     if (!gpu) {
-        SDL_GPUDevice *d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_driver);
+        SDL_GPUDevice *d = held_take(DEV_ANY, NULL);
+        int old = d != NULL;
+        if (!d)
+            d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, false, gpu_driver);
         if (!d)
             logf_("SDL_CreateGPUDevice(%s) failed: %s", gpu_driver ? gpu_driver : "any", SDL_GetError());
         else if (!video_claim(d)) {
             logf_("claim window failed: %s", SDL_GetError());
-            SDL_DestroyGPUDevice(d);
+            dev_drop(d, DEV_ANY, old);
         } else {
             gpu = d;
+            gpu_how = DEV_ANY;
         }
     }
     if (!gpu)
@@ -2208,11 +2297,15 @@ static int video_open(void)
     return 0;
 }
 
-/* everything on the device, and the device: the window is free for another */
+/* everything on the device: the window is free for another. The device
+ * itself is held for the run (section 60), with none of the renderer's
+ * memory */
 static void video_close(void)
 {
     if (!gpu)
         return;
+    char on[GPU_NAME_MAX];
+    gpu_name_of(gpu, on, sizeof on);
     if (use_gpu)
         gpu_render_quit();
     use_gpu = 0;
@@ -2226,17 +2319,39 @@ static void video_close(void)
     upload = NULL;
     shot_w = shot_h = 0;
     ovl_gpu_free(gpu);
+    close_begin();
     if (main_win)
         SDL_ReleaseWindowFromGPUDevice(gpu, main_win);
-    SDL_DestroyGPUDevice(gpu);
+    close_step("giving the window back", on);
+    /* SDL gives a device's memory back as it submits a command buffer: an
+     * empty one, so that the device held has none of what was released */
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
+    if (cmd)
+        SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_WaitForGPUIdle(gpu);
+    close_step("giving memory back", on);
+    held_put(gpu, gpu_how);
     gpu = NULL;
     gpu_now[0] = 0;
+}
+
+/* the game's end: the window's device and every one held are closed */
+static void video_end(void)
+{
+    video_close();
+    close_begin();
+    while (held_n > 0) {
+        held_n--;
+        SDL_DestroyGPUDevice(held[held_n].dev);
+        close_step("closing the GPU device", held[held_n].name);
+    }
 }
 
 /* Renderer, GPU or Internal resolution changed in the menu (the machine
  * waits while it is open): the renderer starts again, at once. A new
  * Internal resolution alone starts it again on the same device; anything
- * else makes the device again by video_open's order. The machine takes the
+ * else gives the window to the device video_open's order comes to (a GPU's
+ * device is opened once and held: section 60). The machine takes the
  * GPU renderer or the software picture at its next vertical blank
  * (on_frame). 0, or -1 when nothing can show the window any more */
 static int video_switch(void)
@@ -4180,8 +4295,10 @@ int main(int argc, char **argv)
         SDL_CloseJoystick(vpad);
         SDL_DetachVirtualJoystick(id);
     }
-    video_close();
+    video_end();
+    close_begin();
     SDL_DestroyWindow(win);
+    close_step("closing the window", NULL);
     compositor_busy(0);
     compositor_watch_end();
     SDL_DestroyMutex(shared.lock);
