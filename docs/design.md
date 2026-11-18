@@ -5245,7 +5245,8 @@ still told 60. So under Proton the report looks to be the rate the screen
 had when the launcher's Wine session started. (Two runs; no test made the
 change on purpose, and where the old figure is kept, Xwayland or Wine, was
 not looked for.) A Steam Deck OLED's report was not trusted already
-(section 44).
+(section 44). This reason is wrong: section 62 has a third run that it
+does not explain.
 
 **What the presents can say, and what they cannot.** vsync.c keeps the
 highest steady rate the presents have shown in the last ten seconds
@@ -5375,3 +5376,129 @@ desktops cannot change their rate, so the wrong report was put in by
 `--system-hz`). Windows itself. A Steam Deck. A screen with G-Sync or
 FreeSync, where the presents may not come at one steady rate. Where the
 old report is kept, so that it could be put right at its source.
+
+## 62. The notice's rate: fewer presents count too; section 61 put right (2026-11-17)
+
+**What was seen.** A 0.5.15 game under Proton on a screen at 50 Hz, which
+was then set to 59.94 and to 120 Hz as the game ran. The pacing followed
+each: 500, 599 to 600 and 1,200 presents to 600 frames, and the game
+closed in 0.12 s. But its log has `screen: 60.00 Hz (the presents come at
+49.96 Hz: held back, or the window is covered)`, and no notice came, on a
+screen where one frame in six cannot be shown. Section 61's rule let fewer
+presents than the report say nothing.
+
+**Section 61 put right.** It said the report under Proton looked to be the
+rate the screen had when the launcher started. This run is not that: the
+screen was at 50 Hz from 21:27:13, Steam started the launcher at 21:27:23,
+and the game was still told 60.00. Three runs on this PC now: told 120.00
+at 120 Hz, 60.00 at 120 Hz, 60.00 at 50 Hz. Xwayland gives the screen's
+rate rightly (`xrandr` on the same desktop: 119.98 at 120 Hz), so the wrong
+figure is Proton's or Wine's. Why it is 60 was not found.
+
+**What is done.** The rule is one function, `settings_refresh_choose(sys,
+seen, &own)` in settings.c, so that a table can test it. main.c's
+screen_rate gives it the system's report and the presents' rate, the
+latter only once it is settled and only while the window is the active one
+(section 61). In this order:
+
+- The two within 1% of each other: the report's figure.
+- The presents' rate in one of two ranges, 60.6 to 62.7 or 76 to 83.6 Hz:
+  the report. A window that is covered under Xwayland is shown by a timer,
+  not by the screen: 16 ms or 12 ms a present, less what the presents
+  take. 61.0 to 62.2 and 79.2 to 82.5 a second were measured. No screen
+  runs at these rates.
+- No report: the presents' rate, between 48 and 400 Hz.
+- A tenth or more above the report, to 400 Hz: the presents' rate.
+- Below a report of an uneven rate, and at 60 Hz or a multiple of it: the
+  presents' rate, and no notice (the screen was set to it since).
+- A tenth or more below the report, 48 Hz or more, and not within 5% of a
+  half, a third or a quarter of it: the presents' rate. This is new. The
+  tenth keeps out a frame limit set a few frames under the screen's rate
+  (117 on a 120 Hz screen); the fractions keep out an overlay that shows
+  every other present, and a covered window on Wayland (a third or a half).
+- Anything else: the report.
+
+Where the presents' rate is taken, it is a guess, and the notice says it
+as one (section 61's wording: "this screen seems to refresh about 50 times
+a second").
+
+**Does the game know when its window is not the active one?** It reads it
+(`SDL_WINDOW_INPUT_FOCUS`), and the presents' rate counts only then. Tested
+in a headless KWin with the game started first and covered afterwards, the
+game logging its window's state and its presents' rate every two seconds
+(a test build):
+
+| Covered by | The Windows game under Wine | The Linux game |
+|---|---|---|
+| another window opening on top and taking the keyboard | not active 0.1 s later; its presents stayed at 60 | not active at once |
+| the screen locking as the game ran | not active 0.4 s later; its presents went to about 62 | not active at once, and "occluded" |
+| a change to another virtual desktop, an empty one | still "active", 3 runs of 3; its presents went to about 62 | not active at once, and "occluded" a second later |
+
+So the game is told whenever something else takes the keyboard. It is not
+told, under Wine, when it is hidden and nothing else takes the keyboard:
+the empty virtual desktop of a bare KWin, and a lock screen that was up
+before the game started (section 61's two wrong notices). On a desktop
+with a shell, an empty virtual desktop still has the shell's own window to
+take the keyboard; that was not tried. The notice is decided once, in the
+game's first twenty seconds, so this takes a game hidden so in that time:
+the maintainer's judgment is that hardly anyone does that, and it is left.
+
+**Checked** with this build.
+
+A table test of the function (the report and the presents' rate in, the
+rate and "a guess or not" out): 45 cases by name, among them the
+maintainer's two runs, the frame limits and the rates that failed below;
+and 448 more, every rate a hidden window or an overlay was seen or can be
+reckoned to give, against 14 reports. None is taken for the screen's rate.
+
+Screens that run at a rate (gamescope's headless backend; a headless KWin
+for 60 Hz), the game left to itself:
+
+| Screen | Reported as | Logged | Notice |
+|---|---|---|---|
+| 50 Hz | 60 | `50.00 Hz, by its presents (the system says 60.00 Hz)` | shown, as a guess |
+| 75 Hz | 120 | `75.00 Hz, by its presents (...)` | shown, as a guess |
+| 100 Hz | 120 | `100.00 Hz, by its presents (...)` | shown, as a guess |
+| 144 Hz | 60 | `144.00 Hz, by its presents (...)` | shown, as a guess |
+| 144 Hz | its own (143.79) | `143.79 Hz` | shown, in the plain wording |
+| 120 Hz | 60 | `120.00 Hz, by its presents (...)` | none |
+| 60 Hz | 144, Linux and Windows under Wine | `60.00 Hz, by its presents (...)` | none |
+| 90 Hz | 180 | `180.00 Hz (the presents come at 90.00 Hz, which is not taken for the screen's rate)` | none: a half |
+| 117 Hz | 120 | `120.00 Hz (the presents come at 117.00 Hz, ...)` | none: within a tenth |
+
+The game covered three seconds in, before it decides, and kept so past
+the twenty seconds, the report made 120 (so that any notice is a wrong
+one): another window on top, the screen locked, another virtual desktop;
+the Windows game under Wine and the Linux game. Six of six decided by the
+report, with no notice.
+
+The window hidden before the game starts (a lock screen already up: the
+case the game is not told of under Wine), the report made its own 60, 50,
+120, 144, 180 and 240:
+
+| Game | Runs | Wrong notices |
+|---|---|---|
+| Linux | 6 | none (presents at 19.6 Hz, the window not active) |
+| Windows under Wine, the ranges as first set (to 82.0) | 6 | 1: 82.48 Hz against a report of 180 |
+| the same, the ranges widened (to 83.6) | 12 | 1: 103.83 Hz against a report of 120, a rate seen once |
+| the same, this build | 6 | none (62 and 82.5 Hz, both kept out) |
+
+**What stays wrong.**
+
+- A window hidden under Wine with nothing else taking the keyboard, in
+  the game's first twenty seconds, whose timer's rate settles outside the
+  two ranges (104 Hz was seen once): the notice is shown, as a guess,
+  where none may be due.
+- A screen that really is at half, a third or a quarter of the reported
+  rate (90 Hz reported as 180): no notice.
+- A screen within a tenth of the reported rate but uneven (55 Hz reported
+  as 60): no notice.
+- Presents held back from the first one on for longer than the five
+  seconds, with a report that is too low as well: the guess names the
+  held-back rate.
+- A frame limiter holding the presents at a steady 60 or 120 on a 144 Hz
+  screen: no notice.
+
+**Not covered.** Windows itself. A Steam Deck. A screen with G-Sync or
+FreeSync. An empty virtual desktop on a desktop with a shell. Why Proton
+reports 60.

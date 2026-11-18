@@ -2566,29 +2566,16 @@ static float screen_refresh(SDL_Window *w)
 }
 
 /* The screen's refresh rate for its notice and the menu's note (docs/design.md
- * sections 44 and 61), in Hz; 0: not known. The system's report can be old:
- * under Proton it is the rate the screen had when the launcher started. So
- * it is held against the presents' own steady rate once that is settled
- * (vsync_screen_hz), which the screen's rate cannot be below:
- *   more presents than the report's refreshes, by more than a tenth (a
- *     covered window under Xwayland is shown 62 times a second on a 60 Hz
- *     screen) and up to SCREEN_RATE_MAX (more are presents not held to the
- *     refresh at all): the report is old, and the presents' rate is taken
- *     for the screen's. It is a guess, and the notice says it as one;
- *   fewer: nothing is known by that (an overlay holds presents back, a
- *     covered window is shown 20 times a second on a 60 Hz screen, a slow
- *     PC misses refreshes), so the report stands. But for one case: the
- *     report is of an uneven rate and the presents come steadily at 60 Hz
- *     or a multiple of it. Then the screen was set to that since the report
- *     (as the notice asks), and no notice is due.
- * The presents' rate counts only while the window has the keyboard: behind
- * another window it may be covered. *sys and *seen: the report and the
- * presents' rate (0: none, or not to be counted); *settled: it is settled,
- * or nothing is to be waited for; *own: the rate returned is the presents',
- * not the report */
-#define SCREEN_RATE_MAX 400.0
-#define SCREEN_RATE_MORE 1.10
-
+ * sections 44 and 61), in Hz; 0: not known. The system's report can be
+ * wrong (under Proton 60 was reported on screens at 120 and at 50 Hz), so
+ * it is held against the presents' own steady rate (vsync_screen_hz) by
+ * settings_refresh_choose, which says when that rate is taken: as a guess,
+ * and the notice says it as one. The presents' rate counts only once it is
+ * settled, and only while the window has the keyboard: behind another
+ * window it may be covered. *sys and *seen: the report and the presents'
+ * rate (0: none, or not to be counted); *settled: it is settled, or nothing
+ * is to be waited for; *own: the rate returned is the presents', not the
+ * report */
 static float screen_rate(float *sys_out, double *seen_out, int *settled_out, int *own_out)
 {
     float sys = screen_refresh(main_win);
@@ -2608,24 +2595,7 @@ static float screen_rate(float *sys_out, double *seen_out, int *settled_out, int
         *seen_out = seen;
     if (settled_out)
         *settled_out = settled;
-    if (own_out)
-        *own_out = 0;
-    if (seen <= 0)
-        return sys;
-    if (!(sys > 0)) {
-        if (seen < 48 || seen > SCREEN_RATE_MAX)
-            return 0;                           /* no report, and presents plainly not the screen's */
-    } else if (SDL_fabs(seen - (double)sys) <= 0.01 * (double)sys) {
-        return sys;                             /* they agree: the report's figure */
-    } else if (seen > (double)sys) {
-        if (seen <= SCREEN_RATE_MORE * (double)sys || seen > SCREEN_RATE_MAX)
-            return sys;
-    } else if (!(settings_refresh_uneven(sys) && seen >= 59 && !settings_refresh_uneven((float)seen))) {
-        return sys;
-    }
-    if (own_out)
-        *own_out = 1;
-    return (float)seen;
+    return settings_refresh_choose(sys, (float)seen, own_out);
 }
 
 /* Frame pacing as the window's thread goes by it (docs/design.md section 59): this PC's own,
@@ -2877,7 +2847,7 @@ static void refresh_turn(int have_picture, Uint64 now_ms)
     else if (seen > 0 && hz != sys)
         SDL_snprintf(how, sizeof how, ", by its presents (the system reports no rate)");
     else if (seen > 0 && SDL_fabs(seen - (double)sys) > 0.01 * (double)sys)
-        SDL_snprintf(how, sizeof how, " (the presents come at %.2f Hz: held back, or the window is covered)", seen);
+        SDL_snprintf(how, sizeof how, " (the presents come at %.2f Hz, which is not taken for the screen's rate)", seen);
     else if (seen <= 0 && hz > 0 && screen_hz_test <= 0)
         SDL_snprintf(how, sizeof how, " (the system's report: the presents gave no settled rate)");
     logf_("screen: %.2f Hz%s%s", (double)hz, how,

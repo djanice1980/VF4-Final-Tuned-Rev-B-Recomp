@@ -116,6 +116,45 @@ int settings_refresh_uneven(float hz)
     return SDL_fabsf(hz - 60.0f * k) > 1.0f;
 }
 
+#define REFRESH_SEEN_MIN 48.0f          /* fewer presents a second than this are no screen's rate */
+#define REFRESH_SEEN_MAX 400.0f         /* more are presents not held to the refresh at all */
+#define REFRESH_SEEN_APART 1.10f        /* the presents' rate and the report are apart by this at least */
+
+float settings_refresh_choose(float sys, float seen, int *own)
+{
+    if (own)
+        *own = 0;
+    if (!(sys > 0))
+        sys = 0;
+    if (!(seen > 0))
+        return sys;
+    if (sys > 0 && SDL_fabsf(seen - sys) <= 0.01f * sys)
+        return sys;
+    /* A window that is covered is shown by a timer under Xwayland, not by the screen: 16 ms or 12 ms
+     * a present, less what the presents take. 61.0 to 62.2 and 79.2 to 82.5 a second were measured
+     * (62.5 and 83.3 at most). No screen runs at these rates */
+    if ((seen >= 60.6f && seen <= 62.7f) || (seen >= 76.0f && seen <= 83.6f))
+        return sys;
+    if (!(sys > 0)) {
+        if (seen < REFRESH_SEEN_MIN || seen > REFRESH_SEEN_MAX)
+            return 0;
+    } else if (seen > sys) {
+        if (seen < REFRESH_SEEN_APART * sys || seen > REFRESH_SEEN_MAX)
+            return sys;
+    } else if (settings_refresh_uneven(sys) && seen >= 59 && !settings_refresh_uneven(seen)) {
+        /* set to an even rate since the report: the presents' rate, and no notice */
+    } else {
+        if (seen < REFRESH_SEEN_MIN || seen * REFRESH_SEEN_APART > sys)
+            return sys;
+        for (int k = 2; k <= 4; k++)
+            if (SDL_fabsf(seen * (float)k - sys) <= 0.05f * sys)
+                return sys;         /* every 2nd, 3rd or 4th refresh: held back, or covered */
+    }
+    if (own)
+        *own = 1;
+    return seen;
+}
+
 void settings_defaults_here(settings *s)
 {
     settings_defaults(s);

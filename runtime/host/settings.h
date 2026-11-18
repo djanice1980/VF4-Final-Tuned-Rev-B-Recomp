@@ -111,6 +111,29 @@ int settings_fullscreen_wanted(const settings *s);
  * 60 (90 on a Steam Deck OLED, 144, 75, 50; not 59.94, 120 or 240) */
 int settings_refresh_uneven(float hz);
 
+/* The screen's refresh rate for its notice (docs/design.md section 61): the
+ * system's report (sys; 0: none) held against the rate the game's own
+ * presents came at (seen; 0: none that counts. The caller gives one only
+ * once it is settled, with the window in front). Returns the rate to go by
+ * (0: not known). *own: it is the presents' rate, a guess, and not the
+ * report.
+ *
+ * The report can be wrong (under Proton 60 was reported on screens at 120
+ * and at 50 Hz), and so can the presents' rate: an overlay shows every
+ * other present, a covered window is shown a third as often on Wayland, and
+ * by a timer of Xwayland's under Wine (61 to 62.5, or 76 to 83.5 times a
+ * second). So the presents' rate is taken only where none of those
+ * explains it:
+ *   within 1% of the report: the report's figure;
+ *   in one of the timer's two ranges: the report stands;
+ *   a tenth or more above the report (to 400 Hz): the presents' rate;
+ *   below an uneven report, and at 60 Hz or a multiple of it: the presents'
+ *     rate (the screen was set to it since; no notice is due);
+ *   a tenth or more below the report, 48 Hz or more, and not about a half,
+ *     a third or a quarter of it: the presents' rate;
+ *   anything else: the report. */
+float settings_refresh_choose(float sys, float seen, int *own);
+
 /* the defaults on this machine: settings_defaults, and on a Steam Deck the
  * 16:10 picture, its screen's shape (the player's settings.txt says
  * otherwise once written) */
