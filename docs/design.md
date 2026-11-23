@@ -5771,3 +5771,68 @@ habit of summing and then holding to the range is the one followed here.
 light's cone: lights that go to the colour are still lit as point lights,
 as before. The fog routings. The translucent list's modifier volumes are
 still not drawn by the GPU renderer (section 20): that is another thing.
+
+## 65. Wide screens: a reflection goes on past the game's sides (2026-11-23)
+
+**What was reported.** With a wide picture (section 39) the water's
+reflection on the Shrine stage is right in the middle of the screen and
+smears from the 4:3 picture's edges outwards.
+
+**Why.** A stage's reflection is a picture of its own: the game draws the
+mirrored scene into a texture every frame (`stage_screen_render` in
+`stage_screen.c`; on the Shrine a pass of 512 x 256) and draws the water
+with that texture, each point looking it up by where it is on the screen.
+Section 39 widened the pass to the screen only: a pass into a texture was
+left as the game makes it, for its own 640-wide view. Past the game's
+sides the water's lookup ran off the texture's edge, and the edge's last
+column was stretched over the rest (the right side) or the edge was dark
+(the left).
+
+**What is done** (`view.c`). On a wide screen a pass into a texture is
+drawn wider too, by the wide screen's share of its own width (a 512-wide
+pass at 21:9: 202 columns more on each side), with the scene moved right
+as the screen's is (`scene_shift`, which now takes the pass's own width).
+The game's part of it goes into texture memory exactly as before, so the
+machine holds what it always held. The whole wide picture is kept beside
+it (`wide_tex`), and it is used only for the screen pass it was drawn for.
+A polygon of that screen pass whose texture is the pass's target is drawn
+with the wide picture instead (`wide_tex_use`): a texture of twice the
+width, the game's texture as decoded in its middle half (so the middle of
+the screen is what it was), the columns drawn beyond on each side of it,
+and the outermost column on to the ends; the polygon's u becomes u / 2 +
+1/4. It is a slot of the texture cache of its own, so both renderers take
+it as any texture. At 4:3 nothing of this runs.
+
+**Checked** (the windowed game from snapshots, `--shot`, a headless
+desktop; the stage chosen as the game chooses it, by `match_stage` at the
+character select, so that its reflections are set up):
+
+- The Shrine's intro over its pond at 21:9, GPU renderer: the bridge, the
+  rocks and the sky are mirrored in the middle as before; left of the 4:3
+  picture the walkway's pillars and right of it the ring's fence are now
+  mirrored too, where there was a dark edge and a smear. The software
+  renderer's picture of the same moment differs from the GPU's by a mean
+  of 1.1 (of 765).
+- At 4:3 the pictures are the same to the pixel as before the change (two
+  moments).
+- Inside the 4:3 part of the 21:9 picture, 892 of 307,200 pixels differ
+  from before, 59 of them by more than 8 levels: the water close to the
+  4:3 edges, whose waves took the lookup past the edge before.
+- The harbour and the cave, the two stages with waves on their water,
+  intros at 21:9: boats and buildings are mirrored across the whole width.
+- The machine's time a frame in a fight on the Shrine, this PC: 4.4 ms
+  before and 6.1 ms after at 21:9 (the wider pass is drawn by the CPU);
+  4.5 and 4.2 ms at 4:3.
+- The maintainer played the build on the Shrine with a wide picture: it
+  looks right.
+
+**Not covered.** The game still leaves out what lies wholly outside its
+own 4:3 view (`obj_sphere_visible`, the side planes of
+`stage_far_objs_draw` and `stage_obj_visible`), in the reflection as on
+the screen: an object can still be missing at a side until it reaches the
+4:3 picture. A stage's screens that are not water (the monitors of the
+stage with the tunnel) were not looked at; they take the same path, and
+show the middle half of their wide picture. A pass wider than 640 is not
+widened (the buffers are 1,280 wide). 16:9 was looked at in one picture of
+the Shrine (the reflection goes on past both 4:3 edges); 16:10 was run and
+not looked at.

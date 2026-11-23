@@ -131,6 +131,22 @@ static int shown_w = VW;                /* recomp: its width (wider with view_ho
  * side); draw_ox the pass being drawn's; keep_left how far left of the game's
  * screen a triangle may lie and still be kept (0 with no wide screen) */
 static int wide_ox, draw_ox;
+/* recomp (docs/design.md section 65): a pass into a texture on a wide screen. The game draws
+ * such a picture (a stage's reflection in its water) for its own 640-wide view and looks it
+ * up by where a point is on the screen, so past the game's sides the lookup ran off the
+ * texture's edge. The pass is drawn wider by the wide screen's share of its own width, the
+ * game's part goes into texture memory as ever, and the whole wide picture is kept here: w x
+ * h the pass's own size, ox the columns drawn beyond each side, pix (w + 2 ox) x h */
+#define WIDE_TEX 4
+static struct wide_tex {
+    u32 addr;                           /* the target's place in video memory */
+    int w, h, ox;
+    u32 seen;                           /* the screen pass it was drawn for (wide_screen_n) */
+    u32 serial;
+    u32 *pix;                           /* 0x00RRGGBB */
+    size_t cap;
+} wide_tex[WIDE_TEX];
+static u32 wide_screen_n, wide_serial;
 static float keep_left;
 #define EDGE_SLACK 16.0f                /* a 2D triangle "from side to side" may overhang this much */
 static u32 gen = 1;                     /* counts renders: a texture is looked at again after each */
@@ -255,6 +271,7 @@ typedef struct rstate {
     const struct tex *t;                /* looked up when the scene is drawn: what video memory holds then */
     s16 clip[4];                        /* x0, y0, x1, y1 in pixels, when pcw bits 16-17 say 2 (inside) or 3 (outside) */
     int textured;
+    int wide_u;                         /* recomp: drawn with a wide picture: u is u / 2 + 1/4 (section 65) */
 } rstate;
 
 typedef struct dtri {
@@ -3014,20 +3031,21 @@ static void marks_draw(void)
  * registers say, in the format they say (texture_fb_write_regs_build: the
  * write start in texture memory, 8-byte units a row, the pack mode), so
  * that the polygons that use the texture find them. */
-static void target_store(void)
+static void target_store(int ox)
 {
     static const u8 bytes_of[8] = { 2, 2, 2, 2, 3, 4, 4, 0 };
     u32 bpp = bytes_of[tg.pack & 7];
-    if (!bpp || !tg.stride || (u64)tg.addr + (u64)(tg.h - 1) * tg.stride + (u64)tg.w * bpp > VRAM_SIZE)
+    int w = tg.w - 2 * ox;              /* recomp: the pass's own width; ox columns were drawn beyond each side */
+    if (!bpp || !tg.stride || (u64)tg.addr + (u64)(tg.h - 1) * tg.stride + (u64)w * bpp > VRAM_SIZE)
         return;
     u8 *base = mem_ptr(VRAM1 + tg.addr);
     if (!base)
         return;
-    mem_track_host(base, (size_t)(tg.h - 1) * tg.stride + (size_t)tg.w * bpp);     /* recomp */
+    mem_track_host(base, (size_t)(tg.h - 1) * tg.stride + (size_t)w * bpp);     /* recomp */
     for (int y = 0; y < tg.h; y++) {
-        const u32 *frow = fb + y * FBW;
+        const u32 *frow = fb + y * FBW + ox;
         u8 *out = base + (size_t)y * tg.stride;
-        for (int x = 0; x < tg.w; x++) {
+        for (int x = 0; x < w; x++) {
             u32 c = frow[x], r = c >> 16 & 255, g = c >> 8 & 255, b = c & 255;
             switch (tg.pack & 7) {
             case 0: *(u16 *)(out + 2 * x) = (u16)(r >> 3 << 10 | g >> 3 << 5 | b >> 3); break;
@@ -3353,14 +3371,14 @@ static int tex_flat_across(const tex *t, const dtri *d)
  * the game's left or right edge reaches the target's, and so does a 2D
  * triangle from side to side that looks the same stretched. A scene is
  * drawn once (render_started marks it unused), so nothing moves it back. */
-static void scene_shift(scene *sc, int ox)
+static void scene_shift(scene *sc, int ox, int w0)
 {
     float f = (float)ox;
     /* a 2D triangle from side to side of the game's screen that looks the
      * same stretched (the stage intros' black bars, fades, the rankings'
      * lines) reaches the target's sides: its corners at the screen's edges
      * move out */
-    for (u32 i = 0; i < sc->edge_n; i++) {
+    for (u32 i = 0; w0 == VW && i < sc->edge_n; i++) {
         dtri *d = &sc->tris[sc->edge[i] >> 30][sc->edge[i] & 0x3fffffffu];
         if (!tex_flat_across(sc->st[d->st].t, d))
             continue;
@@ -3381,7 +3399,7 @@ static void scene_shift(scene *sc, int ox)
         if ((sc->st[i].pcw >> 16 & 3) < 2)
             continue;
         c[0] = (s16)(c[0] <= 0 ? c[0] : c[0] + ox);
-        c[2] = (s16)(c[2] >= VW - 1 ? c[2] + 2 * ox : c[2] + ox);
+        c[2] = (s16)(c[2] >= w0 - 1 ? c[2] + 2 * ox : c[2] + ox);
     }
     for (int w = 0; w < 2; w++) {
         for (u32 i = 0; i < sc->vt_n[w]; i++)
@@ -3410,6 +3428,106 @@ void view_rerun(int mode)
     rerun = mode;
 }
 
+/* recomp (section 65): the wide picture of a pass into a texture is kept */
+static void wide_tex_keep(int own_w)
+{
+    struct wide_tex *e = NULL;
+    int full_w = own_w + 2 * draw_ox;
+    for (int i = 0; i < WIDE_TEX; i++)
+        if (wide_tex[i].pix && wide_tex[i].addr == tg.addr)
+            e = &wide_tex[i];
+    for (int i = 0; !e && i < WIDE_TEX; i++)
+        if (!wide_tex[i].pix)
+            e = &wide_tex[i];
+    if (!e) {
+        e = &wide_tex[0];
+        for (int i = 1; i < WIDE_TEX; i++)
+            if (wide_tex[i].serial < e->serial)
+                e = &wide_tex[i];
+    }
+    size_t n = (size_t)full_w * tg.h;
+    if (e->cap < n) {
+        u32 *q = realloc(e->pix, n * sizeof(u32));
+        if (!q)
+            return;
+        e->pix = q;
+        e->cap = n;
+    }
+    e->addr = tg.addr;
+    e->w = own_w;
+    e->h = tg.h;
+    e->ox = draw_ox;
+    e->seen = wide_screen_n;
+    e->serial = ++wide_serial;
+    for (int y = 0; y < tg.h; y++)
+        memcpy(e->pix + (size_t)y * full_w, fb + y * FBW, (size_t)full_w * sizeof(u32));
+}
+
+/* recomp (section 65): a state of the screen pass whose texture a pass was drawn into for
+ * this very picture: it is drawn with the wide picture instead. That one is twice the
+ * texture's width (a cache slot of its own, so that the GPU path has a place for it): the
+ * texture as decoded in its middle half, so that the game's part of the screen is what it
+ * was, the columns drawn beyond on each side of it, and the outermost column on to the ends */
+static void wide_tex_use(rstate *st, u32 screen)
+{
+    const tex *t = st->t;
+    u32 addr = (st->tcw & 0x1fffffu) << 3;
+    for (int k = 0; k < WIDE_TEX; k++) {
+        const struct wide_tex *e = &wide_tex[k];
+        if (!e->pix || e->addr != addr || e->seen != screen || e->w != t->w || e->h != t->h || t->levels != 1 ||
+            e->ox > e->w / 2)
+            continue;
+        u32 size_bits = (st->tsp & 0x3f) | 0x100;
+        u32 hsh = (st->tcw * 2654435761u ^ size_bits * 40503u) >> 16;
+        tex *c = NULL;
+        for (u32 i = 0; i < TEX_SLOTS; i++) {
+            tex *q = &texc[(hsh + i) & (TEX_SLOTS - 1)];
+            if (!q->used || (q->tcw == st->tcw && q->size_bits == size_bits)) {
+                c = q;
+                break;
+            }
+        }
+        if (!c || (!c->used && tex_used >= TEX_SLOTS * 3 / 4))
+            return;
+        int w = e->w, h = e->h, ox = e->ox, full_w = w + 2 * ox, c0 = w / 2 - ox;
+        if (!c->used) {
+            c->pix = malloc((size_t)2 * w * h * sizeof(u32));
+            if (!c->pix)
+                return;
+            c->lv[0] = c->pix;
+            c->levels = 1;
+            c->used = 1;
+            c->tcw = st->tcw;
+            c->size_bits = size_bits;
+            c->stride = 0;
+            c->w = 2 * w;
+            c->h = h;
+            c->sum = 0;
+            tex_used++;
+        }
+        if (c->sum != e->serial) {
+            for (int y = 0; y < h; y++) {
+                u32 *d = c->pix + (size_t)y * 2 * w;
+                const u32 *src = e->pix + (size_t)y * full_w;
+                for (int x = 0; x < c0; x++)
+                    d[x] = src[0] | 0xff000000u;
+                for (int x = 0; x < ox; x++)
+                    d[c0 + x] = src[x] | 0xff000000u;
+                memcpy(d + w / 2, t->lv[0] + (size_t)y * w, (size_t)w * sizeof(u32));
+                for (int x = 0; x < ox; x++)
+                    d[w / 2 + w + x] = src[ox + w + x] | 0xff000000u;
+                for (int x = w / 2 + w + ox; x < 2 * w; x++)
+                    d[x] = src[full_w - 1] | 0xff000000u;
+            }
+            c->sum = e->serial;
+        }
+        c->checked = gen;
+        st->t = c;
+        st->wide_u = 1;
+        return;
+    }
+}
+
 static void scene_draw(scene *sc, int to_texture)
 {
     u32 xc = view_core_reg(0, 0x68), yc = view_core_reg(0, 0x6c), sof = view_core_reg(0, 0x60);
@@ -3425,6 +3543,18 @@ static void scene_draw(scene *sc, int to_texture)
     int wide = __atomic_load_n(&wide_ox, __ATOMIC_RELAXED);
     keep_left = wide ? (float)-WIDE_MAX : 0.0f;
     draw_ox = !to_texture && tg.w == VW && tg.h == VH ? wide : 0;
+    /* recomp (section 65): a pass into a texture, wider by the same share of its own width */
+    if (to_texture && wide && tg.w * 2 <= FBW) {
+        draw_ox = (wide * tg.w + VW / 2) / VW;
+        if (draw_ox > tg.w / 2)
+            draw_ox = tg.w / 2;
+        if (draw_ox > WIDE_MAX)
+            draw_ox = WIDE_MAX;
+    }
+    int own_w = tg.w;
+    u32 screen = wide_screen_n;
+    if (!to_texture)
+        wide_screen_n++;
     tg.w += 2 * draw_ox;
     tg.to_texture = to_texture;
     tg.addr = sof & 0x00fffffcu;
@@ -3456,8 +3586,12 @@ static void scene_draw(scene *sc, int to_texture)
         target_clear();
     /* the textures as video memory has them now: a pass into a texture that the game
      * rendered after these lists were sent is in them, as it would be for the chip */
-    for (u32 i = 0; i < sc->st_n; i++)
+    for (u32 i = 0; i < sc->st_n; i++) {
         sc->st[i].t = sc->st[i].textured ? tex_get(sc->st[i].tsp, sc->st[i].tcw) : NULL;
+        sc->st[i].wide_u = 0;
+        if (draw_ox && !to_texture && sc->st[i].t)
+            wide_tex_use(&sc->st[i], screen);       /* recomp (section 65) */
+    }
     double t0 = now_seconds();
     pool_run(strip_job_item, (int)sc->jobs_n, sc);
     /* the translucent list from the back to the front */
@@ -3474,8 +3608,17 @@ static void scene_draw(scene *sc, int to_texture)
     for (int k = 0; k < 3; k++)
         for (u32 r = 0; r < sc->runs_n[k]; r++)
             tri_count += sc->runs[k][r].n;
+    if (draw_ox && !to_texture)         /* recomp (section 65): the wide picture's own coordinates */
+        for (int k = 0; k < 3; k++)
+            for (u32 r = 0; r < sc->runs_n[k]; r++) {
+                dtri *d = sc->tris[k] + sc->runs[k][r].first;
+                for (u32 i = 0; i < sc->runs[k][r].n; i++, d++)
+                    if (sc->st[d->st].wide_u)
+                        for (int j = 0; j < 3; j++)
+                            d->v[j].u = d->v[j].u * 0.5f + 0.25f;
+            }
     if (draw_ox)
-        scene_shift(sc, draw_ox);
+        scene_shift(sc, draw_ox, own_w);
     double t1 = now_seconds();
     if (gpu) {
         gpu_export(sc);
@@ -3486,8 +3629,11 @@ static void scene_draw(scene *sc, int to_texture)
     pool_run(band_item, BANDS, sc);
     raster_seconds += now_seconds() - t1;
     tl_seconds += t1 - t0;
-    if (to_texture)
-        target_store();
+    if (to_texture) {
+        target_store(draw_ox);
+        if (draw_ox)
+            wide_tex_keep(own_w);       /* recomp (section 65) */
+    }
 }
 
 /* "start render": the scene whose object lists the registers name is drawn */

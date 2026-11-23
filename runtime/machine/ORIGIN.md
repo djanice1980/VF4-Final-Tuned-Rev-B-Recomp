@@ -166,6 +166,13 @@ What the recomp changed:
   and a light routed to the alpha (4, 5, 12, 13) adds to or takes from a
   vertex's alpha and leaves its colour alone. This changes VF4debug's own
   picture too and should go back to it.
+- Wide screens, a pass into a texture (2026-11-23, docs/design.md section
+  65). `view.c`: on a wide screen such a pass is drawn wider too
+  (`scene_draw`, `scene_shift` with the pass's own width), its own part
+  stored as before (`target_store` with the columns to skip), the wide
+  picture kept (`wide_tex_keep`) and used by the screen pass's polygons
+  that have the texture (`wide_tex_use`, `rstate.wide_u`). With no wide
+  screen (VF4debug has none) nothing behaves differently.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.
