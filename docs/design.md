@@ -5836,3 +5836,30 @@ show the middle half of their wide picture. A pass wider than 640 is not
 widened (the buffers are 1,280 wide). 16:9 was looked at in one picture of
 the Shrine (the reflection goes on past both 4:3 edges); 16:10 was run and
 not looked at.
+
+## 66. Every controller SDL reports is logged (2026-11-23)
+
+**Why** (issue 4). A player's Xbox Elite controller on the Xbox Wireless
+Adapter was taken by neither the launcher nor the game on Windows 11; it
+worked after the next update, in which nothing about controllers had
+changed. The logs could not say what had happened. The game logged a
+controller only once SDL had it as a gamepad (`gamepad added`), so a
+controller SDL saw but had no button layout for, and one SDL did not see at
+all, looked the same: no line. The launcher logged no controller at all.
+
+**What is done** (`runtime/ui/ui.c`, which both programs share).
+`ui_pad_event_hidden`, which both pass every event through, writes a line
+when SDL reports a joystick and when one goes: `controller seen: id 3
+"Xbox Series X Controller" 045e:0b12, a gamepad: xboxone, guid ..., path
+...`, or `NOT usable: SDL has no gamepad layout for it` in place of the
+kind, and `controller gone: id 3`. One line as a controller comes, one as
+it goes; nothing is written for buttons, sticks or frames.
+
+**Checked.** The game's test pad (`--keys pad:`) gives the line in the
+game's log. An Xbox Series controller on an Xbox Wireless Adapter (Linux,
+the xone driver) gives it in the launcher's log and the game's, and the
+maintainer played with it in both. The bundled Windows SDL has the XInput,
+RawInput, HIDAPI, DirectInput and Windows.Gaming.Input back ends.
+
+**Not covered.** The player's own case was not reproduced: no Elite
+controller here, and not on Windows. What made it fail is not known.

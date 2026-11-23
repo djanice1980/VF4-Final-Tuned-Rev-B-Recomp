@@ -991,10 +991,32 @@ int ui_pad_hidden(SDL_JoystickID id)
     return twin_is_hidden(id);
 }
 
+/* Every controller SDL reports goes to the log, a gamepad or not (issue 4: a
+ * controller neither the launcher nor the game took, and a log that could not
+ * say whether SDL saw it). A controller SDL has no button layout for is a
+ * joystick only: the game and the launcher use gamepads */
+static void pad_log_seen(SDL_JoystickID id)
+{
+    char guid[40];
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid, (int)sizeof guid);
+    const char *name = SDL_GetJoystickNameForID(id), *path = SDL_GetJoystickPathForID(id);
+    int pad = SDL_IsGamepad(id);
+    twin_say("controller seen: id %u \"%s\" %04x:%04x, %s%s, guid %s, path %s", (unsigned)id, name ? name : "?",
+             SDL_GetJoystickVendorForID(id), SDL_GetJoystickProductForID(id),
+             pad ? "a gamepad: " : "NOT usable: SDL has no gamepad layout for it",
+             pad ? SDL_GetGamepadStringForType(SDL_GetGamepadTypeForID(id)) : "", guid, path ? path : "-");
+}
+
 int ui_pad_event_hidden(const SDL_Event *e)
 {
     SDL_JoystickID id;
     switch (e->type) {
+    case SDL_EVENT_JOYSTICK_ADDED:
+        pad_log_seen(e->jdevice.which);
+        return 0;
+    case SDL_EVENT_JOYSTICK_REMOVED:
+        twin_say("controller gone: id %u", (unsigned)e->jdevice.which);
+        return 0;
     case SDL_EVENT_GAMEPAD_ADDED:
     case SDL_EVENT_GAMEPAD_REMOVED:
     case SDL_EVENT_GAMEPAD_REMAPPED:
