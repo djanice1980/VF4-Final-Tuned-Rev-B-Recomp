@@ -226,6 +226,14 @@ static void pool_run(void (*fn)(int, void *), int items, void *arg)
 typedef struct light {
     int on, point, linear;
     float col[3], dir[3], pos[3], ka, kb;
+    /* recomp (the light that makes stage objects see-through): how the light's amount is made
+     * (elan_light_rec.diffuse: 3 SPECIAL_EFFECT), where it goes (.routing: 4, 5 added to alpha,
+     * 12, 13 taken from it; the game's own names for the values, its debug menu's), and a spot
+     * light's cone: the amount is ck * x + cb, x the cosine between the light's direction and
+     * the way to the vertex (ck > 0) or 1 less that cosine (ck < 0), as elan_light_pack_spot
+     * packs it for the ELAN's two revisions */
+    int dmode, route;
+    float ck, cb;
 } light;
 
 /* a vertex ready for the rasterizer: screen x, y, 1/w, texture
@@ -1489,6 +1497,7 @@ static void strip_job(scene *sc, sjob *j)
             float gz = nx * nm[6] + ny * nm[7] + nzz * nm[8];
             float len = sqrtf(gx * gx + gy * gy + gz * gz);
             float lr = ls->amb[0], lg = ls->amb[1], lb = ls->amb[2];
+            float la = 0;                       /* recomp: what the lights add to the alpha, of 1 */
             float pr = 0, pg = 0, pb = 0;       /* the specular sum */
             float ex = 0, ey = 0, ez = 0;       /* from the vertex to the eye */
             float k2 = 0, k3 = 1, q_ang = 0;    /* a bump map's light */
@@ -1518,6 +1527,33 @@ static void strip_job(scene *sc, sjob *j)
                         at = at < 0 ? 0 : at > 1 ? 1 : at;
                     } else {
                         tx = -l->dir[0]; ty = -l->dir[1]; tz = -l->dir[2];     /* dir: the way the light travels */
+                    }
+                    if ((l->route & 6) == 4) {
+                        /* recomp: a light whose amount goes to the alpha and not to the colour
+                         * (routing 4 and 5 add it, 12 and 13 take it away). The game's extra
+                         * light is one: a spot at the camera's eye that looks at the fighters
+                         * (extra_light_spot_set: SPECIAL_EFFECT, ALPHADIFF_SUB), on while the
+                         * stage's objects near the ring are drawn as translucent
+                         * (stage_task_exec), so that what stands in the line of sight is seen
+                         * through. Its amount: the colour's red, times the fall with distance,
+                         * times the cone; SPECIAL_EFFECT (and the two routings named for the
+                         * fall alone) without the surface's angle to the light: the game fades
+                         * the lens flare's pieces, which face the camera, with a parallel light
+                         * of this kind from the side (extra_light_parallel_set). The amount is
+                         * added to the material's alpha or taken from it, as the routings are
+                         * named. docs/design.md section 64 */
+                        float amt = l->col[0] * at;
+                        if (l->point && l->ck != 0) {
+                            float cs = -(tx * l->dir[0] + ty * l->dir[1] + tz * l->dir[2]);
+                            float cone = l->ck > 0 ? l->ck * cs + l->cb : l->ck * (1 - cs) + l->cb;
+                            amt *= cone < 0 ? 0 : cone > 1 ? 1 : cone;
+                        }
+                        if (l->dmode != 3 && !(l->route & 1)) {
+                            float nl = gx * tx + gy * ty + gz * tz;
+                            amt *= nl > 0 ? nl : 0;
+                        }
+                        la += l->route & 8 ? -amt : amt;
+                        continue;
                     }
                     d = (gx * tx + gy * ty + gz * tz) * at;
                     if (d > 0) {
@@ -1566,7 +1602,8 @@ static void strip_job(scene *sc, sjob *j)
             v.r = br * (lr > 1 ? 1 : lr);
             v.g = bg * (lg > 1 ? 1 : lg);
             v.b = bb * (lb > 1 ? 1 : lb);
-            v.a = ba;
+            v.a = ba + la * 255.0f;             /* recomp */
+            v.a = v.a < 0 ? 0 : v.a > 255 ? 255 : v.a;
             if (spec) {
                 v.or_ = sr * (pr > 1 ? 1 : pr);
                 v.og = sg * (pg > 1 ? 1 : pg);
@@ -2115,8 +2152,10 @@ static void light_cmd(const u32 *w)
         es.ls.amb[1] = (float)(w[3] >> 8 & 255) / 255.0f;
         es.ls.amb[2] = (float)(w[3] & 255) / 255.0f;
         es.light_mask = (w[2] | w[2] >> 16) & 0xffff;
-        for (int i = 0; i < 16; i++)
-            es.ls.l[i].on = 0;
+        /* recomp: the lights stay as they were sent. The header says which of them are on (the
+         * mask, taken with the lights when a strip is linked) and does not put them out: the
+         * game's extra light comes before its header (extra_light_spot_set: elan_light_queue,
+         * then elan_light_masks_queue), and was never on while the header cleared the lights */
         es.ls_new = 1;
         return;
     }
@@ -2137,6 +2176,10 @@ static void light_cmd(const u32 *w)
     l->pos[2] = f32(w[5]);
     l->ka = f32(w[6] & 0xffff0000u);
     l->kb = f32(w[6] << 16);
+    l->dmode = w[1] >> 5 & 7;           /* recomp */
+    l->route = w[2] >> 24 & 15;
+    l->ck = f32(w[7] & 0xffff0000u);
+    l->cb = f32(w[7] << 16);
     es.ls_new = 1;
 }
 

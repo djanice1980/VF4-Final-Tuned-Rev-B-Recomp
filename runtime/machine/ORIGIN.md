@@ -158,6 +158,14 @@ What the recomp changed:
   unless `VIEW_LIVE`, and going back makes the texture cache look at its
   textures again (`gen`). With `VIEW_LIVE`, the only mode outside
   rollback's replays, nothing behaves differently.
+- The light that goes to the alpha (2026-11-23, docs/design.md section 64,
+  issue 2). `view.c`: the light set's header no longer puts the lights
+  out (it only says which are on: the game's extra light is sent before
+  its header and was never on); a light keeps how its amount is made, its
+  routing and a spot light's cone (`light.dmode`, `route`, `ck`, `cb`);
+  and a light routed to the alpha (4, 5, 12, 13) adds to or takes from a
+  vertex's alpha and leaves its colour alone. This changes VF4debug's own
+  picture too and should go back to it.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

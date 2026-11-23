@@ -5654,3 +5654,120 @@ The log's lines come at set times (a `pace:` line when the pacing changes,
 but not more than one in two seconds; the line on the frames drawn every
 600 vertical blanks), so the times after a change are upper bounds. At 100 Hz each 600 frames went to
 1,000 presents and none was never shown. The game closed 0.2 s after Quit.
+
+## 64. The light that makes stage objects see-through (2026-11-23)
+
+**What was reported** (issue 2). Stage objects do not turn transparent when
+they come into the line of sight, like the pillars on Sarah's stage, and
+block the view of the fight.
+
+**What the game does.** `stage_task_exec` draws a stage's third object
+list, the objects near the ring, with `obj_draw_translucent` during a
+fight: the models go to the translucent list with the blend of source
+alpha and the polygons' Use Alpha bit turned on by the link command
+(`model_draw_all_as_translucent`). Their materials are solid, so by
+themselves they would look as before. Around those draws the game turns on
+its "extra light" (`extra_light_spot_set`): light 14, a spot light at the
+camera's eye that looks at the camera's target, with the diffuse mode 3
+and the routing 12. The game's own debug menu names the values:
+SPECIAL_EFFECT, and ALPHADIFF_SUB among sixteen routings (base or offset
+colour, alpha, fog; added or subtracted). So the light's amount is taken
+from the alpha of what it falls on: what stands between the camera and the
+fighters is seen through.
+
+**Why it was not drawn.** Two things in the view (`runtime/machine/view.c`,
+which both renderers draw from):
+
+- A light set's header (`elan_light_masks_queue`: the mask of the lights
+  that are on, the ambient colour) put every light out, on the reading
+  that the lights follow it. `light_set_send` sends them so. The extra
+  light is sent the other way round, the light and then a header with its
+  bit, so it was never on. And that header put the set's own lights out
+  too: the third object list, and whatever was drawn after it until the
+  next light set, were lit by the ambient colour alone. The cage stage's
+  signs were black rectangles, the scaffolding of another stage black.
+- A light's routing and diffuse mode were not read: every light added to
+  the colour.
+
+**What is done.** The header no longer puts lights out: a light stays as it
+was sent, and the mask says which are on (it was already applied when a
+strip is linked). A light keeps its diffuse mode, its routing and its
+cone. A light routed to the alpha (4 and 5 add, 12 and 13 subtract) leaves
+the colour alone and changes what is left of the vertex's alpha: the
+light's colour, times the fall with distance, times the cone; for
+SPECIAL_EFFECT (and for the two routings named ALPHAATTEN) without the
+angle between the surface and the light, which would leave the far side
+of an object solid. The cone is read as `elan_light_pack_spot` packs it,
+for both of the ELAN's revisions: two half floats k and b, the amount
+k x + b held to 0..1, x the cosine between the light's direction and the
+way to the vertex (k positive) or 1 less that cosine (k negative).
+
+On Sarah's stage the light is sent as: 5 units behind the eye and 0.21
+up, looking ahead and a little up; full up to 8.41 units from itself (3.4
+in front of the eye) and gone at 8.81; full within 7.6 degrees of its axis
+and gone beyond 19.2.
+
+**Checked** in the headless game (the software picture), a two-player
+match forced onto a stage as the game loads it (`reg r4` at `stage_load`):
+
+- Sarah's stage (stage 0), both fighters dodging towards the camera: once
+  the camera stands outside the ring's colonnade, its pillars and beam
+  cover the fighters without the change and are seen through with it (the
+  parts off the light's axis stay faintly). 66 of 193 pictures, 15
+  vertical blanks apart, differ from the same build with the alpha left
+  alone, in up to 122,000 of a picture's 307,200 pixels.
+- The same vertical blank from a snapshot in the windowed game: the GPU
+  renderer's picture shows the same as the software one.
+- One picture of a fight on each of the sixteen stages: nine differ from
+  0.5.17's, in the objects near the ring, now lit (the cage's signs can be
+  read); seven are the same to the pixel.
+- With the lights counted on nine stages: every vertex drawn while light
+  14 is on is in the translucent list and takes the lit path (none with
+  colours of its own, none unlit).
+- The attract sequence, 125 pictures: 83 the same to the pixel as
+  0.5.17's. Of the 42 others the two that differ most were looked at:
+  Sarah's stage behind the ranking screens, its colonnade now lit.
+
+**What the game's code settles, and what it does not.** The cone and the
+fall with distance are not guesses: they are the two pairs of numbers
+`elan_light_pack_spot` computes, read back the way it packs them. That
+SPECIAL_EFFECT takes no account of the surface's angle is settled by the
+game's other use of the same kind of light: `extra_light_parallel_set`,
+a parallel light with SPECIAL_EFFECT and ALPHADIFF_SUB whose direction is
+always (1, 0, 0), sideways in view space, and whose colour is a fade
+amount. The lens flare's pieces, which face the camera, are drawn under it
+(`fade * 0.8`, `fade * 0.05`), and so are the round shapes of the
+hair's collision display. With the surface's angle counted, a piece facing
+the camera would get nothing from a light from the side and the amount
+would do nothing; a ball would fade on one side only. So the amount is the
+colour as it is, and for the spot times its fall and its cone.
+
+**Held against Flycast's reading.** The ELAN has no public documentation
+that was found; an emulator's reading of it is public. Flycast's NAOMI 2
+light record and lighting shader were read as a reference (2026-11-23),
+and nothing was taken from them. They agree with the above on each point:
+a light whose routing has the alpha bit puts its amount into the alpha and
+not the colour; the subtract bit turns the amount round; the single-sided
+and double-sided modes alone count the surface's angle, so SPECIAL_EFFECT
+does not; the fall with distance and the cone are the two pairs of half
+floats, the cone on 1 less the cosine. Two things the game's code left
+open are taken as Flycast has them: the amount is the red part of the
+light's colour (the game sets all three alike), and it is added to the
+material's alpha or taken from it, the result held to 0..1. The first
+version here scaled the alpha instead; with the alpha of 1 these objects
+have it is the same picture (193 compared: two differ, in one pixel each
+by a rounding step). Flycast does not handle the ALPHAATTEN and fog
+routings; here ALPHAATTEN is taken without the surface's angle, and no
+light of the game's uses it.
+
+The chip's maker has published the driver source of the generation
+before (PowerVR Series 1, 1996-97, github.com/powervr-graphics), which was
+looked at for how its authors did such things. There a light never touches
+transparency: opacity is a value of the material alone, held to 0..1, and
+the lighting code does not name it. So it has no rule for this light; its
+habit of summing and then holding to the range is the one followed here.
+
+**Not covered.** A comparison with the real board. An ordinary spot
+light's cone: lights that go to the colour are still lit as point lights,
+as before. The fog routings. The translucent list's modifier volumes are
+still not drawn by the GPU renderer (section 20): that is another thing.
