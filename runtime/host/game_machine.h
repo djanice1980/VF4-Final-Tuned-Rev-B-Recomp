@@ -47,6 +47,12 @@ typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int w, i
  * GAME_PICTURE_W is the cabinet's 4:3. Any thread, at any time: the next
  * picture the game draws takes it. */
 void game_machine_wide(int width);
+/* The picture the game leaves its far objects out for (docs/design.md section
+ * 68): GAME_PICTURE_W, the cabinet's 4:3 and the game's own tests, or the
+ * width of a wide picture, and then what such a picture shows at its sides
+ * is in the game's lists too. It changes what the machine does, so the two
+ * PCs of a two-PC game need the same. Any thread, at any time. */
+void game_machine_cull(int width);
 /* The GPU renderer's lights by the GPU's vertex shader (1) or by the machine's
  * thread as ever (0): docs/design.md section 67. Any thread, at any time. */
 void game_machine_lighting(int gpu);

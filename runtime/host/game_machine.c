@@ -46,6 +46,11 @@ void game_machine_wide(int width)
     view_host_wide(width);
 }
 
+void game_machine_cull(int width)
+{
+    hle_cull_wide(width);
+}
+
 void game_machine_lighting(int gpu)
 {
     view_host_gpu_lighting(gpu);

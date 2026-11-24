@@ -37,6 +37,7 @@ static void usage(void)
     fputs(
         "usage: vf4ft-headless [options]\n"
         "  --interp          run VF4debug's interpreter instead of the translated code (recomp)\n"
+        "  --cull-wide W     the game's far-object tests for a picture W wide (640 to 1146; recomp)\n"
         "  --sound MODEL     the sound board: mailbox (VF4debug's model, the default) or chip (the AICA with\n"
         "                    the game's own driver on its ARM7) (recomp)\n"
         "  --arm-budget N    with the chip: ARM7 instructions a sample (default 128) (recomp)\n"
@@ -188,6 +189,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--net")) hw_net_option = 1;
         else if (!strcmp(a, "--list-hle")) list_hle = 1;
         else if (!strcmp(a, "--interp")) interp = 1;      /* recomp */
+        else if (!strcmp(a, "--cull-wide")) { NEED(); hle_cull_wide(atoi(v)); }     /* recomp: section 68 */
         else if (!strcmp(a, "--sound")) {                 /* recomp */
             NEED();
             if (!strcmp(v, "chip")) hw_sound_chip = 1;

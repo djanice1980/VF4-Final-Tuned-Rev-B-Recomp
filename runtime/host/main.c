@@ -2906,12 +2906,21 @@ static void menu_hide(void)
         SDL_ResumeAudioStreamDevice(audio);
 }
 
+/* The picture the game leaves its far objects out for (section 68): the
+ * picture shown, or in a two-PC game the widest there is, on both PCs: the
+ * machines must do the same, whatever each player's picture. */
+static int cull_width(void)
+{
+    return settings_picture_width(in_session ? PICTURE_21_9 : cfg_.picture);
+}
+
 /* what the menu asked for; 0 to quit */
 static int menu_do(int a)
 {
     switch (a) {
     case MENU_LIVE:
         game_machine_wide(settings_picture_width(cfg_.picture));
+        game_machine_cull(cull_width());
         game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         if (SDL_strcasecmp(cfg_.display, live_display)) {
             display_to_setting(main_win);       /* another screen: its room for Window size too */
@@ -3591,6 +3600,8 @@ int main(int argc, char **argv)
           silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off",
           settings_region_text[cfg_.region], settings_lighting_name[cfg_.lighting]);
     logf_("settings: gpu %s, display %s", cfg_.gpu[0] ? cfg_.gpu : "auto", cfg_.display[0] ? cfg_.display : "auto");
+    if (in_session)
+        logf_("settings: a two-PC game: the stage's far objects are drawn for a 21:9 picture on both PCs");
     session_rollback(cfg_.latency);
     if (in_session)
         logf_("settings: latency optimization %s%s", settings_latency_name[cfg_.latency],
@@ -3644,6 +3655,7 @@ int main(int argc, char **argv)
                   cfg_.display);
         window_room room = screen_room(NULL);
         game_machine_wide(settings_picture_width(cfg_.picture));
+        game_machine_cull(cull_width());
         game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         settings_window_size(&cfg_, &room, &ww, &wh);
         const char *title = !in_session ? VF4FT_TITLE

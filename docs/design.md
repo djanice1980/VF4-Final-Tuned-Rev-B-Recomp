@@ -5934,3 +5934,114 @@ vertex shader now reads two storage buffers, which not every old driver
 may like, and that is why the setting is CPU by default. Windows itself
 (the Windows build was compiled, not run with the setting). A Steam Deck.
 The game's menu's Picture tab was not looked at with its new row.
+
+## 68. Wide screens: the stage's far objects past the game's sides (2026-11-24)
+
+**The fault** (the maintainer's report). On a wide picture, scenery at the
+sides came and went as the camera turned: scaffolding, towers, pieces of
+water. Section 39 had it under "not checked".
+
+**The cause.** A wide picture (section 39) shows what lies left and right
+of the game's 4:3 view, but the game leaves out of its lists what that
+view does not hold. It has three tests:
+
+- `obj_sphere_visible`: a model's sphere against the target rectangle, for
+  `obj_draw_culled` (a stage's main list, its placed objects, the models of
+  a reflection).
+- The view's four side planes at `view_side_planes`, which
+  `proj_from_vfov` and `proj_from_hfov` make from the field of view and
+  the 4:3 aspect, read by two routines only (the image has four
+  references to the planes: the two that write them and these):
+  `stage_far_objs_draw`, for a stage's far list (objects farther from the
+  eye than the camera's target; all of them in replays), and
+  `stage_obj_visible`, for the water patches of stages 19, 20 and 21.
+
+A survey with temporary counters (removed) ran a scripted two-player
+match on every stage in the headless game, from the stage's intro for
+about 2,600 vertical blanks with the fighters dodging and walking apart,
+once with the game's tests and once with them for 21:9:
+
+- The rectangle test turned away nothing at the sides that a 21:9 picture
+  shows, on any stage: what it turns away is behind the camera (and, on
+  stage 20, five spheres far past the right side). The same over the
+  attract mode (14,000 vertical blanks) and over matches won by knock-outs,
+  with their replays and victory poses, on eleven stages.
+- The far list drew more for 21:9 on stages 3 (31,275 objects against
+  43,918), 23 (15,080, 18,451), 22 (1,767, 2,948), 16 (14,093, 14,988), 17
+  (6,729, 7,311) and 4 (3,740, 3,773), and in the knock-out matches on
+  every stage tried.
+- The water patches: stage 21 5,300 against 7,258, stage 19 9,825 against
+  10,588, stage 20 8,533 against 8,216 (fewer: see below).
+
+So the whole fault is the planes.
+
+**What is done.** `runtime/machine/hle_cull.c`: a hook on `proj_from_vfov`
+and `proj_from_hfov` runs the routine itself and then sets the left and
+right planes wider: the tangent of their angle times the width over 640.
+The two tests are the game's own code still, and the top and bottom planes
+are the game's. The sum is +, *, / and a square root on single floats,
+which give the same bits on every PC. No event is served while the routine
+runs (a few hundred instructions of sums): a snapshot taken inside it
+would resume without the hook's frame and leave the planes narrow on the
+PC that loads it.
+
+Why wider planes cannot take anything out of the picture: the plane test
+keeps every sphere that reaches into the view, so it keeps every sphere
+that reaches into the wider view, and that view holds the 4:3 one. It is
+not the other way round for a sphere whose centre is behind the camera:
+the narrow planes may keep one that the wide planes turn away (stage 20's
+fewer patches), but such a sphere reaches into neither view.
+
+The rectangle test is left alone. A first try widened its rectangle too;
+for a sphere whose centre is behind the camera that test, as the game
+writes it, gets stricter with a wider rectangle, and it was never the
+fault.
+
+**Which width** (`game_machine_cull`, `runtime/host/main.c`
+`cull_width`). The picture's own: at 4:3 and stretch that is 640, the
+hook does nothing and the machine is the game's. In a two-PC game it is
+1,146 (21:9, the widest picture) on both PCs whatever each shows: the
+planes are in the machine's memory and the lists follow them, so two PCs
+with different widths would not agree (the headless game's fingerprint
+after the same fight is another with 640 than with 1,146). The log says
+so. The headless game has `--cull-wide W` for tests.
+
+**The cost.** The most on stage 21: 52 million instructions more over the
+run, about 20,000 a vertical blank where a fight's takes 1.2 million (and
+the virtual frame holds 3.3 million). The picture's time a frame at 21:9
+did not move outside what two runs differ by.
+
+**Checked** (the development PC; the windowed game from the headless
+game's snapshots in a headless desktop, the fighters dodging so that the
+camera turns):
+
+- 21:9, release 0.5.19 against this, GPU renderer, the intro and seven
+  moments of a fight: stage 3 differs in 802 to 15,376 pixels a picture,
+  stage 23 in up to 11,568, stage 16 in up to 12,170, stage 22 in up to
+  3,935, stage 19 in up to 2,619, stage 21 in up to 182; stages 17 and 20
+  showed none at these moments. Looked at one for one: scaffolding, a
+  tower, a machine, a grating and water that were missing at the sides.
+  Of the 113,535 pixels that differ in the 63 pairs, none is in the middle
+  640 columns.
+- Stage 3 at two of those moments again: the software renderer at 21:9
+  differs in 15,374 and 14,760 pixels, as the GPU renderer does (15,376
+  and 14,622); 16:9 differs in none and in 1,342.
+- 4:3, the same two games on stage 3 at seven moments: the same to the
+  pixel.
+- The game's own 640 x 480 picture with the planes for 21:9 (a 4:3
+  player's in a two-PC game) against the game's own planes: the headless
+  game's software picture at 12 moments of the match on each of 24 stage
+  numbers, 288 pairs, all the same.
+- The interpreter (`--interp --cull-wide 1146`) and the translated game
+  ran the same number of instructions to the same vertical blank
+  (4,972,358,516 to 9,084).
+- The rollback test (`--synctest 8,60`) at 21:9 on stages 3 and 21: 33
+  checks each, every replay the same.
+- A two-PC fight, the Linux game hosting at 4:3 and the Windows game
+  joining under Wine at 21:9: 154 fingerprints agreed on both, 18 of 18
+  logged fingerprints in common.
+
+**Not covered.** 16:10 by pictures, and 16:9 on one stage only (the same
+sum with another width). A real ultrawide screen by eye. Other things that may come and go
+at a wide picture's sides and are not the stage's objects (effects,
+shadows): none was seen, and none was looked for one by one.

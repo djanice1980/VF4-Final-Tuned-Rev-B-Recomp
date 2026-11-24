@@ -181,6 +181,13 @@ What the recomp changed:
   (`view_gpu_frame.lit`, `.lights`; `view_gpu_vertex.n`, `.l`, `.lit`).
   Off (the default, and always without the host's GPU path) nothing
   behaves differently.
+- The view planes for a wide picture (2026-11-24, docs/design.md section
+  68). `hle_cull.c` is the recomp's own file: a hook on `proj_from_vfov`
+  and `proj_from_hfov` that sets the left and right planes of
+  `view_side_planes` wider for a wide picture (`hle_cull_wide`). `hle.h`
+  declares it and `hle.c` installs it. At 640, the default (VF4debug has
+  no wide picture), the hook does nothing. `runtime/headless/main.c` has
+  `--cull-wide W` for it.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

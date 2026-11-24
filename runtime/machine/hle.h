@@ -20,6 +20,10 @@ void hle_boot_install(sh4 *c);      /* hle_boot.c: what the BIOS leaves and offe
 void hle_vectors_write(void);       /* hle_boot.c: the code at the exception vectors */
 u32 hle_board_id_word(int with_network);    /* hle_boot.c: the word the DIMM board leaves in low RAM */
 void hle_waits_install(sh4 *c);     /* hle_waits.c: the game's waits as jumps of virtual time */
+void hle_cull_install(sh4 *c);      /* recomp: hle_cull.c: the game's edge tests, for a wide picture */
+/* recomp: the picture's width the game's edge tests are run for (640, the
+ * game's own, or wider: hle_cull.c) */
+void hle_cull_wide(int width);
 
 /* recomp (test mode): when set, service 0x44 (the BIOS's test menu) calls it
  * with the program to start (PROGRAM_TEST from the game, PROGRAM_MAIN from

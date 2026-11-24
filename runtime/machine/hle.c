@@ -14,6 +14,7 @@ int hle_init(sh4 *c)
 {
     hle_boot_install(c);
     hle_waits_install(c);
+    hle_cull_install(c);        /* recomp: hle_cull.c */
     return 0;
 }
 
