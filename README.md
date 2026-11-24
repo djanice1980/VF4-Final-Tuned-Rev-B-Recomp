@@ -156,7 +156,7 @@ gamepad's Guide button, or View + Menu held): it pauses the game, changes
 settings, reaches test mode from a gamepad, restarts and quits. Two
 players can play each other on two PCs on one network, and a PC can join
 a game going on with the host's join code. The latest
-release, 0.5.20 (Windows, and the Steam Deck through Proton), is on the
+release, 0.5.21 (Windows, and the Steam Deck through Proton), is on the
 Releases page. The plan, with its
 milestones: [docs/design.md](docs/design.md).
 
