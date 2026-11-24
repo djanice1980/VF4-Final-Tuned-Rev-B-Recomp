@@ -47,6 +47,9 @@ typedef void (*game_frame_fn)(unsigned frame, const unsigned char *rgb, int w, i
  * GAME_PICTURE_W is the cabinet's 4:3. Any thread, at any time: the next
  * picture the game draws takes it. */
 void game_machine_wide(int width);
+/* The GPU renderer's lights by the GPU's vertex shader (1) or by the machine's
+ * thread as ever (0): docs/design.md section 67. Any thread, at any time. */
+void game_machine_lighting(int gpu);
 
 /* The GPU renderer (runtime/host/gpu_render.c): set before game_machine_init,
  * a pass to the screen goes to fn (view.h, view_gpu_frame) instead of the

@@ -2912,6 +2912,7 @@ static int menu_do(int a)
     switch (a) {
     case MENU_LIVE:
         game_machine_wide(settings_picture_width(cfg_.picture));
+        game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         if (SDL_strcasecmp(cfg_.display, live_display)) {
             display_to_setting(main_win);       /* another screen: its room for Window size too */
             window_room room = screen_room(main_win);
@@ -3583,12 +3584,12 @@ int main(int argc, char **argv)
     if (!fullscreen)
         fullscreen = fullscreen_wanted();
     logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s (volume %d%%), cards %s, "
-          "network %s, region %s",
+          "network %s, region %s, lighting %s",
           cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
           cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
           settings_picture_name(cfg_.picture), cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
           silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off",
-          settings_region_text[cfg_.region]);
+          settings_region_text[cfg_.region], settings_lighting_name[cfg_.lighting]);
     logf_("settings: gpu %s, display %s", cfg_.gpu[0] ? cfg_.gpu : "auto", cfg_.display[0] ? cfg_.display : "auto");
     session_rollback(cfg_.latency);
     if (in_session)
@@ -3643,6 +3644,7 @@ int main(int argc, char **argv)
                   cfg_.display);
         window_room room = screen_room(NULL);
         game_machine_wide(settings_picture_width(cfg_.picture));
+        game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         settings_window_size(&cfg_, &room, &ww, &wh);
         const char *title = !in_session ? VF4FT_TITLE
                             : session_role() == SESSION_GUEST ? VF4FT_TITLE " (joining)"    /* its player once joined */

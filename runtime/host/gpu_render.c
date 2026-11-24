@@ -46,6 +46,8 @@ typedef struct packet {
     size_t vol_cap;
     view_gpu_volume *vols;
     size_t vols_cap;
+    float *lit, *lights;    /* lighting on the GPU: the strip records and the light sets */
+    size_t lit_cap, lights_cap;
     Uint64 pts;         /* when it is to be shown, by the game's clock (0: as it comes) */
     size_t up_end;      /* the texel uploads up to here are this frame's and those before it */
 } packet;
@@ -117,7 +119,8 @@ void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
         w++;
     packet *p = &pk[w];
     if (GROW(p->v, p->v_cap, f->nv) || GROW(p->st, p->st_cap, f->nst) || GROW(p->d, p->d_cap, f->ndraws) ||
-        GROW(p->vol, p->vol_cap, (size_t)f->nvol_xyz * 3) || GROW(p->vols, p->vols_cap, f->nvols)) {
+        GROW(p->vol, p->vol_cap, (size_t)f->nvol_xyz * 3) || GROW(p->vols, p->vols_cap, f->nvols) ||
+        GROW(p->lit, p->lit_cap, (size_t)f->nlit + 1) || GROW(p->lights, p->lights_cap, (size_t)f->nlights + 1)) {
         SDL_UnlockMutex(lock);
         return;
     }
@@ -127,6 +130,12 @@ void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
     SDL_memcpy(p->d, f->draws, (size_t)f->ndraws * sizeof *p->d);
     SDL_memcpy(p->vol, f->vol_xyz, (size_t)f->nvol_xyz * 3 * sizeof(float));
     SDL_memcpy(p->vols, f->vols, (size_t)f->nvols * sizeof *p->vols);
+    if (f->nlit)
+        SDL_memcpy(p->lit, f->lit, (size_t)f->nlit * sizeof(float));
+    if (f->nlights)
+        SDL_memcpy(p->lights, f->lights, (size_t)f->nlights * sizeof(float));
+    p->f.lit = p->lit;
+    p->f.lights = p->lights;
     p->f.v = p->v;
     p->f.st = p->st;
     p->f.draws = p->d;
@@ -167,8 +176,8 @@ static int scale = 1;
 static SDL_GPUShader *sh_scene_v, *sh_scene_f, *sh_vol_v, *sh_rect_v, *sh_bg_f, *sh_const_f;
 static SDL_GPUTextureFormat ds_format;
 static SDL_GPUGraphicsPipeline *pl_scene[3][8][2][64], *pl_bg, *pl_vol, *pl_resolve, *pl_shadow;
-static SDL_GPUBuffer *b_tex, *b_vert, *b_state, *b_vol;
-static Uint32 b_vert_size, b_state_size, b_vol_size;
+static SDL_GPUBuffer *b_tex, *b_vert, *b_state, *b_vol, *b_lit, *b_lights;
+static Uint32 b_vert_size, b_state_size, b_vol_size, b_lit_size, b_lights_size;
 static SDL_GPUTransferBuffer *xfer;
 static Uint32 xfer_size;
 static SDL_GPUTexture *t_color, *t_ds;
@@ -235,7 +244,7 @@ static SDL_GPUGraphicsPipeline *pipeline(const pipe_desc *p)
     ci.fragment_shader = p->fs;
     SDL_GPUVertexBufferDescription vb;
     SDL_zero(vb);
-    SDL_GPUVertexAttribute va[5];
+    SDL_GPUVertexAttribute va[8];
     SDL_zero(va);
     if (p->scene_input) {
         vb.pitch = sizeof(view_gpu_vertex);
@@ -244,7 +253,10 @@ static SDL_GPUGraphicsPipeline *pipeline(const pipe_desc *p)
         va[2] = (SDL_GPUVertexAttribute){ 2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, 20 };
         va[3] = (SDL_GPUVertexAttribute){ 3, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, 24 };
         va[4] = (SDL_GPUVertexAttribute){ 4, 0, SDL_GPU_VERTEXELEMENTFORMAT_UINT, 28 };
-        ci.vertex_input_state.num_vertex_attributes = 5;
+        va[5] = (SDL_GPUVertexAttribute){ 5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 32 };     /* n, l, lit */
+        va[6] = (SDL_GPUVertexAttribute){ 6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 44 };
+        va[7] = (SDL_GPUVertexAttribute){ 7, 0, SDL_GPU_VERTEXELEMENTFORMAT_UINT, 56 };
+        ci.vertex_input_state.num_vertex_attributes = 8;
     } else if (p->vol_input) {
         vb.pitch = 3 * sizeof(float);
         va[0] = (SDL_GPUVertexAttribute){ 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0 };
@@ -341,7 +353,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     ds_format = SDL_GPUTextureSupportsFormat(gpu, SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT, SDL_GPU_TEXTURETYPE_2D,
                                              SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
                     ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
-    sh_scene_v = shader(spv_scene_vert, sizeof spv_scene_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+    sh_scene_v = shader(spv_scene_vert, sizeof spv_scene_vert, SDL_GPU_SHADERSTAGE_VERTEX, 2, 1);
     sh_scene_f = shader(spv_scene_frag, sizeof spv_scene_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     sh_vol_v = shader(spv_volume_vert, sizeof spv_volume_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
     sh_rect_v = shader(spv_rect_vert, sizeof spv_rect_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
@@ -470,7 +482,8 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     size_t up_bytes = up_take * 4;
     Uint32 vb = f->nv * (Uint32)sizeof(view_gpu_vertex), sb = f->nst * (Uint32)sizeof(view_gpu_state);
     Uint32 volb = f->nvol_xyz * 3 * (Uint32)sizeof(float);
-    Uint32 need = (Uint32)up_bytes + vb + sb + volb + 256;
+    Uint32 litb = f->nlit * (Uint32)sizeof(float), lsb = f->nlights * (Uint32)sizeof(float);
+    Uint32 need = (Uint32)up_bytes + vb + sb + volb + litb + lsb + 256;
     if (need > xfer_size) {
         if (xfer)
             SDL_ReleaseGPUTransferBuffer(gpu, xfer);
@@ -488,7 +501,9 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     Uint8 *m = xfer ? SDL_MapGPUTransferBuffer(gpu, xfer, true) : NULL;
     if (!m || buffer_room(&b_vert, &b_vert_size, vb + 16, SDL_GPU_BUFFERUSAGE_VERTEX) ||
         buffer_room(&b_state, &b_state_size, sb + 64, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ) ||
-        buffer_room(&b_vol, &b_vol_size, volb + 16, SDL_GPU_BUFFERUSAGE_VERTEX)) {
+        buffer_room(&b_vol, &b_vol_size, volb + 16, SDL_GPU_BUFFERUSAGE_VERTEX) ||
+        buffer_room(&b_lit, &b_lit_size, litb + 64, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ) ||
+        buffer_room(&b_lights, &b_lights_size, lsb + 64, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ)) {
         if (m)
             SDL_UnmapGPUTransferBuffer(gpu, xfer);
         SDL_UnlockMutex(lock);
@@ -511,10 +526,14 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     for (int i = 0; i < pk_nwait; i++)
         pk[pk_wait[i]].up_end = pk[pk_wait[i]].up_end > up_take ? pk[pk_wait[i]].up_end - up_take : 0;
     SDL_UnlockMutex(lock);
-    Uint32 o_v = (Uint32)up_bytes, o_s = o_v + vb, o_vol = o_s + sb;
+    Uint32 o_v = (Uint32)up_bytes, o_s = o_v + vb, o_vol = o_s + sb, o_lit = o_vol + volb, o_ls = o_lit + litb;
     SDL_memcpy(m + o_v, f->v, vb);
     SDL_memcpy(m + o_s, f->st, sb);
     SDL_memcpy(m + o_vol, f->vol_xyz, volb);
+    if (litb)
+        SDL_memcpy(m + o_lit, f->lit, litb);
+    if (lsb)
+        SDL_memcpy(m + o_ls, f->lights, lsb);
     SDL_UnmapGPUTransferBuffer(gpu, xfer);
 
     SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
@@ -539,6 +558,16 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     if (volb) {
         SDL_GPUTransferBufferLocation src = { xfer, o_vol };
         SDL_GPUBufferRegion dst = { b_vol, 0, volb };
+        SDL_UploadToGPUBuffer(cp, &src, &dst, true);
+    }
+    if (litb) {
+        SDL_GPUTransferBufferLocation src = { xfer, o_lit };
+        SDL_GPUBufferRegion dst = { b_lit, 0, litb };
+        SDL_UploadToGPUBuffer(cp, &src, &dst, true);
+    }
+    if (lsb) {
+        SDL_GPUTransferBufferLocation src = { xfer, o_ls };
+        SDL_GPUBufferRegion dst = { b_lights, 0, lsb };
         SDL_UploadToGPUBuffer(cp, &src, &dst, true);
     }
     SDL_EndGPUCopyPass(cp);
@@ -587,6 +616,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     fu.p1[2] = f->fog_col_vert;
     SDL_memcpy(fu.fog, f->fog_tab, sizeof f->fog_tab);
     SDL_GPUBuffer *storage[2] = { b_state, b_tex };
+    SDL_GPUBuffer *vstorage[2] = { b_lit, b_lights };   /* the vertex shader's: lighting on the GPU */
     SDL_GPUBufferBinding vbind = { b_vert, 0 };
     int list_pushed = -1;
     SDL_GPUGraphicsPipeline *bound = NULL;
@@ -604,6 +634,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
                 SDL_BindGPUGraphicsPipeline(rp, pl);
                 SDL_BindGPUVertexBuffers(rp, 0, &vbind, 1);
                 SDL_BindGPUFragmentStorageBuffers(rp, 0, storage, 2);
+                SDL_BindGPUVertexStorageBuffers(rp, 0, vstorage, 2);
                 SDL_PushGPUVertexUniformData(cmd, 0, vu, sizeof vu);
                 bound = pl;
             }
@@ -715,7 +746,7 @@ void gpu_render_quit(void)
     for (int i = 0; i < 6; i++)
         if (shs[i])
             SDL_ReleaseGPUShader(gpu, shs[i]);
-    SDL_GPUBuffer *bs[] = { b_tex, b_vert, b_state, b_vol };
+    SDL_GPUBuffer *bs[] = { b_tex, b_vert, b_state, b_vol, b_lit, b_lights };
     for (int i = 0; i < 4; i++)
         if (bs[i])
             SDL_ReleaseGPUBuffer(gpu, bs[i]);
@@ -730,8 +761,8 @@ void gpu_render_quit(void)
     SDL_zeroa(pl_scene);
     pl_bg = pl_vol = pl_resolve = pl_shadow = NULL;
     sh_scene_v = sh_scene_f = sh_vol_v = sh_rect_v = sh_bg_f = sh_const_f = NULL;
-    b_tex = b_vert = b_state = b_vol = NULL;
-    b_vert_size = b_state_size = b_vol_size = 0;
+    b_tex = b_vert = b_state = b_vol = b_lit = b_lights = NULL;
+    b_vert_size = b_state_size = b_vol_size = b_lit_size = b_lights_size = 0;
     xfer = NULL;
     xfer_size = 0;
     t_color = t_ds = NULL;

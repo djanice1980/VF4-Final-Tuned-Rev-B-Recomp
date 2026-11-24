@@ -277,6 +277,8 @@ typedef struct rstate {
 typedef struct dtri {
     rv v[3];
     u32 st;                             /* which rstate of the scene */
+    u32 gl;                             /* recomp (section 67): not 0: lit by the GPU, by strip record gl - 1; its
+                                         * vertices' colours hold the normal (r, g, b) and the point lit at (or, og, ob) */
     float key;
     s16 ylo, yhi;                       /* the rows it can touch */
 } dtri;
@@ -374,6 +376,10 @@ typedef struct scene {
     u32 ls_n, ls_cap;
     sjob *jobs;
     u32 jobs_n, jobs_cap;
+    /* recomp (section 67): lighting on the GPU for this draw, and a record for each strip it lights */
+    int gl_on;
+    float *gl_rec;
+    u32 gl_cap;
     u8 *vcopy;
     u32 vcopy_n, vcopy_cap;
     vtri *vt[2];                        /* 0: the opaque list's volumes, 1: the translucent list's */
@@ -1251,6 +1257,7 @@ typedef struct tlctx {
     int flat;
     float near_z;
     u32 spare;                          /* recomp: tri_room's spare left for the guard band's pieces */
+    u32 gl;                             /* recomp (section 67): the strip's record + 1 when the GPU lights it */
 } tlctx;
 
 /* recomp: the guard band. A triangle cut at the near plane, or one close to
@@ -1338,7 +1345,7 @@ static inline void project(const xform *xf, const vv *p, rv *o)
 }
 
 /* fills a triangle's record; 0 when it cannot be seen */
-static inline int tri_fill(dtri *d, const rv *a, const rv *b, const rv *c, u32 st)
+static inline int tri_fill(dtri *d, const rv *a, const rv *b, const rv *c, u32 st, u32 gl)
 {
     float lox = a->x < b->x ? a->x : b->x, hix = a->x > b->x ? a->x : b->x;
     float loy = a->y < b->y ? a->y : b->y, hiy = a->y > b->y ? a->y : b->y;
@@ -1354,6 +1361,7 @@ static inline int tri_fill(dtri *d, const rv *a, const rv *b, const rv *c, u32 s
     d->v[1] = *b;
     d->v[2] = *c;
     d->st = st;
+    d->gl = gl;
     d->key = (a->z + b->z + c->z) * (1.0f / 3);
     d->ylo = (s16)(loy < 0 ? 0 : (int)loy);
     d->yhi = (s16)(hiy > FBH - 1 ? FBH - 1 : (int)hiy);
@@ -1371,7 +1379,7 @@ static void tri_guard(tlctx *c, const vv *poly, int n)
         project(c->xf, &cut[i], &o[i]);
     u32 made = 0;                       /* the triangle's own two, then the spare */
     for (int i = 2; i < n && made < 2 + c->spare; i++) {
-        u32 one = (u32)tri_fill(&c->out[c->n], &o[0], &o[i - 1], &o[i], c->st);
+        u32 one = (u32)tri_fill(&c->out[c->n], &o[0], &o[i - 1], &o[i], c->st, c->gl);
         c->n += one;
         made += one;
     }
@@ -1410,7 +1418,7 @@ static void tri_view(tlctx *c, const vv *a, const vv *b, const vv *cc, int keep)
             tri_guard(c, poly, 3);
             return;
         }
-        c->n += (u32)tri_fill(&c->out[c->n], &o[0], &o[1], &o[2], c->st);
+        c->n += (u32)tri_fill(&c->out[c->n], &o[0], &o[1], &o[2], c->st, c->gl);
         return;
     }
     vv cl[4];
@@ -1440,7 +1448,7 @@ static void tri_view(tlctx *c, const vv *a, const vv *b, const vv *cc, int keep)
         return;
     }
     for (int i = 2; i < n; i++)
-        c->n += (u32)tri_fill(&c->out[c->n], &o[0], &o[i - 1], &o[i], c->st);
+        c->n += (u32)tri_fill(&c->out[c->n], &o[0], &o[i - 1], &o[i], c->st, c->gl);
 }
 
 static int vertex_bytes(u32 format)
@@ -1468,7 +1476,27 @@ static void strip_job(scene *sc, sjob *j)
     int spec = j->use_ofs && j->spec && (j->offset & 0xffffff) && !j->unlit;
     const float *m = xf->m, *nm = xf->n;
     tlctx c = { xf, sc->tris[j->k] + j->first, 0, j->st, j->flat, xf->near_z > 0 ? xf->near_z : 0.05f,
-                tri_spare(j->count) };
+                tri_spare(j->count), 0 };
+    /* recomp (section 67): the GPU lights a strip whose every vertex would be lit below: no
+     * vertex with colours of its own, no bump map, and not a material that only takes its base
+     * colour. Its record says what the lights need of the material */
+    int gl = sc->gl_on && !bumped && !(j->unlit && !j->env);
+    if (gl && has_col)
+        for (u32 i = 0; i < j->count; i++)
+            if (*(const u32 *)(p + (size_t)i * (size_t)size + col_at)) {
+                gl = 0;
+                break;
+            }
+    if (gl) {
+        float *rec = sc->gl_rec + (size_t)(j - sc->jobs) * VIEW_GPU_LIT_FLOATS;
+        rec[0] = br; rec[1] = bg; rec[2] = bb; rec[3] = ba;
+        rec[4] = sr; rec[5] = sg; rec[6] = sb;
+        rec[7] = spec ? (float)j->spec : 0;
+        rec[8] = (float)j->ls;
+        rec[9] = j->unlit ? 1.0f : 0.0f;
+        rec[10] = rec[11] = 0;
+        c.gl = (u32)(j - sc->jobs) + 1;
+    }
     int keep = j->keep, odd = 0;
     vv first, before, prev;             /* the strip's first vertex, and the last two */
     memset(&first, 0, sizeof first);
@@ -1513,6 +1541,23 @@ static void strip_job(scene *sc, sjob *j)
             float gy = nx * nm[3] + ny * nm[4] + nzz * nm[5];
             float gz = nx * nm[6] + ny * nm[7] + nzz * nm[8];
             float len = sqrtf(gx * gx + gy * gy + gz * gz);
+            if (gl) {
+                /* recomp (section 67): the lights are the GPU's: the normal and the point go on in
+                 * the colours' place (a triangle of one colour takes its last vertex's, and the near
+                 * plane's cut goes between two vertices', as with colours) */
+                if (len > 0) {
+                    float il = 1.0f / len;
+                    gx *= il; gy *= il; gz *= il;
+                } else
+                    gx = gy = gz = 0;
+                v.r = gx; v.g = gy; v.b = gz; v.a = 0;
+                v.or_ = v.X; v.og = v.Y; v.ob = v.Z; v.oa = 0;
+                if (j->env && len > 0) {
+                    v.u = (gx + 1.0f) * 0.5f + xf->env_u;
+                    v.v = (gy + 1.0f) * 0.5f + xf->env_v;
+                }
+                goto lit_done;
+            }
             float lr = ls->amb[0], lg = ls->amb[1], lb = ls->amb[2];
             float la = 0;                       /* recomp: what the lights add to the alpha, of 1 */
             float pr = 0, pg = 0, pb = 0;       /* the specular sum */
@@ -1644,6 +1689,7 @@ static void strip_job(scene *sc, sjob *j)
                 v.v = (gy + 1.0f) * 0.5f + xf->env_v;
             }
         }
+    lit_done:;
         /* bits 29-30: 0 the first two vertices of a strip (or of a triangle), 3 the
          * third, 1 a strip vertex, 2 a fan vertex; bit 31 the last (strip_vertex_code_1/2) */
         int code = ctl >> 29 & 3;
@@ -1714,7 +1760,7 @@ static void emit(const rv *a, const rv *b, const rv *c, const rstate *st)
         a = &fa;
         b = &fb_;
     }
-    if (!tri_fill(d, a, b, c, state_add(sc, st)))
+    if (!tri_fill(d, a, b, c, state_add(sc, st), 0))
         return;
     /* recomp: the wide screen: a 2D triangle from side to side of the
      * game's screen (scene_shift takes it to the target's sides) */
@@ -3203,9 +3249,17 @@ static void gpu_tri(const scene *sc, const dtri *d, u32 list, float *zmax)
         o->z = p->z;
         o->u = p->u;
         o->v = p->v;
-        o->col = gpu_rgba(p->r, p->g, p->b, p->a);
-        o->ofs = gpu_rgba(p->or_, p->og, p->ob, p->oa);
         o->state = d->st;
+        o->lit = d->gl;
+        if (d->gl) {                    /* recomp (section 67) */
+            o->col = o->ofs = 0;
+            o->n[0] = p->r; o->n[1] = p->g; o->n[2] = p->b;
+            o->l[0] = p->or_; o->l[1] = p->og; o->l[2] = p->ob;
+        } else {
+            o->col = gpu_rgba(p->r, p->g, p->b, p->a);
+            o->ofs = gpu_rgba(p->or_, p->og, p->ob, p->oa);
+            o->n[0] = o->n[1] = o->n[2] = o->l[0] = o->l[1] = o->l[2] = 0;
+        }
         if (p->z > *zmax && p->z < 1e30f)
             *zmax = p->z;
     }
@@ -3315,6 +3369,28 @@ static void gpu_export(scene *sc)
     f.vols = gpu_vols;
     f.nvols = sc->vols_n[0];
     f.translucent_volumes = sc->vols_n[1];
+    if (sc->gl_on) {                    /* recomp (section 67): the strip records and the light sets */
+        static float *sets;
+        static u32 sets_cap;
+        u32 n = 0;
+        GROW(sets, sets_cap, (sc->ls_n + 1) * VIEW_GPU_LIGHTSET_FLOATS);
+        for (u32 i = 0; i < sc->ls_n; i++) {
+            const lightset *s = &sc->ls[i];
+            sets[n++] = s->amb[0]; sets[n++] = s->amb[1]; sets[n++] = s->amb[2]; sets[n++] = 0;
+            for (int k = 0; k < 15; k++) {
+                const light *l = &s->l[k];
+                sets[n++] = l->col[0]; sets[n++] = l->col[1]; sets[n++] = l->col[2];
+                sets[n++] = (float)((l->on ? 1 : 0) | (l->point ? 2 : 0) | (l->linear ? 4 : 0));
+                sets[n++] = l->dir[0]; sets[n++] = l->dir[1]; sets[n++] = l->dir[2]; sets[n++] = l->ka;
+                sets[n++] = l->pos[0]; sets[n++] = l->pos[1]; sets[n++] = l->pos[2]; sets[n++] = l->kb;
+                sets[n++] = l->ck; sets[n++] = l->cb; sets[n++] = (float)l->dmode; sets[n++] = (float)l->route;
+            }
+        }
+        f.lit = sc->gl_rec;
+        f.nlit = sc->jobs_n * VIEW_GPU_LIT_FLOATS;
+        f.lights = sets;
+        f.nlights = n;
+    }
     f.arena = gpu_arena;
     f.arena_texels = gpu_arena_top;
     f.dirty = gpu_dirty;
@@ -3429,6 +3505,13 @@ void view_rerun(int mode)
 }
 
 /* recomp (section 65): the wide picture of a pass into a texture is kept */
+static int gpu_lighting_on;             /* recomp (section 67): view_host_gpu_lighting */
+
+void view_host_gpu_lighting(int on)
+{
+    __atomic_store_n(&gpu_lighting_on, on != 0, __ATOMIC_RELAXED);
+}
+
 static void wide_tex_keep(int own_w)
 {
     struct wide_tex *e = NULL;
@@ -3592,6 +3675,10 @@ static void scene_draw(scene *sc, int to_texture)
         if (draw_ox && !to_texture && sc->st[i].t)
             wide_tex_use(&sc->st[i], screen);       /* recomp (section 65) */
     }
+    /* recomp (section 67): lighting on the GPU, for a pass the GPU draws */
+    sc->gl_on = gpu && __atomic_load_n(&gpu_lighting_on, __ATOMIC_RELAXED);
+    if (sc->gl_on)
+        GROW(sc->gl_rec, sc->gl_cap, (sc->jobs_n + 1) * VIEW_GPU_LIT_FLOATS);
     double t0 = now_seconds();
     pool_run(strip_job_item, (int)sc->jobs_n, sc);
     /* the translucent list from the back to the front */

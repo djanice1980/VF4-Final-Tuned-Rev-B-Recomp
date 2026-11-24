@@ -56,6 +56,11 @@ enum { LATENCY_AUTO, LATENCY_ON, LATENCY_OFF, LATENCIES };
  * a screen at 60 Hz or a multiple of it; Off: the newest frame at each
  * refresh, as before 0.5.12 */
 enum { PACING_GAME, PACING_SCREEN, PACING_OFF, PACINGS };
+/* Lighting (docs/design.md section 67): where the GPU renderer's lights are
+ * worked out: by the processor as ever, or by the GPU's vertex shader, which
+ * takes that work off a slow processor. The software renderer's are always
+ * the processor's. */
+enum { LIGHTING_CPU, LIGHTING_GPU, LIGHTINGS };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
@@ -80,6 +85,7 @@ typedef struct settings {
     int region;             /* REGION_*: the board's region, Japan by default (the game reads it as it starts) */
     int latency;            /* LATENCY_*: Auto by default; this PC's own choice in a two-PC game */
     int pacing;             /* PACING_*: Game clock by default */
+    int lighting;           /* LIGHTING_*: the processor's by default */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[ACT_COUNT];         /* every gamepad (the first is player 1, the second player 2) */
 } settings;
@@ -165,6 +171,7 @@ int settings_card_name_ok(const char *name);
 extern const char *const settings_card_default[2];
 extern const char *const settings_region_text[REGIONS];      /* "Japan", "USA", "Export", "Korea", "Australia" */
 extern const char *const settings_latency_name[LATENCIES];   /* "auto", "on", "off" (settings.txt's) */
+extern const char *const settings_lighting_name[LIGHTINGS];   /* "cpu", "gpu" (settings.txt's) */
 extern const char *const settings_pacing_name[PACINGS];       /* "game", "screen", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",

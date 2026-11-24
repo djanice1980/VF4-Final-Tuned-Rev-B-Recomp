@@ -88,6 +88,11 @@ const option_info options[OPT_COUNT] = {
                      "now and then. Screen refresh: the game follows a screen at 60 Hz or a multiple of it, "
                      "with no frame passed over, a touch fast or slow. Off: as before 0.5.12. A two-PC game "
                      "uses the host's choice.", 0 },
+    [OPT_LIGHTING] = { "Lighting",
+                       "Which chip works out the lights with the GPU renderer. CPU: the processor, as always. "
+                       "GPU: the graphics chip, which takes that work off the processor: try it if the game "
+                       "runs in slow motion on a PC with a slow processor. The picture is the same. The "
+                       "software renderer always uses the processor.", 0 },
 };
 
 static int wrap(int v, int d, int n)
@@ -274,6 +279,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_strlcpy(buf, pt[s->pacing], n);
         break;
     }
+    case OPT_LIGHTING: {
+        static const char *const lt[LIGHTINGS] = { "CPU", "GPU" };
+        SDL_strlcpy(buf, lt[s->lighting], n);
+        break;
+    }
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -352,6 +362,7 @@ void option_change(settings *s, int o, int d)
     case OPT_REGION: s->region = wrap(s->region, d, REGIONS); break;
     case OPT_LATENCY: s->latency = wrap(s->latency, d, LATENCIES); break;
     case OPT_PACING: s->pacing = wrap(s->pacing, d, PACINGS); break;
+    case OPT_LIGHTING: s->lighting = wrap(s->lighting, d, LIGHTINGS); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;

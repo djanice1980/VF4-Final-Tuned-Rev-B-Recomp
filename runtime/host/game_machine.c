@@ -45,6 +45,11 @@ void game_machine_wide(int width)
 {
     view_host_wide(width);
 }
+
+void game_machine_lighting(int gpu)
+{
+    view_host_gpu_lighting(gpu);
+}
 static char why[700];
 
 /* control.c's "save" writes the harness's reports; the game has no script */

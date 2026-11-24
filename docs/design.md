@@ -5863,3 +5863,74 @@ RawInput, HIDAPI, DirectInput and Windows.Gaming.Input back ends.
 
 **Not covered.** The player's own case was not reproduced: no Elite
 controller here, and not on Windows. What made it fail is not known.
+
+## 67. Lighting on the GPU, as an option (2026-11-24)
+
+**Why** (issue 3). On a laptop with a two-core processor (a 7th-generation
+i3, Intel HD Graphics 620) the game ran in slow motion: its log has the
+machine's thread at 22.6 to 23.0 ms a frame in a fight, where 16.7 is all
+there is, while the screen still got its 60 presents a second. So the
+graphics chip had time to spare and the processor had none.
+
+Where the machine's time goes was measured (temporary timers, removed): on
+the development PC a fight frame is 4.5 ms, of which the picture's work is
+2.2 (reading the lists 0.3, transform and lighting 1.4 on eight threads,
+the hand-over 0.5), the sound chip 0.75 and the game's code the rest. On
+one thread the transform and lighting is 2.9 ms. Inside it (`strip_job`:
+about 85,000 vertices a frame, three in four lit, by three lights each on
+average) the colours and lights take 53% of the time, putting triangles
+together 28% and the transform 18%.
+
+**What is done.** A setting, Lighting (settings.txt `lighting = cpu | gpu`,
+the Picture tab of the game's menu and of the launcher's Settings; CPU by
+default), moves the lights of the GPU renderer's picture to its vertex
+shader. The software renderer's are always the processor's.
+
+- `view.c` (`view_host_gpu_lighting`): for a pass the GPU draws, a strip
+  is lit by the GPU when every vertex of it would take the lights: no
+  vertex with colours of its own, no bump map, not a material that only
+  takes its base colour. For such a strip `strip_job` does not run the
+  lights. Each vertex's eight colour floats carry the lights' inputs
+  instead: the normal (view space, unit length) and the point it is lit at.
+  That keeps the rest as it was: a triangle of one colour copies its last
+  vertex's "colours", and the near plane's cut goes between two vertices'.
+  A triangle's record says which strip it is of (`dtri.gl`).
+- The hand-over (`view_gpu_frame`) gains two tables: a record for each
+  strip (the material's base and specular colours, the specular power,
+  the light set's number, whether the material takes no lights) and the
+  light sets (the ambient colour and fifteen lights each). A vertex gains
+  its normal, the point it is lit at and its strip's number.
+- `scene.vert` works the colours out by the same rule as `strip_job`,
+  the light that goes to the alpha (section 64) included, and takes whole
+  steps of 255 as the bytes the processor's path sends. The two tables are
+  storage buffers of the vertex stage (`gpu_render.c`).
+
+Environment-map coordinates are still the processor's (they need only the
+normal). Bump-mapped strips and strips with colours of their own stay on
+the processor.
+
+**Checked** (the development PC; the windowed game from snapshots, in a
+headless desktop):
+
+- 88% of the vertices of a fight are lit by the GPU.
+- The picture with Lighting GPU against Lighting CPU, GPU renderer:
+  Sarah's stage at seven moments (4:3 and 16:9, the fading colonnade of
+  section 64 among them), the same to the pixel; the Shrine's intro at
+  21:9, three moments: the same, or 27 and 203 pixels differing by one
+  step of 255.
+- The software renderer's picture is the same to the pixel whatever the
+  setting says.
+- The machine's time a frame in a fight (16:9, no sound chip, as fast as
+  it goes): 3.8 ms with the processor's lights and 3.4 with the GPU's at
+  full speed; 4.85 and 3.6 on two cores with their second threads; 21.7
+  and 14.5 on an imitation of the laptop (those four threads held to 40%
+  of one core in all, which gave the laptop's 22 ms; it weighs work shared
+  between threads too heavily, so the laptop's own gain will be less).
+- The launcher's Picture page with its tenth row (`--shot picture`): all
+  ten show.
+
+**Not covered.** The laptop itself, or any Intel graphics chip: the
+vertex shader now reads two storage buffers, which not every old driver
+may like, and that is why the setting is CPU by default. Windows itself
+(the Windows build was compiled, not run with the setting). A Steam Deck.
+The game's menu's Picture tab was not looked at with its new row.

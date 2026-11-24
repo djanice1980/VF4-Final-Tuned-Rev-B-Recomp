@@ -1739,11 +1739,11 @@ static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sou
                                                  "Keyboard 2" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
-static const int tab_rows[T_COUNT][10] = {
+static const int tab_rows[T_COUNT][12] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, OPT_LATENCY, -1 },
     [T_CARDS] = { -1 },
     [T_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
-                    OPT_SCALE, OPT_PACING, -1 },
+                    OPT_SCALE, OPT_LIGHTING, OPT_PACING, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEY1] = { -1 }, [T_KEY2] = { -1 },
 };
@@ -3562,7 +3562,7 @@ static void draw_settings(void)
     }
     float ry = 164, rh = 336;
     /* nine options (the Picture tab) fit the panel a little closer; more than that scroll */
-    ui_rows(40, ry, 540, rh, !controls_tab() && n == 9 ? 37 : 42, rows, n, st_row, &st_top);
+    ui_rows(40, ry, 540, rh, !controls_tab() && n == 9 ? 37 : !controls_tab() && n == 10 ? 33 : 42, rows, n, st_row, &st_top);
     const char *t, *text, *note = NULL;
     if (!controls_tab()) {
         int o = tab_rows[st_tab][st_row];

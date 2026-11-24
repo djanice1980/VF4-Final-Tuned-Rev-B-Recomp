@@ -173,6 +173,14 @@ What the recomp changed:
   picture kept (`wide_tex_keep`) and used by the screen pass's polygons
   that have the texture (`wide_tex_use`, `rstate.wide_u`). With no wide
   screen (VF4debug has none) nothing behaves differently.
+- Lighting on the GPU (2026-11-24, docs/design.md section 67). `view.h`,
+  `view.c`: `view_host_gpu_lighting`; with it on, `strip_job` leaves the
+  lights of a strip the GPU can light to the host (the colours carry the
+  normal and the point lit at, `dtri.gl` the strip), and `gpu_export`
+  hands over a record for each strip and the light sets
+  (`view_gpu_frame.lit`, `.lights`; `view_gpu_vertex.n`, `.l`, `.lit`).
+  Off (the default, and always without the host's GPU path) nothing
+  behaves differently.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

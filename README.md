@@ -625,6 +625,9 @@ with only a gamepad, the menu's Operator test menu does the same.
   (auto | on | off: a two-PC game's latency optimization; default auto),
   `pacing` (game | screen | off: Frame pacing, above; default game.
   0.5.12's `pace = timer` is read as off),
+  `lighting` (cpu | gpu: which chip works out the lights with the GPU
+  renderer; gpu takes that work off a slow processor; default cpu:
+  [design.md s67](docs/design.md#67-lighting-on-the-gpu-as-an-option-2026-11-24)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad.*` for gamepads, with SDL's key

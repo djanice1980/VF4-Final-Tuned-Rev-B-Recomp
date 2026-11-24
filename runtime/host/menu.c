@@ -25,7 +25,7 @@ static const int tab_rows[TABS][ROWS] = {
                    A_KOFI, A_LAUNCHER, A_QUIT, -1 },
     [TAB_CARDS] = { OPT_CARD1, A_EDIT1, OPT_CARD2, A_EDIT2, OPT_CARDS, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
-                      OPT_SCALE, OPT_PACING, -1 },
+                      OPT_SCALE, OPT_LIGHTING, OPT_PACING, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
 static int shown_rows[TABS][ROWS], nshown[TABS];   /* tab_rows without Updates and the launcher outside a release folder */
@@ -138,7 +138,8 @@ static int change(int d)
         return MENU_STAY;
     option_change(s, id, d);
     return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_WINDOW || id == OPT_VOLUME ||
-                   id == OPT_DISPLAY || id == OPT_RENDERER || id == OPT_GPU || id == OPT_SCALE || id == OPT_PACING
+                   id == OPT_DISPLAY || id == OPT_RENDERER || id == OPT_GPU || id == OPT_SCALE || id == OPT_PACING ||
+                   id == OPT_LIGHTING
                ? MENU_LIVE
                : MENU_STAY;
 }

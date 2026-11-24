@@ -28,6 +28,7 @@ const char *const settings_card_default[2] = { "p1", "p2" };
 const char *const settings_region_text[REGIONS] = { "Japan", "USA", "Export", "Korea", "Australia" };
 const char *const settings_latency_name[LATENCIES] = { "auto", "on", "off" };
 const char *const settings_pacing_name[PACINGS] = { "game", "screen", "off" };
+const char *const settings_lighting_name[LIGHTINGS] = { "cpu", "gpu" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -182,6 +183,7 @@ void settings_defaults(settings *s)
     s->region = REGION_JAPAN;
     s->latency = LATENCY_AUTO;
     s->pacing = PACING_GAME;
+    s->lighting = LIGHTING_CPU;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -516,6 +518,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "latency")) {
                 if ((ok = choice(v, settings_latency_name, LATENCIES, &x)))
                     s->latency = x;
+            } else if (!strcmp(name, "lighting")) {
+                if ((ok = choice(v, settings_lighting_name, LIGHTINGS, &x)))
+                    s->lighting = x;
             } else if (!strcmp(name, "pacing")) {
                 if ((ok = choice(v, settings_pacing_name, PACINGS, &x)))
                     s->pacing = x;
@@ -616,6 +621,10 @@ int settings_save(const settings *s, const char *path)
         "                       # multiple of it (not in a two-PC game); off: the newest frame at each\n"
         "                       # refresh, as before 0.5.12\n",
         settings_pacing_name[s->pacing]);
+    PUT("lighting = %s          # cpu | gpu: where the GPU renderer's lights are worked out. gpu: by the\n"
+        "                       # graphics chip, which takes that work off a slow processor (the software\n"
+        "                       # renderer's are always the processor's)\n",
+        settings_lighting_name[s->lighting]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

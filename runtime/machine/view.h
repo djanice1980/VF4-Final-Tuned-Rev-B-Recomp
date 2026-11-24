@@ -56,7 +56,20 @@ typedef struct view_gpu_vertex {
     float x, y, z, u, v;                /* the target's pixels; z = 1/w, larger is nearer; texture coordinates */
     u32 col, ofs;                       /* base and offset colour, 0xAABBGGRR (bytes R, G, B, A in memory) */
     u32 state;                          /* which view_gpu_state */
+    /* lighting on the GPU (view_host_gpu_lighting, docs/design.md section 67): lit not 0 says the
+     * vertex was not lit here. Its colours are to be made from n, its normal, and l, the point it
+     * is lit at (both in the game's view space), by the strip record lit - 1 and that record's
+     * light set; col and ofs are 0 */
+    float n[3], l[3];
+    u32 lit;
 } view_gpu_vertex;
+/* a strip record, VIEW_GPU_LIT_FLOATS floats: the material's base colour (r, g, b, a: 0..255), its
+ * specular colour (r, g, b) and power (0: none), the light set's number, 1 when the material takes
+ * no lights, two spare. A light set, VIEW_GPU_LIGHTSET_FLOATS floats: the ambient colour (r, g, b,
+ * 0), then 15 lights of 16 floats: colour (r, g, b), flags (1 on, 2 point, 4 linear fall);
+ * direction (x, y, z), fall a; position (x, y, z), fall b; cone k, cone b, diffuse mode, routing */
+#define VIEW_GPU_LIT_FLOATS 12
+#define VIEW_GPU_LIGHTSET_FLOATS 244
 typedef struct view_gpu_state {
     u32 pcw, isp, tsp, tcw;             /* the chip's control words */
     u32 tex_at, tex_w, tex_h, tex_levels;   /* the texture in the texel arena (tex_w 0: none) */
@@ -101,6 +114,10 @@ typedef struct view_gpu_frame {
     const view_gpu_volume *vols;
     u32 nvols;
     u32 translucent_volumes;            /* volumes of the translucent list, not drawn by the GPU path */
+    const float *lit;                   /* the strip records and the light sets (lighting on the GPU) */
+    u32 nlit;                           /* floats */
+    const float *lights;
+    u32 nlights;                        /* floats */
     /* the texel arena (0xAARRGGBB): the ranges that changed since the last frame; reset: drop everything */
     const u32 *arena;
     u32 arena_texels;
@@ -111,6 +128,9 @@ typedef struct view_gpu_frame {
 #define VIEW_GPU_ARENA (16u << 20)      /* texels */
 void view_program_changed(void);   /* recomp (test mode): look the program's tables up again */
 void view_host_gpu(void (*submit)(const view_gpu_frame *f));
+/* recomp (section 67): the GPU path's lights are worked out by the host's vertex shader (on) or
+ * here as ever (off, the default). Any thread; the next pass to the screen takes it */
+void view_host_gpu_lighting(int on);
 
 /* called from hw_gfx.c, only while view_on is set */
 void view_list_segment(sh4 *c, u32 addr, u32 len);       /* a display list segment the ELAN is told to run */
