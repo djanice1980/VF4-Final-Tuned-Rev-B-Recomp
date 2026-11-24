@@ -103,9 +103,16 @@ int menu_changed(void)
     return s && memcmp(s, &before, sizeof before) != 0;
 }
 
+/* the Controls tab shows the keys or the gamepads, whichever was used last;
+ * the gamepads' first row is each player's controller */
+static int ctl_first(void)
+{
+    return ui_device() != UI_DEV_KEYS;
+}
+
 static int rows_in(int t)
 {
-    return t == TAB_CONTROLS ? ACT_COUNT : nshown[t];
+    return t == TAB_CONTROLS ? ACT_COUNT + ctl_first() : nshown[t];
 }
 
 static int row_id(int r)
@@ -421,7 +428,8 @@ int menu_mouse(int what, float px, float py, int d)
         default: return -1;
         }
     }
-    int r = ui_rows_hit(x, y), t = ui_tabs_hit(x, y);
+    int col = -1;
+    int r = tab == TAB_CONTROLS ? ui_bind_table_hit(x, y, &col) : ui_rows_hit(x, y), t = ui_tabs_hit(x, y);
     if (ed_on) {
         switch (what) {
         case MENU_MOUSE_MOVE:
@@ -837,9 +845,9 @@ static void about_of(int id, const char **title, const char **text, const char *
     default:
         *title = "Controls";
         *text = ui_device() == UI_DEV_KEYS
-                    ? "The keyboard's keys for player 1. Change them in the launcher's Settings."
-                    : "Every gamepad's buttons (the first is player 1, the second player 2). Change them in "
-                      "the launcher's Settings; the left stick always moves.";
+                    ? "Both players' keys. Change them in the launcher's Settings."
+                    : "Each player's gamepad and buttons. Change them in the launcher's Settings. The left stick "
+                      "always moves.";
         break;
     }
 }
@@ -883,6 +891,48 @@ static void draw_editor(float X, float Y, float W, float H)
 
 /* the ring name's note over the editor: the name typed so far (chosen at
  * first: a letter typed replaces it), OK and Cancel */
+/* the Controls tab: each player's keys, or each player's gamepad and its
+ * buttons, to read (the launcher's Settings change them): the launcher's
+ * table (docs/design.md section 69) */
+static void draw_controls(float X, float ry, float W, float rh)
+{
+    int pad = ctl_first(), n = ACT_COUNT + pad;
+    static const char *const head[2] = { "Player 1", "Player 2" };
+    const char *const wish[2] = { s->pad_wish[0], s->pad_wish[1] };
+    SDL_JoystickID ids[2] = { 0, 0 };
+    if (pad)
+        ui_pad_players(wish, ids);
+    ui_bind_row rows[ACT_COUNT + 1];
+    static char vals[ACT_COUNT + 1][2][160];
+    SDL_zeroa(rows);
+    if (pad) {
+        rows[0].label = "Controller";
+        rows[0].text = 1;
+        for (int c = 0; c < 2; c++) {
+            if (ids[c])
+                ui_pad_title(ids[c], vals[0][c], sizeof vals[0][c]);
+            else
+                SDL_strlcpy(vals[0][c], "None", sizeof vals[0][c]);
+            rows[0].faint[c] = !ids[c];
+            rows[0].value[c] = vals[0][c];
+        }
+    }
+    for (int a = 0; a < ACT_COUNT; a++) {
+        ui_bind_row *r = &rows[pad + a];
+        r->label = settings_action_text[a];
+        for (int c = 0; c < 2; c++) {
+            settings_binding_text(pad ? &s->pad[c][a] : &s->key[c][a], vals[pad + a][c], sizeof vals[0][0]);
+            r->value[c] = vals[pad + a][c];
+        }
+    }
+    if (row >= n)
+        row = n - 1;        /* the keys were shown and a gamepad is now, or the other way */
+    ui_bind_table(X + 30, ry, W - 60, rh - 30, ROW_H, head, ids, !pad, rows, n, row, -1, &top);
+    const char *title, *text, *note;
+    about_of(A_CONTROL, &title, &text, &note);
+    ui_text_in(UI_REGULAR, 14.5f, X + 46, ry + rh - 12, W - 92, 0, 0, UI_MUTED, text);
+}
+
 static void draw_typing(void)
 {
     ui_fill(-2000, -2000, 5180, 4680, (SDL_Color){ 6, 7, 10, 200 });    /* the whole window, past the panel's shape */
@@ -943,89 +993,90 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
     ui_tabs(X + 30, Y + 70, W - 60, 46, tab_names, TABS, tab);
     ui_fill(X + 30, Y + 132, W - 60, 1, UI_LINE);
 
-    /* the rows */
-    ui_row rows[ACT_COUNT];
-    char vals[ACT_COUNT][160];
-    int n = rows_in(tab);
-    for (int i = 0; i < n; i++) {
-        int id = row_id(i);
-        ui_row *w = &rows[i];
-        if (id < OPT_COUNT) {
-            option_row(s, id, w, vals[i], sizeof vals[i]);
-            w->later = options[id].at_start && later(id);
-            if (id == OPT_CREDITS || id == OPT_NETWORK || id == OPT_REGION)
-                w->later = later(id);
-            if (id == OPT_VOLUME && !run.sound)
-                w->off = 1;
-            continue;
-        }
-        SDL_zerop(w);
-        w->kind = UI_ROW_ACTION;
-        switch (id) {
-        case A_RESUME: w->label = "Resume"; break;
-        case A_TEST: w->label = run.test_program ? "Operator buttons" : "Operator test menu"; break;
-        case A_RESTART: w->label = armed == A_RESTART ? "Restart the game? Choose it again" : "Restart the game"; break;
-        case A_QUIT: w->label = armed == A_QUIT ? "Quit? Choose it again" : "Quit"; break;
-        case A_KOFI: w->label = "Support on Ko-fi"; break;
-        case A_CODE: {
-            static char code[16];
-            int st = run.join_code ? run.join_code(code, sizeof code) : MENU_CODE_NONE;
-            w->label = "Join code";
-            w->kind = UI_ROW_TEXT;
-            w->value = st == MENU_CODE_SHOWN ? code : st == MENU_CODE_GONE ? "None: choose for a new one" : "None now";
-            w->strong = st == MENU_CODE_SHOWN;
-            break;
-        }
-        case A_EDIT1:
-        case A_EDIT2: {
-            int held;
-            w->label = id == A_EDIT1 ? "Edit player 1's card" : "Edit player 2's card";
-            w->off = edit_why(id - A_EDIT1, &held) != NULL;
-            break;
-        }
-        case A_LAUNCHER: w->label = armed == A_LAUNCHER ? "Open the launcher? Choose it again" : "Open the launcher"; break;
-        case A_UPDATES: {
-            static char label[96];
-            int st = gu_state();
-            w->label = "Check for updates";
-            if (updates_toggle()) {
-                SDL_snprintf(label, sizeof label, "Update to %s when I quit", gu_newer());
-                w->label = label;
-                w->kind = UI_ROW_TOGGLE;
-                w->on = st == GU_ASKED;
-            } else if (st != GU_IDLE) {
-                w->kind = UI_ROW_TEXT;
-                w->value = st == GU_CHECKING ? "Checking\xE2\x80\xA6" : st == GU_NONE ? "Up to date" : "Could not check";
-            }
-            break;
-        }
-        default: {
-            int keys = ui_device() == UI_DEV_KEYS;
-            w->label = settings_action_text[i];
-            w->kind = keys ? UI_ROW_KEYS : UI_ROW_PAD;
-            settings_binding_text(keys ? &s->key[0][i] : &s->pad[i], vals[i], sizeof vals[i]);
-            w->value = vals[i];
-            break;
-        }
-        }
-        w->warn = armed >= 0 && armed == id;
-    }
-    /* 39 units a row: a release's Game tab (ten rows, with Network, Region,
-     * Check for updates and Open the launcher) fits in rh = 394 without
-     * scrolling; at 46 Quit was below the fold (nine rows then), at 43 the
-     * tenth was. An eleventh row there needs this looked at again (Join
-     * code and Latency optimization show only in a two-PC game, which has no
-     * Test or Restart: ten rows). The Controls tab scrolls. */
     float ry = Y + 150, rh = H - 150 - 76;
-    ui_rows(ROWS_X, ry, ROWS_W, rh, ROW_H, rows, n, row, &top);
+    int any_later = 0;      /* a row is marked: it applies at the next start */
+    if (tab == TAB_CONTROLS) {
+        draw_controls(X, ry, W, rh);
+    } else {
+        /* the rows */
+        ui_row rows[ACT_COUNT];
+        char vals[ACT_COUNT][160];
+        int n = rows_in(tab);
+        for (int i = 0; i < n; i++) {
+            int id = row_id(i);
+            ui_row *w = &rows[i];
+            if (id < OPT_COUNT) {
+                option_row(s, id, w, vals[i], sizeof vals[i]);
+                w->later = options[id].at_start && later(id);
+                if (id == OPT_CREDITS || id == OPT_NETWORK || id == OPT_REGION)
+                    w->later = later(id);
+                if (id == OPT_VOLUME && !run.sound)
+                    w->off = 1;
+                continue;
+            }
+            SDL_zerop(w);
+            w->kind = UI_ROW_ACTION;
+            switch (id) {
+            case A_RESUME: w->label = "Resume"; break;
+            case A_TEST: w->label = run.test_program ? "Operator buttons" : "Operator test menu"; break;
+            case A_RESTART: w->label = armed == A_RESTART ? "Restart the game? Choose it again" : "Restart the game"; break;
+            case A_QUIT: w->label = armed == A_QUIT ? "Quit? Choose it again" : "Quit"; break;
+            case A_KOFI: w->label = "Support on Ko-fi"; break;
+            case A_CODE: {
+                static char code[16];
+                int st = run.join_code ? run.join_code(code, sizeof code) : MENU_CODE_NONE;
+                w->label = "Join code";
+                w->kind = UI_ROW_TEXT;
+                w->value = st == MENU_CODE_SHOWN ? code : st == MENU_CODE_GONE ? "None: choose for a new one" : "None now";
+                w->strong = st == MENU_CODE_SHOWN;
+                break;
+            }
+            case A_EDIT1:
+            case A_EDIT2: {
+                int held;
+                w->label = id == A_EDIT1 ? "Edit player 1's card" : "Edit player 2's card";
+                w->off = edit_why(id - A_EDIT1, &held) != NULL;
+                break;
+            }
+            case A_LAUNCHER: w->label = armed == A_LAUNCHER ? "Open the launcher? Choose it again" : "Open the launcher"; break;
+            case A_UPDATES: {
+                static char label[96];
+                int st = gu_state();
+                w->label = "Check for updates";
+                if (updates_toggle()) {
+                    SDL_snprintf(label, sizeof label, "Update to %s when I quit", gu_newer());
+                    w->label = label;
+                    w->kind = UI_ROW_TOGGLE;
+                    w->on = st == GU_ASKED;
+                } else if (st != GU_IDLE) {
+                    w->kind = UI_ROW_TEXT;
+                    w->value = st == GU_CHECKING ? "Checking\xE2\x80\xA6" : st == GU_NONE ? "Up to date" : "Could not check";
+                }
+                break;
+            }
+            default: break;
+            }
+            w->warn = armed >= 0 && armed == id;
+        }
+        /* 39 units a row: a release's Game tab (ten rows, with Network, Region,
+         * Check for updates and Open the launcher) fits in rh = 394 without
+         * scrolling; at 46 Quit was below the fold (nine rows then), at 43 the
+         * tenth was. An eleventh row there needs this looked at again (Join
+         * code and Latency optimization show only in a two-PC game, which has no
+         * Test or Restart: ten rows). The Controls tab scrolls. */
+        ui_rows(ROWS_X, ry, ROWS_W, rh, ROW_H, rows, n, row, &top);
 
-    const char *title, *text, *note;
-    about_of(row_id(row), &title, &text, &note);
-    ui_about(X + 694, ry, W - 694 - 30, rh, title, text, note);
-    if (row_id(row) == A_KOFI) {         /* the badge at the foot of the panel */
-        float bw = 220, aw = W - 694 - 30, bh = bw * 356 / 672;
-        badge_at = (SDL_FRect){ X + 694 + (aw - bw) / 2, ry + rh - 24 - bh, bw, bh };
-        kofi_badge(badge_at.x, badge_at.y, bw);
+        const char *title, *text, *note;
+        about_of(row_id(row), &title, &text, &note);
+        ui_about(X + 694, ry, W - 694 - 30, rh, title, text, note);
+        if (row_id(row) == A_KOFI) {         /* the badge at the foot of the panel */
+            float bw = 220, aw = W - 694 - 30, bh = bw * 356 / 672;
+            badge_at = (SDL_FRect){ X + 694 + (aw - bw) / 2, ry + rh - 24 - bh, bw, bh };
+            kofi_badge(badge_at.x, badge_at.y, bw);
+        }
+
+        for (int i = 0; i < n; i++)
+            any_later |= rows[i].later;
     }
 
     ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
@@ -1042,14 +1093,9 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         ui_hints(X + W - 32, Y + H - 31, 26, view_hints, (int)SDL_arraysize(view_hints), 2);
     else
         ui_hints(X + W - 32, Y + H - 31, 26, hints, (int)SDL_arraysize(hints), 2);
-    if (tab != TAB_CONTROLS) {
-        int any = 0;
-        for (int i = 0; i < n; i++)
-            any |= rows[i].later;
-        if (any) {
-            ui_icon(UI_I_DOT, X + 40, Y + H - 31, 14, UI_ACCENT);
-            ui_text(UI_REGULAR, 14, X + 52, Y + H - 31, UI_MUTED, "Applies at the next start");
-        }
+    if (any_later) {
+        ui_icon(UI_I_DOT, X + 40, Y + H - 31, 14, UI_ACCENT);
+        ui_text(UI_REGULAR, 14, X + 52, Y + H - 31, UI_MUTED, "Applies at the next start");
     }
 }
 

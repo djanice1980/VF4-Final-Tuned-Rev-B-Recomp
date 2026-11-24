@@ -118,7 +118,7 @@ the Linux launcher's pages; the Windows release is the same program.
 
 | Play | Settings |
 |---|---|
-| <img src="docs/images/launcher-play.png" alt="The launcher's Play page: Play, Settings, Add to Steam, Build again, Game files, and the Two PCs row"> | <img src="docs/images/launcher-settings-gamepad.png" alt="The launcher's Settings, Gamepad tab, with PlayStation button glyphs"> |
+| <img src="docs/images/launcher-play.png" alt="The launcher's Play page: Play, Settings, Add to Steam, Build again, Game files, and the Two PCs row"> | <img src="docs/images/launcher-settings-gamepad.png" alt="The launcher's Settings, Gamepad tab: a controller and a set of buttons for each player, each column named as that player's gamepad names them"> |
 | Play, add the game to Steam, or build it again. | The game's settings and controls in tabs. The defaults are the PlayStation 2 version's layout. |
 
 | Cards | Card editor |
@@ -143,7 +143,7 @@ Nintendo pad has them); the game's controls go by where the buttons sit.
 
 | Game (keyboard) | Controls (DualSense) |
 |---|---|
-| <img src="docs/images/menu-game.png" alt="The game's menu, Game tab: Resume, Credits, Card units, Operator test menu, Restart, Quit, with keyboard keys"> | <img src="docs/images/menu-controls.png" alt="The game's menu, Controls tab: the gamepad's buttons as PlayStation glyphs"> |
+| <img src="docs/images/menu-game.png" alt="The game's menu, Game tab: Resume, Credits, Card units, Operator test menu, Restart, Quit, with keyboard keys"> | <img src="docs/images/menu-controls.png" alt="The game's menu, Controls tab: each player's gamepad and its buttons"> |
 
 ## Status
 
@@ -500,7 +500,7 @@ are the PlayStation 2 versions' (VF4 and VF4 Evolution, from their manuals:
 square guard, triangle and cross punch, circle kick; Evolution's TYPE A
 puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 
-| | Keyboard (player 1) | Gamepad (first: player 1, second: player 2) |
+| | Keyboard (player 1) | Gamepad (each player's) |
 |---|---|---|
 | Move | arrows or WASD | left stick or D-pad |
 | Guard / Punch / Kick | J / K / L | X (square) / Y (triangle) and A (cross) / B (circle) |
@@ -512,6 +512,18 @@ puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 | Test / Service (the operator's) | F2 / F3 | A / X on the operator bar (the menu's Operator test menu) |
 | Fullscreen | F11 or Alt+Enter | |
 | The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox, PS, Home or Steam button), or hold View + Menu for a second |
+
+The launcher's Settings have a Gamepad tab and a Keyboard tab, each a
+table with a column for player 1 and one for player 2: every action can
+have its own key or button for each player (both players' gamepad buttons
+start the same; player 2 has no keys until you set some). The Gamepad
+tab's first row is each player's controller: Auto gives the gamepads out
+in the order they connected (the first is player 1's), or a player can be
+given one of the gamepads connected, which is remembered. Each column
+shows its buttons as that player's gamepad names them, so an Xbox pad and
+a DualSense side by side show letters in one column and shapes in the
+other ([design.md
+s69](docs/design.md#69-a-controller-and-buttons-for-each-player-2026-11-24)).
 
 Each pad is one player, also through Steam Input: under Proton the game
 sees both Steam's pad and the real pad behind it, and leaves the real one
@@ -630,8 +642,11 @@ with only a gamepad, the menu's Operator test menu does the same.
   [design.md s67](docs/design.md#67-lighting-on-the-gpu-as-an-option-2026-11-24)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
-  keyboard player 2, `pad.*` for gamepads, with SDL's key
-  and button names, several separated by commas, `-` for none. The file
+  keyboard player 2, `pad1.*` and `pad2.*` for each player's gamepad (a
+  `pad.*` line of 0.5.20 or before is both players'), with SDL's key
+  and button names, several separated by commas, `-` for none;
+  `pad1.controller` and `pad2.controller` (auto, or the gamepad the
+  launcher's Settings gave that player). The file
   the launcher writes lists every name with its choices. A line the game
   does not know is skipped, with a message in `vf4ft.log`.
 - `backup.bin`: the cabinet's battery-backed RAM and settings EEPROM,

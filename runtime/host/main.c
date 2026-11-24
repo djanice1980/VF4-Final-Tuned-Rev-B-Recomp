@@ -37,6 +37,7 @@
  *                     (a click), up or down (a turn of the wheel),
  *                     "padtype=NAME" anywhere in the list gives that gamepad a real pad's ids (its
  *                     glyphs): xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck, steamvirtual,
+ *                     "pad2:..." and "pad2type=NAME" the same for a second virtual gamepad,
  *                     "text:WORDS" types WORDS ("_" a space) as the keyboard's text
  *   --user DIR        the player's folder (default: user/ beside the executable): settings.txt,
  *                     backup.bin (the cabinet's battery-backed RAM and settings EEPROM), cards/
@@ -93,7 +94,9 @@
  * units and every control. The defaults:
  *   keyboard (player 1): arrows or WASD, J guard, K punch, L kick, U throw
  *     (P+G), I P+K, O P+K+G, P K+G, Enter start, 5 coin, F2 test, F3 service
- *   gamepads (first is player 1, second player 2), the PlayStation 2
+ *   gamepads (a set of buttons for each player, the same by default; the first
+ *     pad connected is player 1's and the second player 2's unless the Settings
+ *     page gives a player one controller: section 69), the PlayStation 2
  *     versions' layout by position: left stick or D-pad, X/West (square)
  *     guard, Y/North (triangle) and A/South (cross) punch, B/East (circle)
  *     kick, LB P+G, RB P+K, LT P+K+G, RT K+G, Menu start, View coin
@@ -1769,7 +1772,7 @@ static unsigned stick_bits(float x, float y)
 typedef struct { int n; SDL_Scancode sc[BIND_MAX]; } key_set;
 typedef struct { int n; int in[BIND_MAX]; } pad_set;   /* >= 0 a button, < 0 a trigger: -1 - its axis */
 static key_set keys[2][ACT_COUNT];
-static pad_set pads[ACT_COUNT];
+static pad_set pads[2][ACT_COUNT];
 static const unsigned act_bits[ACT_COUNT] = {
     GAME_BTN_UP, GAME_BTN_DOWN, GAME_BTN_LEFT, GAME_BTN_RIGHT, GAME_BTN_G, GAME_BTN_P, GAME_BTN_K,
     GAME_BTN_P | GAME_BTN_G, GAME_BTN_P | GAME_BTN_K, GAME_BTN_P | GAME_BTN_K | GAME_BTN_G, GAME_BTN_K | GAME_BTN_G,
@@ -1805,20 +1808,23 @@ static void bindings_compile(void)
                     k->sc[k->n++] = sc;
             }
         }
-        pad_set *g = &pads[a];
-        g->n = 0;
-        for (int i = 0; i < BIND_MAX; i++) {
-            const char *name = cfg_.pad[a].name[i];
-            if (!name[0])
-                continue;
-            SDL_GamepadButton bt = SDL_GetGamepadButtonFromString(name);
-            SDL_GamepadAxis ax = SDL_GetGamepadAxisFromString(name);
-            if (bt != SDL_GAMEPAD_BUTTON_INVALID)
-                g->in[g->n++] = bt;
-            else if (ax == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || ax == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
-                g->in[g->n++] = -1 - ax;
-            else
-                logf_("settings: pad.%s: no gamepad button is called \"%s\"", settings_action_name[a], name);
+        for (int p = 0; p < 2; p++) {
+            pad_set *g = &pads[p][a];
+            g->n = 0;
+            for (int i = 0; i < BIND_MAX; i++) {
+                const char *name = cfg_.pad[p][a].name[i];
+                if (!name[0])
+                    continue;
+                SDL_GamepadButton bt = SDL_GetGamepadButtonFromString(name);
+                SDL_GamepadAxis ax = SDL_GetGamepadAxisFromString(name);
+                if (bt != SDL_GAMEPAD_BUTTON_INVALID)
+                    g->in[g->n++] = bt;
+                else if (ax == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || ax == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+                    g->in[g->n++] = -1 - ax;
+                else
+                    logf_("settings: pad%d.%s: no gamepad button is called \"%s\"", p + 1, settings_action_name[a],
+                          name);
+            }
         }
     }
 }
@@ -1829,10 +1835,30 @@ static void bindings_compile(void)
 static unsigned pad_ignore;
 static int pad_ignore_bar;              /* and each pad's operator bar buttons (they go by label: ui_pad_face) */
 static bool key_ignore[SDL_SCANCODE_COUNT];
-static unsigned pads_raw;               /* the buttons of every gamepad, together */
-static unsigned pad_raw[2];             /* the first two gamepads' buttons */
-static SDL_JoystickID pad_id[2];
+static unsigned pads_raw;               /* the buttons of both players' gamepads, together */
+static unsigned pad_raw[2];             /* each player's gamepad's buttons */
+static SDL_JoystickID pad_id[2];        /* each player's gamepad now (0: none): ui_pad_players */
 #define CHORD ((1u << SDL_GAMEPAD_BUTTON_BACK) | (1u << SDL_GAMEPAD_BUTTON_START))     /* View + Menu: the menu */
+
+/* the log says whose gamepad is whose, each time that changes */
+static void pads_note(const SDL_JoystickID ids[2])
+{
+    static SDL_JoystickID was[2];
+    static int said;
+    if (said && ids[0] == was[0] && ids[1] == was[1])
+        return;
+    said = 1;
+    was[0] = ids[0];
+    was[1] = ids[1];
+    char t[2][96];
+    for (int p = 0; p < 2; p++) {
+        if (ids[p])
+            ui_pad_title(ids[p], t[p], sizeof t[p]);
+        else
+            SDL_strlcpy(t[p], "none", sizeof t[p]);
+    }
+    logf_("gamepads: player 1: %s; player 2: %s", t[0], t[1]);
+}
 
 /* everything at once; returns CHORD when a player's gamepad holds View + Menu */
 static unsigned read_controls(game_input *in)
@@ -1850,11 +1876,16 @@ static unsigned read_controls(game_input *in)
     if (k[SDL_SCANCODE_6]) in->coin[1] = 1;
 
     unsigned first = 0;
-    int n = 0;
     pads_raw = pad_raw[0] = pad_raw[1] = 0;
-    SDL_JoystickID *ids = ui_gamepads(&n);     /* without Steam Input's twins (ui.h) */
-    for (int i = 0; ids && i < n && i < 2; i++) {
-        SDL_Gamepad *g = SDL_GetGamepadFromID(ids[i]);
+    /* each player's gamepad: the one the settings give them, else the pads
+     * in the order they connected, without Steam Input's twins (ui.h) */
+    const char *const wish[2] = { cfg_.pad_wish[0], cfg_.pad_wish[1] };
+    SDL_JoystickID ids[2];
+    ui_pad_players(wish, ids);
+    pads_note(ids);
+    for (int i = 0; i < 2; i++) {
+        pad_id[i] = ids[i];
+        SDL_Gamepad *g = ids[i] ? SDL_GetGamepadFromID(ids[i]) : NULL;
         if (!g)
             continue;
         unsigned b = 0, raw = 0, ignore = pad_ignore;
@@ -1868,8 +1899,8 @@ static unsigned read_controls(game_input *in)
         b |= stick_bits(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f,
                         SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f);
         for (int a = 0; a < ACT_COUNT; a++)
-            for (int j = 0; j < pads[a].n; j++) {
-                int x = pads[a].in[j];
+            for (int j = 0; j < pads[i][a].n; j++) {
+                int x = pads[i][a].in[j];
                 int on = x >= 0 ? (x < 32 && (raw >> x & 1) && !(ignore >> x & 1))
                                 : SDL_GetGamepadAxis(g, (SDL_GamepadAxis)(-1 - x)) > 16000;
                 if (on) {
@@ -1880,11 +1911,9 @@ static unsigned read_controls(game_input *in)
         in->player[i] |= b;
         pads_raw |= raw;
         pad_raw[i] = raw;
-        pad_id[i] = ids[i];
         if ((raw & CHORD) == CHORD)
             first |= CHORD;
     }
-    SDL_free(ids);
     /* a stick held between two directions that cancel gives neither */
     for (int i = 0; i < 2; i++) {
         if ((in->player[i] & (GAME_BTN_LEFT | GAME_BTN_RIGHT)) == (GAME_BTN_LEFT | GAME_BTN_RIGHT))
@@ -3209,55 +3238,38 @@ static char key_list[8192];
 static const char *key_item[KEY_ITEMS];
 static int key_items, key_at, key_wait;
 
-/* --keys pad:...: SDL's virtual gamepad, so the gamepad paths run as a real pad's do */
-static SDL_Joystick *vpad;
-static int vpad_turns;                  /* turns left of the buttons held */
+/* --keys pad:... and pad2:...: SDL's virtual gamepads, so the gamepad paths
+ * run as real pads' do */
+static SDL_Joystick *vpad[2];
+static int vpad_turns[2];               /* turns left of the buttons held */
 
-/* made at start-up, before its first press: SDL sends no press for a button
- * already down when a gamepad is opened */
-static void vpad_attach(void)
+/* made at start-up, before the first press: SDL sends no press for a button
+ * already down when a gamepad is opened. "padtype=NAME" and "pad2type=NAME"
+ * give each a real pad's ids (ui_test_pad) */
+static void vpad_attach(int which)
 {
-    if (!vpad) {
-        SDL_VirtualJoystickDesc d;
-        SDL_INIT_INTERFACE(&d);
-        d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
-        d.naxes = SDL_GAMEPAD_AXIS_COUNT;
-        d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
-        d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
-        d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
-        d.name = "vf4ft --keys pad";
-        /* "padtype=NAME": a real pad's vendor and product ids, so that SDL
-         * takes it for one and its glyphs show */
-        static const struct { const char *name; Uint16 vendor, product; } types[] = {
-            { "xbox", 0x045E, 0x0B12 },         /* Xbox Series X|S */
-            { "xbox360", 0x045E, 0x028E },
-            { "ps5", 0x054C, 0x0CE6 },          /* DualSense */
-            { "ps4", 0x054C, 0x09CC },          /* DualShock 4 */
-            { "ps3", 0x054C, 0x0268 },          /* DualShock 3 */
-            { "switch", 0x057E, 0x2009 },       /* Switch Pro */
-            { "gamecube", 0x057E, 0x2073 },     /* Switch 2 GameCube controller */
-            { "deck", 0x28DE, 0x1205 },         /* Steam Deck */
-            { "steamvirtual", 0x28DE, 0x11FF }, /* Steam Input's own pad */
-        };
-        for (int i = 0; i < key_items; i++)
-            for (size_t k = 0; k < SDL_arraysize(types); k++)
-                if (!strncmp(key_item[i], "padtype=", 8) && !strcmp(key_item[i] + 8, types[k].name))
-                    d.vendor_id = types[k].vendor, d.product_id = types[k].product;
-        SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
-        vpad = id ? SDL_OpenJoystick(id) : NULL;
-        if (!vpad)
-            logf_("--keys pad: no virtual gamepad: %s", SDL_GetError());
-    }
+    if (vpad[which])
+        return;
+    const char *key = which ? "pad2type=" : "padtype=", *type = NULL;
+    size_t kn = strlen(key);
+    for (int i = 0; i < key_items; i++)
+        if (!strncmp(key_item[i], key, kn))
+            type = key_item[i] + kn;
+    /* with a type, named as that pad is; else by what it is */
+    SDL_JoystickID id = ui_test_pad(type, type ? NULL : which ? "vf4ft --keys pad 2" : "vf4ft --keys pad");
+    vpad[which] = id ? SDL_OpenJoystick(id) : NULL;
+    if (!vpad[which])
+        logf_("--keys pad: no virtual gamepad: %s", SDL_GetError());
 }
 
-static void vpad_press(const char *what)
+static void vpad_press(int which, const char *what)
 {
-    if (!vpad)
+    if (!vpad[which])
         return;
     char buf[64];
     SDL_strlcpy(buf, what, sizeof buf);
     char *eq = SDL_strchr(buf, '=');
-    vpad_turns = eq ? atoi(eq + 1) : 6;
+    vpad_turns[which] = eq ? atoi(eq + 1) : 6;
     if (eq)
         *eq = 0;
     char *save = NULL;
@@ -3266,15 +3278,16 @@ static void vpad_press(const char *what)
         if (bt == SDL_GAMEPAD_BUTTON_INVALID)
             logf_("--keys pad: no gamepad button is called \"%s\"", b);
         else
-            SDL_SetJoystickVirtualButton(vpad, bt, true);
+            SDL_SetJoystickVirtualButton(vpad[which], bt, true);
     }
 }
 
 static void vpad_turn(void)
 {
-    if (vpad && vpad_turns > 0 && --vpad_turns == 0)
-        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
-            SDL_SetJoystickVirtualButton(vpad, b, false);
+    for (int w = 0; w < 2; w++)
+        if (vpad[w] && vpad_turns[w] > 0 && --vpad_turns[w] == 0)
+            for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+                SDL_SetJoystickVirtualButton(vpad[w], b, false);
 }
 
 /* --keys mouse:KIND@XxY: the mouse's event at window point X, Y, as SDL
@@ -3618,11 +3631,13 @@ int main(int argc, char **argv)
     logf_("video driver: %s", SDL_GetCurrentVideoDriver());
     ui_pad_logger(log_line);
     bindings_compile();     /* key names need the video subsystem */
-    for (int i = 0; i < key_items; i++)
-        if (!strncmp(key_item[i], "pad:", 4) || !strncmp(key_item[i], "padtype=", 8)) {
-            vpad_attach();
-            break;
-        }
+    for (int w = 0; w < 2; w++)         /* the first before the second: the order they connect in */
+        for (int i = 0; i < key_items; i++)
+            if (!strncmp(key_item[i], w ? "pad2:" : "pad:", w ? 5 : 4) ||
+                !strncmp(key_item[i], w ? "pad2type=" : "padtype=", w ? 9 : 8)) {
+                vpad_attach(w);
+                break;
+            }
     if (!silent) {
         SDL_AudioSpec as = { SDL_AUDIO_S16, 2, 44100 };
         audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &as, NULL, NULL);
@@ -4025,7 +4040,8 @@ int main(int argc, char **argv)
 
         /* --keys */
         vpad_turn();
-        if (key_at < key_items && !vpad_turns && SDL_GetAtomicInt(&frame_now) >= key_wait && ++key_turns >= 8) {
+        if (key_at < key_items && !vpad_turns[0] && !vpad_turns[1] && SDL_GetAtomicInt(&frame_now) >= key_wait &&
+            ++key_turns >= 8) {
             const char *it = key_item[key_at++];
             key_turns = 0;
             if (it[0] == '@')
@@ -4033,8 +4049,10 @@ int main(int argc, char **argv)
             else if (!strncmp(it, "shot=", 5))
                 window_shot = it + 5;
             else if (!strncmp(it, "pad:", 4))
-                vpad_press(it + 4);
-            else if (!strncmp(it, "padtype=", 8))
+                vpad_press(0, it + 4);
+            else if (!strncmp(it, "pad2:", 5))
+                vpad_press(1, it + 5);
+            else if (!strncmp(it, "padtype=", 8) || !strncmp(it, "pad2type=", 9))
                 ;                   /* taken at start-up (vpad_attach) */
             else if (!strncmp(it, "mouse:", 6))
                 key_mouse(win, it + 6);
@@ -4372,11 +4390,12 @@ int main(int argc, char **argv)
     }
     compositor_busy(1);     /* closing the window: it may never finish if the compositor goes now */
     ovl_free(gpu);
-    if (vpad) {
-        SDL_JoystickID id = SDL_GetJoystickID(vpad);
-        SDL_CloseJoystick(vpad);
-        SDL_DetachVirtualJoystick(id);
-    }
+    for (int w = 0; w < 2; w++)
+        if (vpad[w]) {
+            SDL_JoystickID id = SDL_GetJoystickID(vpad[w]);
+            SDL_CloseJoystick(vpad[w]);
+            SDL_DetachVirtualJoystick(id);
+        }
     video_end();
     close_begin();
     SDL_DestroyWindow(win);

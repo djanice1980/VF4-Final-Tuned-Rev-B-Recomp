@@ -1078,19 +1078,24 @@ static int style_of(SDL_JoystickID id)
     return style_of_type(SDL_GetGamepadTypeForID(id));
 }
 
-static void note_pad(SDL_JoystickID id)
+/* a pad's four face labels: a Steam virtual pad's own are an Xbox pad's (A
+ * at the bottom), so the real pad's by place, from its type in Steam's file */
+static void pad_faces(SDL_JoystickID id, SDL_GamepadButtonLabel l[4])
 {
-    dev = last_pad_style = style_of(id);
     SDL_Gamepad *g = SDL_GetGamepadFromID(id);     /* opened by the program already */
-    /* a Steam virtual pad's own labels are an Xbox pad's (A at the bottom):
-     * the real pad's by place, from its type in Steam's file */
     const steam_slot *s = SDL_GetGamepadVendorForID(id) == 0x28DE && SDL_GetGamepadProductForID(id) == 0x11FF
                               ? twin_info(id) : NULL;
     for (int b = 0; b < 4; b++)
-        last_face[b] = s && s->type != SDL_GAMEPAD_TYPE_UNKNOWN
-                           ? SDL_GetGamepadButtonLabelForType(s->type, (SDL_GamepadButton)b)
-                       : g ? SDL_GetGamepadButtonLabel(g, (SDL_GamepadButton)b)
-                           : SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
+        l[b] = s && s->type != SDL_GAMEPAD_TYPE_UNKNOWN
+                   ? SDL_GetGamepadButtonLabelForType(s->type, (SDL_GamepadButton)b)
+               : g ? SDL_GetGamepadButtonLabel(g, (SDL_GamepadButton)b)
+                   : SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
+}
+
+static void note_pad(SDL_JoystickID id)
+{
+    dev = last_pad_style = style_of(id);
+    pad_faces(id, last_face);
 }
 
 int ui_note_event(const SDL_Event *e)
@@ -1135,6 +1140,217 @@ int ui_pad_style(void)
         s = style_of(ids[0]);
     SDL_free(ids);
     return s;
+}
+
+/* ---- a controller for each player (docs/design.md section 69) ---- */
+
+/* the caps of gamepad inputs drawn as one pad's, not the last one used */
+static int as_on, as_style;
+static SDL_GamepadButtonLabel as_face[4];
+
+void ui_pad_caps_as(SDL_JoystickID id)
+{
+    as_on = id != 0;
+    if (!as_on)
+        return;
+    as_style = style_of(id);
+    pad_faces(id, as_face);
+}
+
+/* a serial number as a wish keeps it: letters, digits, '-', '_', ':', '.' */
+static void serial_clean(const char *in, char *out, size_t n)
+{
+    size_t k = 0;
+    for (; in && *in && k + 1 < n; in++)
+        if (SDL_isalnum((unsigned char)*in) || *in == '-' || *in == '_' || *in == ':' || *in == '.')
+            out[k++] = *in;
+    out[k] = 0;
+}
+
+static void pad_serial(SDL_JoystickID id, char *out, size_t n)
+{
+    SDL_Gamepad *g = SDL_GetGamepadFromID(id);
+    serial_clean(g ? SDL_GetGamepadSerial(g) : NULL, out, n);
+}
+
+/* "VVVV:PPPP[/SERIAL][@N] NAME": the maker's and the model's numbers, the
+ * serial number when the pad tells one, else its place among the pads of
+ * that model (from 1; left out for the first), and its name for showing */
+static int wish_parse(const char *w, unsigned *vid, unsigned *pid, char *serial, size_t sn, int *nth)
+{
+    serial[0] = 0;
+    *nth = 1;
+    if (!w || !w[0])
+        return 0;
+    char *end = NULL;
+    unsigned long v = SDL_strtoul(w, &end, 16);
+    if (end != w + 4 || *end != ':')
+        return 0;
+    const char *q = end + 1;
+    unsigned long p = SDL_strtoul(q, &end, 16);
+    if (end != q + 4)
+        return 0;
+    *vid = (unsigned)v;
+    *pid = (unsigned)p;
+    q = end;
+    if (*q == '/') {
+        size_t k = 0;
+        for (q++; *q && *q != ' ' && *q != '@'; q++)
+            if (k + 1 < sn)
+                serial[k++] = *q;
+        serial[k] = 0;
+    }
+    if (*q == '@') {
+        int n = SDL_atoi(q + 1);
+        if (n > 1)
+            *nth = n;
+    }
+    return 1;
+}
+
+void ui_pad_wish_of(SDL_JoystickID id, char *out, size_t n)
+{
+    unsigned vid = SDL_GetGamepadVendorForID(id), pid = SDL_GetGamepadProductForID(id);
+    char serial[48], name[96];
+    pad_serial(id, serial, sizeof serial);
+    const char *nm = SDL_GetGamepadNameForID(id);
+    size_t k = 0;
+    for (; nm && *nm && k + 1 < sizeof name; nm++)      /* a '#' would end the settings file's line */
+        name[k++] = *nm == '#' || (unsigned char)*nm < 0x20 ? ' ' : *nm;
+    name[k] = 0;
+    int nth = 1, count = 0;
+    SDL_JoystickID *ids = ui_gamepads(&count);
+    for (int i = 0; ids && i < count && ids[i] != id; i++)
+        if (SDL_GetGamepadVendorForID(ids[i]) == vid && SDL_GetGamepadProductForID(ids[i]) == pid)
+            nth++;
+    SDL_free(ids);
+    if (serial[0])
+        SDL_snprintf(out, n, "%04x:%04x/%s %s", vid, pid, serial, name);
+    else if (nth > 1)
+        SDL_snprintf(out, n, "%04x:%04x@%d %s", vid, pid, nth, name);
+    else
+        SDL_snprintf(out, n, "%04x:%04x %s", vid, pid, name);
+}
+
+const char *ui_pad_wish_name(const char *wish)
+{
+    const char *sp = wish ? SDL_strchr(wish, ' ') : NULL;
+    return sp ? sp + 1 : "";
+}
+
+int ui_pad_wish_fits(const char *wish, SDL_JoystickID id)
+{
+    unsigned vid = 0, pid = 0;
+    char serial[48];
+    int nth = 1;
+    return wish_parse(wish, &vid, &pid, serial, sizeof serial, &nth) && SDL_GetGamepadVendorForID(id) == vid &&
+           SDL_GetGamepadProductForID(id) == pid;
+}
+
+void ui_pad_players(const char *const wish[2], SDL_JoystickID out[2])
+{
+    out[0] = out[1] = 0;
+    int n = 0;
+    SDL_JoystickID *ids = ui_gamepads(&n);
+    if (!ids)
+        return;
+    /* a player who asks for one controller gets it when it is there: by its
+     * serial number, else by its place among its model, else the first of
+     * its model that is free */
+    for (int p = 0; p < 2; p++) {
+        unsigned vid = 0, pid = 0;
+        char serial[48], have[48];
+        int nth = 1;
+        if (!wish_parse(wish[p], &vid, &pid, serial, sizeof serial, &nth))
+            continue;
+        SDL_JoystickID first = 0, by_serial = 0, by_place = 0;
+        int k = 0;
+        for (int i = 0; i < n; i++) {
+            if (SDL_GetGamepadVendorForID(ids[i]) != vid || SDL_GetGamepadProductForID(ids[i]) != pid)
+                continue;
+            k++;
+            if (p == 1 && ids[i] == out[0])
+                continue;               /* player 1 has it */
+            if (!first)
+                first = ids[i];
+            if (k == nth)
+                by_place = ids[i];
+            if (serial[0]) {
+                pad_serial(ids[i], have, sizeof have);
+                if (!SDL_strcmp(have, serial))
+                    by_serial = ids[i];
+            }
+        }
+        out[p] = by_serial ? by_serial : by_place ? by_place : first;
+    }
+    /* the others, and a player whose controller is not there: the pads left,
+     * in the order they connected, player 1 first */
+    for (int p = 0; p < 2; p++) {
+        if (out[p])
+            continue;
+        for (int i = 0; i < n; i++)
+            if (ids[i] != out[0] && ids[i] != out[1]) {
+                out[p] = ids[i];
+                break;
+            }
+    }
+    SDL_free(ids);
+}
+
+SDL_JoystickID ui_test_pad(const char *type, const char *name)
+{
+    SDL_VirtualJoystickDesc d;
+    SDL_INIT_INTERFACE(&d);
+    d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+    d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
+    d.name = name;
+    /* a real pad's vendor and product ids, so that SDL takes it for one and
+     * its glyphs show */
+    static const struct { const char *name; Uint16 vendor, product; const char *real; } types[] = {
+        { "xbox", 0x045E, 0x0B12, "Xbox Wireless Controller" },             /* Xbox Series X|S */
+        { "xbox360", 0x045E, 0x028E, "Xbox 360 Controller" },
+        { "ps5", 0x054C, 0x0CE6, "DualSense Wireless Controller" },
+        { "ps4", 0x054C, 0x09CC, "DualShock 4 Wireless Controller" },
+        { "ps3", 0x054C, 0x0268, "DualShock 3 Controller" },
+        { "switch", 0x057E, 0x2009, "Nintendo Switch Pro Controller" },
+        { "gamecube", 0x057E, 0x2073, "Nintendo GameCube Controller" },     /* the Switch 2's */
+        { "deck", 0x28DE, 0x1205, "Steam Deck" },
+        { "steamvirtual", 0x28DE, 0x11FF, "Steam Virtual Gamepad" },        /* Steam Input's own pad */
+    };
+    for (size_t k = 0; type && k < SDL_arraysize(types); k++)
+        if (!SDL_strcmp(type, types[k].name)) {
+            d.vendor_id = types[k].vendor, d.product_id = types[k].product;
+            if (!name)
+                d.name = types[k].real;
+        }
+    if (!d.name)
+        d.name = "Test gamepad";
+    return SDL_AttachVirtualJoystick(&d);
+}
+
+void ui_pad_title(SDL_JoystickID id, char *out, size_t n)
+{
+    const char *name = SDL_GetGamepadNameForID(id);
+    if (!name || !name[0])
+        name = "Gamepad";
+    int count = 0, same = 0, place = 0;
+    SDL_JoystickID *ids = ui_gamepads(&count);
+    for (int i = 0; ids && i < count; i++) {
+        const char *other = SDL_GetGamepadNameForID(ids[i]);
+        if (other && !SDL_strcmp(other, name)) {
+            same++;
+            if (ids[i] == id)
+                place = same;
+        }
+    }
+    SDL_free(ids);
+    if (same > 1 && place)
+        SDL_snprintf(out, n, "%s (%d)", name, place);
+    else
+        SDL_strlcpy(out, name, n);
 }
 
 /* ---- face buttons in menus: by their labels ---- */
@@ -1279,10 +1495,12 @@ static void input_look(const char *name, int pad, const char **label, int *icon,
         *label = NULL;
         return;
     }
-    int st = ui_pad_style();
+    int st = as_on ? as_style : ui_pad_style();
     const pad_style *ps = &styles[st];
     if (b >= SDL_GAMEPAD_BUTTON_SOUTH && b <= SDL_GAMEPAD_BUTTON_NORTH) {
-        SDL_GamepadButtonLabel l = last_face[b] ? last_face[b] : SDL_GetGamepadButtonLabelForType(ps->type, b);
+        SDL_GamepadButtonLabel l = as_on ? as_face[b] : last_face[b];
+        if (!l)
+            l = SDL_GetGamepadButtonLabelForType(ps->type, b);
         *round = 1;
         face_look(st, l, label, icon, c);
         if (*icon >= 0)
@@ -1570,6 +1788,115 @@ int ui_rows_hit(float x, float y)
     if (i >= last_rows.shown || last_rows.top + i >= last_rows.n)
         return -1;
     return last_rows.top + i;
+}
+
+/* ---- the controls table: an action a row, a cell for each player ---- */
+
+static struct { float x, y, w, row_h, cx[2], cw; int top, shown, n; } last_table;
+
+/* a cell's inputs as caps from its left, or what it says instead */
+static void bind_cell(const ui_bind_row *r, int c, int keys, float x, float mid, float w, float row_h, int waiting)
+{
+    float vsize = row_h * 0.37f, ch = row_h * 0.58f;
+    if (waiting) {
+        ui_text_in(UI_MEDIUM, vsize, x, mid, w, 0, 0, UI_ACCENT, keys ? "Press a key\xE2\x80\xA6" : "Press a button\xE2\x80\xA6");
+        return;
+    }
+    const char *v = r->value[c] ? r->value[c] : "";
+    if (r->text) {
+        ui_text_in(r->faint[c] ? UI_REGULAR : UI_MEDIUM, vsize, x, mid, w, 0, 0, r->faint[c] ? UI_MUTED : UI_TEXT, v);
+        return;
+    }
+    char names[160];
+    SDL_strlcpy(names, v, sizeof names);
+    int k = 0;
+    float at = x;
+    for (char *t = names, *save = NULL; (t = SDL_strtok_r(t, ",", &save)); t = NULL) {
+        while (*t == ' ')
+            t++;
+        if (!*t || !SDL_strcmp(t, "-"))
+            continue;
+        float cw = ui_cap_input_w(ch, t, !keys);
+        if (at + cw > x + w)
+            break;                      /* no room for more: the row's own page shows them all */
+        ui_cap_input(at, mid, ch, t, !keys);
+        at += cw + ch * 0.3f;
+        k++;
+    }
+    if (!k)
+        ui_text_in(UI_REGULAR, vsize, x, mid, w, 0, 0, UI_FAINT, "Not set");
+}
+
+void ui_bind_table(float x, float y, float w, float h, float row_h, const char *const head[2],
+                   const SDL_JoystickID pad[2], int keys, const ui_bind_row *rows, int n, int sel, int col, int *top)
+{
+    float head_h = row_h * 0.9f, label_w = w * 0.3f, cw = (w - label_w) / 2;
+    float cx[2] = { x + label_w, x + label_w + cw };
+    /* the heads: whose column it is */
+    for (int c = 0; c < 2; c++)
+        ui_text_in(UI_BOLD, row_h * 0.36f, cx[c] + row_h * 0.3f, y + head_h / 2, cw - row_h * 0.6f, 0, 0,
+                   c == col || col < 0 ? UI_TEXT : UI_MUTED, head[c]);
+    ui_fill(x, y + head_h - 1, w, 1, UI_LINE);
+    y += head_h;
+    h -= head_h;
+    int shown = (int)(h / row_h);
+    if (shown < 1)
+        shown = 1;
+    if (sel < *top)
+        *top = sel;
+    if (sel >= *top + shown)
+        *top = sel - shown + 1;
+    if (*top > n - shown)
+        *top = n - shown;
+    if (*top < 0)
+        *top = 0;
+    last_table.x = x;
+    last_table.y = y;
+    last_table.w = w;
+    last_table.row_h = row_h;
+    last_table.cx[0] = cx[0];
+    last_table.cx[1] = cx[1];
+    last_table.cw = cw;
+    last_table.top = *top;
+    last_table.shown = shown;
+    last_table.n = n;
+    float size = row_h * 0.39f;
+    for (int i = *top; i < n && i < *top + shown; i++) {
+        const ui_bind_row *r = &rows[i];
+        float ry = y + (float)(i - *top) * row_h, mid = ry + row_h / 2;
+        int on = i == sel;
+        if (on) {
+            ui_round(x, ry + 2, w, row_h - 4, row_h * 0.2f, UI_RAISED);
+            ui_round(x, ry + row_h * 0.26f, 3, row_h * 0.48f, 1.5f, UI_ACCENT);
+            if (col >= 0)       /* the cell chosen */
+                ui_round_line(cx[col] + 3, ry + 4, cw - 6, row_h - 8, row_h * 0.18f, 1.5f, UI_ACCENT, UI_RAISED);
+        }
+        ui_text_in(UI_REGULAR, size, x + row_h * 0.4f, mid, label_w - row_h * 0.5f, 0, 0, UI_TEXT, r->label);
+        for (int c = 0; c < 2; c++) {
+            if (!keys)
+                ui_pad_caps_as(pad[c]);
+            bind_cell(r, c, keys, cx[c] + row_h * 0.3f, mid, cw - row_h * 0.6f, row_h, on && r->waiting == c + 1);
+        }
+        ui_pad_caps_as(0);
+    }
+    if (*top > 0)
+        ui_icon(UI_I_UP, x + w - row_h * 0.25f, y - row_h * 0.08f, row_h * 0.3f, UI_FAINT);
+    if (*top + shown < n)
+        ui_icon(UI_I_DOWN, x + w - row_h * 0.25f, y + (float)shown * row_h + row_h * 0.08f, row_h * 0.3f, UI_FAINT);
+}
+
+int ui_bind_table_hit(float x, float y, int *col)
+{
+    *col = -1;
+    if (x < last_table.x || x >= last_table.x + last_table.w || y < last_table.y || last_table.row_h <= 0)
+        return -1;
+    int i = (int)((y - last_table.y) / last_table.row_h);
+    if (i >= last_table.shown || last_table.top + i >= last_table.n)
+        return -1;
+    for (int c = 0; c < 2; c++)
+        if (x >= last_table.cx[c] && x < last_table.cx[c] + last_table.cw)
+            *col = c;
+    return last_table.top + i;
 }
 
 void ui_about(float x, float y, float w, float h, const char *title, const char *text, const char *note)

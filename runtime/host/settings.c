@@ -204,23 +204,25 @@ void settings_defaults(settings *s)
     /* gamepads, by SDL's names for the positions: south/east/west/north are
      * A/B/X/Y on an Xbox pad and the Steam Deck. The left stick always
      * steers as well */
-    binding *p = s->pad;
-    set(&p[ACT_UP], "dpup", NULL);
-    set(&p[ACT_DOWN], "dpdown", NULL);
-    set(&p[ACT_LEFT], "dpleft", NULL);
-    set(&p[ACT_RIGHT], "dpright", NULL);
-    /* the PlayStation 2 versions' defaults, by position (their manuals: square
-     * guard, triangle and cross punch, circle kick; VF4 Evolution's TYPE A:
-     * L1 P+G, R1 P+K, L2 P+K+G, R2 K+G) */
-    set(&p[ACT_GUARD], "x", NULL);
-    set(&p[ACT_PUNCH], "y", "a");
-    set(&p[ACT_KICK], "b", NULL);
-    set(&p[ACT_THROW], "leftshoulder", NULL);
-    set(&p[ACT_PK], "rightshoulder", NULL);
-    set(&p[ACT_PKG], "lefttrigger", NULL);
-    set(&p[ACT_KG], "righttrigger", NULL);
-    set(&p[ACT_START], "start", NULL);
-    set(&p[ACT_COIN], "back", NULL);
+    for (int who = 0; who < 2; who++) {     /* both players' the same */
+        binding *p = s->pad[who];
+        set(&p[ACT_UP], "dpup", NULL);
+        set(&p[ACT_DOWN], "dpdown", NULL);
+        set(&p[ACT_LEFT], "dpleft", NULL);
+        set(&p[ACT_RIGHT], "dpright", NULL);
+        /* the PlayStation 2 versions' defaults, by position (their manuals: square
+         * guard, triangle and cross punch, circle kick; VF4 Evolution's TYPE A:
+         * L1 P+G, R1 P+K, L2 P+K+G, R2 K+G) */
+        set(&p[ACT_GUARD], "x", NULL);
+        set(&p[ACT_PUNCH], "y", "a");
+        set(&p[ACT_KICK], "b", NULL);
+        set(&p[ACT_THROW], "leftshoulder", NULL);
+        set(&p[ACT_PK], "rightshoulder", NULL);
+        set(&p[ACT_PKG], "lefttrigger", NULL);
+        set(&p[ACT_KG], "righttrigger", NULL);
+        set(&p[ACT_START], "start", NULL);
+        set(&p[ACT_COIN], "back", NULL);
+    }
 }
 
 void settings_binding_add(binding *b, const char *name)
@@ -530,21 +532,31 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
                 if (!SDL_strcasecmp(v, "timer"))
                     s->pacing = PACING_OFF;
             } else {
-                /* key1.punch, key2.punch, pad.punch */
+                /* key1.punch, key2.punch, pad1.punch, pad2.punch, pad1.controller;
+                 * pad.punch (0.5.20 and before, one set for every gamepad) is
+                 * both players' */
                 char *dot = strchr(name, '.');
-                binding *set_ = NULL;
+                binding *set_ = NULL, *also = NULL;
                 if (dot) {
                     *dot = 0;
                     int a;
                     if (choice(dot + 1, settings_action_name, ACT_COUNT, &a)) {
                         if (!strcmp(name, "key1")) set_ = &s->key[0][a];
                         else if (!strcmp(name, "key2")) set_ = &s->key[1][a];
-                        else if (!strcmp(name, "pad")) set_ = &s->pad[a];
+                        else if (!strcmp(name, "pad1")) set_ = &s->pad[0][a];
+                        else if (!strcmp(name, "pad2")) set_ = &s->pad[1][a];
+                        else if (!strcmp(name, "pad")) set_ = &s->pad[0][a], also = &s->pad[1][a];
+                    } else if (!strcmp(dot + 1, "controller") && (!strcmp(name, "pad1") || !strcmp(name, "pad2"))) {
+                        char *w = s->pad_wish[name[3] - '1'];
+                        SDL_strlcpy(w, SDL_strcasecmp(v, "auto") ? v : "", PAD_WISH_MAX);
+                        ok = 1;
                     }
                     *dot = '.';
                 }
                 if (set_) {
                     parse_binding(set_, v);
+                    if (also)
+                        *also = *set_;
                     ok = 1;
                 }
             }
@@ -628,12 +640,18 @@ int settings_save(const settings *s, const char *path)
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];
-    for (int who = 0; who < 3; who++) {
+    static const char *const who_name[4] = { "key1", "key2", "pad1", "pad2" };
+    for (int who = 0; who < 4; who++) {
         PUT("\n");
+        if (who == 2)
+            PUT("# A gamepad for each player. controller: auto (the gamepads in the order they\n"
+                "# connected: the first is player 1's), or the one chosen in the launcher's Settings.\n");
+        if (who >= 2)
+            PUT("%s.controller = %s\n", who_name[who], s->pad_wish[who - 2][0] ? s->pad_wish[who - 2] : "auto");
         for (int a = 0; a < ACT_COUNT; a++) {
-            const binding *bd = who < 2 ? &s->key[who][a] : &s->pad[a];
+            const binding *bd = who < 2 ? &s->key[who][a] : &s->pad[who - 2][a];
             settings_binding_text(bd, b, sizeof b);
-            PUT("%s.%s = %s\n", who == 0 ? "key1" : who == 1 ? "key2" : "pad", settings_action_name[a], b);
+            PUT("%s.%s = %s\n", who_name[who], settings_action_name[a], b);
         }
     }
 #undef PUT

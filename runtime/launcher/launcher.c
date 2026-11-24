@@ -40,9 +40,10 @@
  * when that action's process ends, with its result as the exit code; 1 when
  * the action started nothing), --cancel-after S (presses Cancel S seconds
  * after it started); --shot PAGE FILE draws one page (files,
- * build, work, fail, play, settings, picture, pad, key1, key2) to a BMP file and quits,
+ * build, work, fail, play, settings, picture, pad, keys, cards) to a BMP file and quits,
  * its caps in the style --shot-device names (keys, xbox, ps5, switch, steam...:
- * ui_device_named), --shot-scale K times as big
+ * ui_device_named), --shot-pads TYPE[,TYPE] with virtual gamepads of those
+ * makes connected (ui_test_pad), --shot-scale K times as big
  * (with SDL_VIDEO_DRIVER=offscreen no window shows).
  */
 #include <SDL3/SDL.h>
@@ -1734,9 +1735,8 @@ static int default_focus(void)
 
 /* ---- the settings page ---- */
 
-enum { T_GAME, T_CARDS, T_PICTURE, T_SOUND, T_PAD, T_KEY1, T_KEY2, T_COUNT };
-static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard 1",
-                                                 "Keyboard 2" };
+enum { T_GAME, T_CARDS, T_PICTURE, T_SOUND, T_PAD, T_KEYS, T_COUNT };
+static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
 static const int tab_rows[T_COUNT][12] = {
@@ -1745,11 +1745,12 @@ static const int tab_rows[T_COUNT][12] = {
     [T_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
                     OPT_SCALE, OPT_LIGHTING, OPT_PACING, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
-    [T_PAD] = { -1 }, [T_KEY1] = { -1 }, [T_KEY2] = { -1 },
+    [T_PAD] = { -1 }, [T_KEYS] = { -1 },
 };
 static settings st;
 static char settings_path[1100];
 static int st_tab, st_row, st_top;
+static int st_col;                  /* the controls tabs: player 1's cell (0) or player 2's (1) */
 static int capturing;               /* a controls row waits for its key or button */
 static int settings_from = P_PLAY;
 
@@ -2487,19 +2488,49 @@ static int controls_tab(void)
     return st_tab >= T_PAD;
 }
 
+/* the Gamepad tab's first row is each player's controller; then the actions */
+static int ctl_first(void)
+{
+    return st_tab == T_PAD ? 1 : 0;
+}
+
 static int tab_count(void)
 {
     if (controls_tab())
-        return ACT_COUNT;
+        return ACT_COUNT + ctl_first();
     int n = 0;
     while (n < (int)SDL_arraysize(tab_rows[0]) && tab_rows[st_tab][n] >= 0)
         n++;
     return n;
 }
 
+/* the chosen player's binding of an action on a controls tab */
 static binding *tab_binding(int act)
 {
-    return st_tab == T_PAD ? &st.pad[act] : &st.key[st_tab == T_KEY2][act];
+    return st_tab == T_PAD ? &st.pad[st_col][act] : &st.key[st_col][act];
+}
+
+/* the Controller row: the next gamepad connected now for player c, one the
+ * other player has not been given; past the last, Auto again */
+static void controller_next(int c)
+{
+    int n = 0, at = -1;
+    SDL_JoystickID *ids = ui_gamepads(&n);
+    char w[UI_PAD_WISH_MAX];
+    for (int i = 0; ids && i < n && at < 0; i++) {
+        ui_pad_wish_of(ids[i], w, sizeof w);
+        if (!SDL_strcmp(w, st.pad_wish[c]))
+            at = i;
+    }
+    st.pad_wish[c][0] = 0;
+    for (int i = at + 1; ids && i < n; i++) {
+        ui_pad_wish_of(ids[i], w, sizeof w);
+        if (SDL_strcmp(w, st.pad_wish[!c])) {
+            SDL_strlcpy(st.pad_wish[c], w, sizeof st.pad_wish[c]);
+            break;
+        }
+    }
+    SDL_free(ids);
 }
 
 static void settings_close(void)
@@ -2529,7 +2560,9 @@ static void settings_tab(int d)
 /* A, Enter or a click on a row */
 static void settings_press(int row)
 {
-    if (controls_tab())
+    if (controls_tab() && row < ctl_first())
+        controller_next(st_col);
+    else if (controls_tab())
         capturing = 1;
     else
         st_change(tab_rows[st_tab][row], 1);
@@ -2538,7 +2571,7 @@ static void settings_press(int row)
 /* what a controls row takes: replaces the row's binding */
 static void capture(const char *name)
 {
-    binding *b = tab_binding(st_row);
+    binding *b = tab_binding(st_row - ctl_first());
     memset(b, 0, sizeof *b);
     settings_binding_add(b, name);
     capturing = 0;
@@ -2590,13 +2623,21 @@ static void settings_event(const SDL_Event *e)
         st_change(tab_rows[st_tab][st_row], 1);
     else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK)
         settings_press(st_row);
+    else if (controls_tab() && (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT))
+        st_col = 0;
+    else if (controls_tab() && (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
+        st_col = 1;
+    else if (controls_tab() && st_row < ctl_first() &&
+             (k == SDLK_DELETE || face == UI_IN_CLEAR || k == SDLK_BACKSPACE || face == UI_IN_DEFAULT))
+        st.pad_wish[st_col][0] = 0;         /* the Controller row: Auto */
     else if (controls_tab() && (k == SDLK_DELETE || face == UI_IN_CLEAR))
-        memset(tab_binding(st_row), 0, sizeof(binding));
+        memset(tab_binding(st_row - ctl_first()), 0, sizeof(binding));
     else if (controls_tab() && (k == SDLK_BACKSPACE || face == UI_IN_DEFAULT)) {
-        /* the defaults back on this row */
+        /* the defaults back in this cell */
         settings d;
         settings_defaults(&d);
-        *tab_binding(st_row) = st_tab == T_PAD ? d.pad[st_row] : d.key[st_tab == T_KEY2][st_row];
+        int act = st_row - ctl_first();
+        *tab_binding(act) = st_tab == T_PAD ? d.pad[st_col][act] : d.key[st_col][act];
     } else if (k == SDLK_ESCAPE || face == UI_IN_BACK)
         settings_close();
 }
@@ -3504,6 +3545,88 @@ static void devices_for_options(void)
     options_display_names(list, n);
 }
 
+/* what the Controller row says for player c, whose gamepad now is id (0:
+ * none): Auto and the pad that gives, or the controller chosen; when that
+ * one is not connected, the pad the player has meanwhile. Returns 1 when
+ * the chosen controller is missing */
+static int controller_text(int c, SDL_JoystickID id, char *out, size_t n, int *faint)
+{
+    const char *w = st.pad_wish[c];
+    char t[96];
+    *faint = 1;
+    if (id)
+        ui_pad_title(id, t, sizeof t);
+    if (!w[0]) {
+        if (id)
+            SDL_snprintf(out, n, "Auto: %s", t);
+        else
+            SDL_strlcpy(out, "Auto: none connected", n);
+        return 0;
+    }
+    if (id && ui_pad_wish_fits(w, id)) {
+        *faint = 0;
+        SDL_strlcpy(out, t, n);
+        return 0;
+    }
+    if (id)
+        SDL_snprintf(out, n, "Meanwhile: %s", t);
+    else
+        SDL_snprintf(out, n, "%s (not connected)", ui_pad_wish_name(w));
+    return 1;
+}
+
+/* the controls tabs: an action a row, player 1's cell and player 2's; on the
+ * Gamepad tab each player's controller first, and each column's buttons as
+ * that player's gamepad names them (docs/design.md section 69) */
+static void controls_table(float ry, float rh)
+{
+    int pad = st_tab == T_PAD, first = ctl_first(), n = tab_count();
+    static const char *const head[2] = { "Player 1", "Player 2" };
+    const char *const wish[2] = { st.pad_wish[0], st.pad_wish[1] };
+    SDL_JoystickID ids[2] = { 0, 0 };
+    if (pad)
+        ui_pad_players(wish, ids);
+    ui_bind_row rows[ACT_COUNT + 1];
+    static char vals[ACT_COUNT + 1][2][160];
+    int missing[2] = { 0, 0 };
+    SDL_zeroa(rows);
+    if (pad) {
+        rows[0].label = "Controller";
+        rows[0].text = 1;
+        for (int c = 0; c < 2; c++) {
+            missing[c] = controller_text(c, ids[c], vals[0][c], sizeof vals[0][c], &rows[0].faint[c]);
+            rows[0].value[c] = vals[0][c];
+        }
+    }
+    for (int a = 0; a < ACT_COUNT; a++) {
+        ui_bind_row *r = &rows[first + a];
+        r->label = settings_action_text[a];
+        for (int c = 0; c < 2; c++) {
+            settings_binding_text(pad ? &st.pad[c][a] : &st.key[c][a], vals[first + a][c], sizeof vals[0][0]);
+            r->value[c] = vals[first + a][c];
+        }
+        r->waiting = capturing && st_row == first + a ? st_col + 1 : 0;
+    }
+    /* eight rows show under the heads; the rest scroll */
+    ui_bind_table(40, ry, LW - 80, rh - 30, 33, head, ids, !pad, rows, n, st_row, st_col, &st_top);
+    const char *note;
+    static char gone[200];
+    if (capturing)
+        note = pad ? "Press the button for it (Esc: leave it as it was)." : "Press the key for it (Esc: leave it as it was).";
+    else if (pad && st_row < first && missing[st_col]) {
+        SDL_snprintf(gone, sizeof gone, "Player %d's %s is not connected. It is this player's again when it is.",
+                     st_col + 1, ui_pad_wish_name(st.pad_wish[st_col]));
+        note = gone;
+    } else if (pad && st_row < first)
+        note = "Set: the next gamepad connected now. Clear: Auto, the gamepads in the order they connected (the first "
+               "is player 1's).";
+    else if (pad)
+        note = "The left stick always moves. Each column names the buttons as that player's gamepad does.";
+    else
+        note = "Both players' keys, on the one keyboard. Player 2 has none by default.";
+    ui_text_in(UI_REGULAR, 14.5f, 56, ry + rh - 12, LW - 112, 0, 0, capturing ? UI_ACCENT : UI_MUTED, note);
+}
+
 static void draw_settings(void)
 {
     devices_for_options();
@@ -3545,29 +3668,19 @@ static void draw_settings(void)
         ui_hints(LW - 40 - w - 24, 558, 24, done_hint, 1, 2);
         return;
     }
-    ui_row rows[ACT_COUNT];
-    char vals[ACT_COUNT][160];
-    int n = tab_count();
-    for (int i = 0; i < n; i++) {
-        if (!controls_tab()) {
-            option_row(&st, tab_rows[st_tab][i], &rows[i], vals[i], sizeof vals[i]);
-            continue;
-        }
-        SDL_zero(rows[i]);
-        rows[i].label = settings_action_text[i];
-        rows[i].kind = st_tab == T_PAD ? UI_ROW_PAD : UI_ROW_KEYS;
-        settings_binding_text(tab_binding(i), vals[i], sizeof vals[i]);
-        rows[i].value = vals[i];
-        rows[i].waiting = capturing && i == st_row;
-    }
     float ry = 164, rh = 336;
-    /* nine options (the Picture tab) fit the panel a little closer; more than that scroll */
-    ui_rows(40, ry, 540, rh, !controls_tab() && n == 9 ? 37 : !controls_tab() && n == 10 ? 33 : 42, rows, n, st_row, &st_top);
-    const char *t, *text, *note = NULL;
-    if (!controls_tab()) {
+    if (controls_tab()) {
+        controls_table(ry, rh);
+    } else {
+        ui_row rows[12];
+        char vals[12][160];
+        int n = tab_count();
+        for (int i = 0; i < n; i++)
+            option_row(&st, tab_rows[st_tab][i], &rows[i], vals[i], sizeof vals[i]);
+        /* nine options (the Picture tab) fit the panel a little closer; more than that scroll */
+        ui_rows(40, ry, 540, rh, n == 9 ? 37 : n == 10 ? 33 : 42, rows, n, st_row, &st_top);
         int o = tab_rows[st_tab][st_row];
-        t = options[o].label;
-        text = options[o].about;
+        const char *note = NULL;
         static char whole[2 * GPU_NAME_MAX + DISPLAY_NAME_MAX + 100];
         if ((o == OPT_GPU || o == OPT_SCALE) && st.renderer != RENDERER_GPU)
             note = "The Software renderer does not use it.";     /* as the game's menu says */
@@ -3577,28 +3690,20 @@ static void draw_settings(void)
             note = whole;           /* GPU's or Display's whole name: the row cuts a long one short */
         else if (options[o].at_start || o == OPT_CREDITS)
             note = "The game reads it when it starts.";
-    } else {
-        t = settings_action_text[st_row];
-        text = st_tab == T_PAD
-                   ? "Every gamepad's buttons: the first pad is player 1, the second player 2. The left stick "
-                     "always moves. The defaults are the PlayStation 2 version's layout."
-                   : st_tab == T_KEY1 ? "Player 1's keys." : "Player 2's keys (none by default).";
-        note = capturing ? (st_tab == T_PAD ? "Press the button for it (Esc: leave it as it was)."
-                                            : "Press the key for it (Esc: leave it as it was).")
-                         : NULL;
+        ui_about(604, ry, LW - 40 - 604, rh, options[o].label, options[o].about, note);
     }
-    ui_about(604, ry, LW - 40 - 604, rh, t, text, note);
     static const ui_hint opt_hints[] = {
         { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Change", { UI_IN_LEFTRIGHT, UI_IN_NONE } },
         { "Tabs", { UI_IN_PREV, UI_IN_NEXT } },
     };
     static const ui_hint ctl_hints[] = {
         { "Set", { UI_IN_OK, UI_IN_NONE } }, { "Clear", { UI_IN_CLEAR, UI_IN_NONE } },
-        { "Default", { UI_IN_DEFAULT, UI_IN_NONE } }, { "Tabs", { UI_IN_PREV, UI_IN_NEXT } },
+        { "Default", { UI_IN_DEFAULT, UI_IN_NONE } }, { "Player", { UI_IN_LEFTRIGHT, UI_IN_NONE } },
+        { "Tabs", { UI_IN_PREV, UI_IN_NEXT } },
     };
     ui_fill(40, 516, LW - 80, 1, UI_LINE);
     if (controls_tab())
-        ui_hints(40, 558, 24, ctl_hints, 4, 0);
+        ui_hints(40, 558, 24, ctl_hints, 5, 0);
     else
         ui_hints(40, 558, 24, opt_hints, 3, 0);
     static const ui_hint done_hint[] = { { "Save", { UI_IN_BACK, UI_IN_NONE } } };
@@ -3918,11 +4023,18 @@ static void mouse_event(SDL_Event *e)
     else
         ui_to_logical(e->button.x, e->button.y, &x, &y);
     if (page == P_SETTINGS && !capturing && !pop && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        int t = ui_tabs_hit(x, y), r = ui_rows_hit(x, y);
+        int col = -1;
+        int t = ui_tabs_hit(x, y), r = controls_tab() ? ui_bind_table_hit(x, y, &col) : ui_rows_hit(x, y);
         if (t == UI_TAB_PREV || t == UI_TAB_NEXT)
             settings_tab(t == UI_TAB_PREV ? -1 : 1);
         else if (t >= 0) {
             settings_tab_to(t);
+        } else if (r >= 0 && controls_tab()) {
+            st_row = r;             /* a cell: chosen, and set as Enter does */
+            if (col >= 0) {
+                st_col = col;
+                settings_press(r);
+            }
         } else if (r >= 0 && cards_tab()) {
             st_row = r;             /* a card is only chosen: the bar acts on it */
             cp_focus_fix();
@@ -3931,7 +4043,7 @@ static void mouse_event(SDL_Event *e)
              * Window size does not wrap */
             float right = 40 + 540 - 42 * 0.35f, bw = SDL_min(540 * 0.42f, 42 * 5.6f);
             st_row = r;
-            if (!controls_tab() && x >= right - bw && x < right - bw / 2)
+            if (x >= right - bw && x < right - bw / 2)
                 st_change(tab_rows[st_tab][r], -1);
             else
                 settings_press(r);
@@ -4026,6 +4138,7 @@ static void shot_keys_run(const char *list)
             }
             e.type = SDL_EVENT_KEY_DOWN;
             e.key.key = k;
+            e.key.scancode = SDL_GetScancodeFromKey(k, NULL);   /* a controls row takes the key by its place */
             e.key.down = true;
             route_event(&e);
         }
@@ -4099,7 +4212,7 @@ static void first_size(int *w, int *h, int *min_w, int *min_h)
 int main(int argc, char **argv)
 {
     const char *opt_game = NULL, *opt_pick_game = NULL, *opt_set = NULL, *opt_do = NULL, *shot_page = NULL, *shot_file = NULL,
-               *shot_device = NULL, *shot_keys = NULL;
+               *shot_device = NULL, *shot_keys = NULL, *shot_pads = NULL;
     int shot_scale = 1;
     const char *unknown[8];
     int opt_exit = 0, opt_show = 0, nunknown = 0;
@@ -4119,6 +4232,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--cancel-after") && i + 1 < argc) opt_cancel = SDL_atof(argv[++i]);
         else if (!strcmp(argv[i], "--shot") && i + 2 < argc) shot_page = argv[++i], shot_file = argv[++i];
         else if (!strcmp(argv[i], "--shot-device") && i + 1 < argc) shot_device = argv[++i];
+        else if (!strcmp(argv[i], "--shot-pads") && i + 1 < argc) shot_pads = argv[++i];
         else if (!strcmp(argv[i], "--shot-scale") && i + 1 < argc) shot_scale = SDL_atoi(argv[++i]);
         else if (!strcmp(argv[i], "--shot-keys") && i + 1 < argc) shot_keys = argv[++i];
         else if (nunknown < 8) unknown[nunknown++] = argv[i];
@@ -4259,7 +4373,7 @@ int main(int argc, char **argv)
         static const struct { const char *name; int page, tab; } pages[] = {
             {"files", P_FILES, 0}, {"build", P_BUILD, 0}, {"work", P_WORK, 0}, {"fail", P_FAIL, 0},
             {"play", P_PLAY, 0}, {"settings", P_SETTINGS, T_GAME}, {"picture", P_SETTINGS, T_PICTURE},
-            {"pad", P_SETTINGS, T_PAD}, {"key1", P_SETTINGS, T_KEY1}, {"key2", P_SETTINGS, T_KEY2},
+            {"pad", P_SETTINGS, T_PAD}, {"keys", P_SETTINGS, T_KEYS},
             {"cards", P_SETTINGS, T_CARDS},
         };
         shot_mode = 1;
@@ -4327,6 +4441,16 @@ int main(int argc, char **argv)
                 status_kind = lines[i].kind;
                 SDL_strlcpy(status_text, lines[i].text, sizeof status_text);
             }
+        if (shot_pads) {            /* gamepads connected, in this order */
+            char list[128];
+            SDL_strlcpy(list, shot_pads, sizeof list);
+            char *save = NULL;
+            for (char *t = SDL_strtok_r(list, ",", &save); t; t = SDL_strtok_r(NULL, ",", &save)) {
+                SDL_JoystickID id = ui_test_pad(t, NULL);
+                if (!id || !SDL_OpenGamepad(id))
+                    say("--shot-pads: no virtual gamepad %s: %s", t, SDL_GetError());
+            }
+        }
         if (shot_device && ui_device_named(shot_device) >= 0)
             ui_set_device(ui_device_named(shot_device));    /* the caps' style (ui.h) */
         if (shot_keys)

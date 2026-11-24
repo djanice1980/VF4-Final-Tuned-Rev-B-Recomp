@@ -117,6 +117,31 @@ void ui_set_device(int dev);
 /* the style of gamepad glyphs: the last pad used, else the first one there */
 int ui_pad_style(void);
 
+/* A controller for each player (docs/design.md section 69). A player's
+ * setting is "" (Auto) or a wish for one controller: its maker's and model's
+ * numbers, its serial number when it tells one (else its place among the
+ * pads of that model) and its name.
+ * ui_pad_wish_of: the wish for a pad that is there. ui_pad_wish_name: the
+ * name in a wish ("" when it has none). ui_pad_players: the pads of player 1
+ * and player 2 now (0: none): first each wish that can be met, then the pads
+ * left in the order they connected, player 1 first; a player whose
+ * controller is not there takes one of those too. ui_pad_title: a pad's name,
+ * numbered when another pad there has the same. ui_pad_caps_as: the caps of
+ * gamepad inputs (ui_cap_input) are drawn as that pad's until it is called
+ * with 0, not as the last pad's used. */
+#define UI_PAD_WISH_MAX 160
+void ui_pad_wish_of(SDL_JoystickID id, char *out, size_t n);
+const char *ui_pad_wish_name(const char *wish);
+int ui_pad_wish_fits(const char *wish, SDL_JoystickID id);     /* 1: the pad is of the wish's model */
+void ui_pad_players(const char *const wish[2], SDL_JoystickID out[2]);
+void ui_pad_title(SDL_JoystickID id, char *out, size_t n);
+void ui_pad_caps_as(SDL_JoystickID id);
+/* for tests: SDL's virtual gamepad with a real pad's ids, so that SDL takes
+ * it for one (type: xbox, xbox360, ps5, ps4, ps3, switch, gamecube, deck,
+ * steamvirtual; NULL or another: a plain one), called name, or with name
+ * NULL as such a pad is; 0 when SDL makes none */
+SDL_JoystickID ui_test_pad(const char *type, const char *name);
+
 /* Steam Input's twin pads (docs/design.md s30). Under Proton with Steam
  * Input on, SDL sees Steam's virtual pad and also the real pad behind it, so
  * one press would be two players'. The real pad Steam names for a virtual
@@ -194,6 +219,21 @@ enum { UI_END_LEFT = 1, UI_END_RIGHT = 2 };
 void ui_rows(float x, float y, float w, float h, float row_h, const ui_row *rows, int n, int sel, int *top);
 /* the row at a logical point after ui_rows, or -1 */
 int ui_rows_hit(float x, float y);
+/* The controls table: an action a row, a cell for player 1 and one for
+ * player 2, under the two heads. keys: the cells are keys; else gamepad
+ * inputs, each column drawn as its player's pad (pad[c], 0: as the last pad
+ * used). sel and col: the row and the cell chosen. */
+typedef struct ui_bind_row {
+    const char *label;
+    const char *value[2];   /* a binding's names, ", " between; or what a text row says */
+    int text;               /* the cells are text (a controller's name), not inputs */
+    int faint[2];           /* a text cell that is not a choice made (Auto) */
+    int waiting;            /* 1 + the cell that waits for its key or button, else 0 */
+} ui_bind_row;
+void ui_bind_table(float x, float y, float w, float h, float row_h, const char *const head[2],
+                   const SDL_JoystickID pad[2], int keys, const ui_bind_row *rows, int n, int sel, int col, int *top);
+/* the row at a logical point after ui_bind_table, or -1; *col its cell there, or -1 */
+int ui_bind_table_hit(float x, float y, int *col);
 /* the description panel: a title, wrapped text and a note in the accent */
 void ui_about(float x, float y, float w, float h, const char *title, const char *text, const char *note);
 /* a progress bar: frac 0..1, or < 0 for one that moves (t: seconds) */

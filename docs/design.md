@@ -6045,3 +6045,107 @@ camera turns):
 sum with another width). A real ultrawide screen by eye. Other things that may come and go
 at a wide picture's sides and are not the stage's objects (effects,
 shadows): none was seen, and none was looked for one by one.
+
+## 69. A controller and buttons for each player (2026-11-24)
+
+**Why** (the maintainer's ask). The controls had three tabs in the
+launcher's Settings: Gamepad, Keyboard 1 and Keyboard 2. Every gamepad
+shared one set of buttons, the first pad connected was player 1's and the
+second player 2's with no say in it, and the buttons were named as the pad
+last pressed names them. Wanted: one page for the keyboard and one for
+gamepads with both players on each, buttons a player can change apart
+from the other's, a controller that can be given to a player, and each
+player's buttons named as that player's controller names them.
+
+**The settings** (`settings.h`, `settings.c`). `pad[2][ACT_COUNT]`: a set
+of gamepad buttons for each player, the same by default.
+`pad_wish[2]`: the controller each player asks for. The file has
+`pad1.punch`, `pad2.punch`, `pad1.controller` and `pad2.controller`; a
+`pad.punch` line (0.5.20 and before) is read as both players' and written
+back as the two.
+
+**A wish for a controller** (`ui.c`, `ui_pad_wish_of`, `ui_pad_players`).
+"" is Auto. Else `VVVV:PPPP[/SERIAL][@N] NAME`: the maker's and the model's
+numbers, the serial number when the pad tells one (else its place among
+the connected pads of that model, left out for the first), and its name
+for showing when it is not there. SDL's GUID was not used: on Linux it
+differs between the same pad on a cable and on Bluetooth. The line cannot
+hold a `#` (it would end the settings file's line), so the name loses it.
+
+Who has which pad, worked out every frame from the pads there (without
+Steam Input's twins, section 30):
+
+1. A player with a wish gets that controller when it is there: the one
+   with the serial number, else the Nth of the model, else the first of
+   the model that is free. Player 1's wish goes first.
+2. The other pads go out in the order they connected, player 1 first, to
+   each player who has none yet. That is a player on Auto, and a player
+   whose controller is not there: a lone pad plays, whatever was chosen.
+
+With no wishes this is what it was: the first pad is player 1's.
+
+**The game** (`main.c`). `read_controls` takes each player's pad from
+`ui_pad_players` and reads it with that player's buttons
+(`pads[2][ACT_COUNT]`). The log says whose pad is whose when that changes
+("gamepads: player 1: ...; player 2: ..."). In a two-PC game this PC's
+player still plays with player 1's controls.
+
+**The pages.** The launcher's Settings have Gamepad and Keyboard. Each is
+a table (`ui_bind_table`): an action a row, a cell for player 1 and one
+for player 2 under their heads. Up and Down choose the row, Left and Right
+the player; Set takes the next key or button for the cell, Clear empties
+it, Default puts the default back; a click on a cell chooses it and sets
+it. The Gamepad tab's first row is Controller: Set goes to the next
+gamepad connected now that the other player was not given, and past the
+last to Auto; Clear is Auto. The cell says "Auto: NAME", the controller
+chosen, or "Meanwhile: NAME" when the chosen one is not connected and
+another pad stands in. The table takes the page's width; what the panel on
+the right said is one line under it.
+
+Each column of the Gamepad table is drawn as its player's pad names its
+buttons (`ui_pad_caps_as`: the style and the four face labels of that
+pad, where the caps were always the last pad's used): an Xbox pad's
+letters in one column and a DualSense's shapes in the other. The buttons
+are kept by place, as before, so a button set with one pad means the same
+place on another.
+
+The game's menu has the same table on its Controls tab, to read: the keys
+or the gamepads, whichever was used last, and for gamepads who has which.
+Before it showed player 1's keys or the one set of buttons.
+
+**For tests.** `ui_test_pad`: SDL's virtual gamepad with a real pad's
+ids. The game's `--keys` has a second one (`pad2:`, `pad2type=`), the
+launcher's pictures `--shot-pads TYPE[,TYPE]`; `--shot-keys` now gives a
+key its scancode, which a controls cell takes.
+
+**Checked** (the development PC; the launcher's pictures with no window,
+the game in a headless desktop, virtual gamepads):
+
+- The launcher's pages with an Xbox and a DualSense pad, and a Switch and
+  an Xbox pad: each column in its pad's names (guard, punch and kick: X,
+  Y A, B beside square, triangle cross, circle; Y, X B, A for the Switch
+  pad).
+- Set on player 2's Controller cell: player 2 has the first pad, player 1
+  (Auto) the other, and the columns' names change places. Clear: Auto.
+  A chosen pad that is not connected: "Meanwhile: ..." and the line under
+  the table. A click on a cell. A key set for player 2 and one cleared for
+  player 1. Saved: the file has `key2.left = F`, `pad2.controller =
+  045e:0b12 ...`.
+- A file with 0.5.20's `pad.guard`, `pad.punch`, `pad.kick` lines: both
+  players have them, and the file written has `pad1.` and `pad2.` lines
+  and no `pad.` line.
+- The game with an Xbox pad connected first and a DualSense second,
+  `pad1.controller` asking for the DualSense and `pad2.start =
+  leftstick`: the log has "player 1: DualSense..., player 2: Xbox..."
+  Start on the Xbox pad did nothing; its left stick button brought player
+  2 into the game; Start on the DualSense brought player 1 in.
+- The game's menu, Controls tab, with the two pads: the table, the two
+  controllers' names, each column in its pad's names; with the keyboard
+  used last, the keys.
+- Both builds compile (Linux, Windows).
+
+**Not covered.** Real controllers: two of different makes, two of the same
+model (told apart by serial number or by place), a pad on a cable and then
+on Bluetooth. Steam Input, where every pad is Steam's own model and they
+are told apart by place only. The Windows launcher. The pages by hand in a
+window (they were driven by scripted keys and looked at as pictures).

@@ -30,6 +30,7 @@ enum {
 #define BIND_MAX 4          /* inputs one action can have */
 #define CARD_NAME_MAX 32    /* a card profile's name, with its 0 (user/cards/NAME.card) */
 #define BIND_NAME 24        /* an SDL key or gamepad button name */
+#define PAD_WISH_MAX 160    /* the controller a player asks for (ui.h, ui_pad_wish_of), with its 0 */
 #define GPU_NAME_MAX 128    /* a GPU's name (Vulkan's), with its 0: a longer one is cut */
 #define DISPLAY_NAME_MAX 128    /* a display's name (SDL's), with its 0 */
 
@@ -87,7 +88,10 @@ typedef struct settings {
     int pacing;             /* PACING_*: Game clock by default */
     int lighting;           /* LIGHTING_*: the processor's by default */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
-    binding pad[ACT_COUNT];         /* every gamepad (the first is player 1, the second player 2) */
+    binding pad[2][ACT_COUNT];      /* gamepad, player 1's and player 2's (the same by default) */
+    char pad_wish[2][PAD_WISH_MAX]; /* the controller each player asks for: "" Auto (the pads in the
+                                     * order they connected: the first is player 1's), else one
+                                     * controller (ui_pad_wish_of; docs/design.md section 69) */
 } settings;
 
 extern const char *const settings_action_name[ACT_COUNT];   /* "up", "guard", "throw", ... */
