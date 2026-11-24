@@ -6,11 +6,12 @@
 #include "card_editor.h"
 #include "cards.h"
 #include "options.h"
+#include "controls.h"
 #include "ui.h"
 #include "updates.h"
 
-enum { TAB_GAME, TAB_CARDS, TAB_PICTURE, TAB_SOUND, TAB_CONTROLS, TABS };
-static const char *const tab_names[TABS] = { "Game", "Cards", "Picture", "Sound", "Controls" };
+enum { TAB_GAME, TAB_CARDS, TAB_PICTURE, TAB_SOUND, TAB_PAD, TAB_KEYS, TABS };
+static const char *const tab_names[TABS] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard" };
 
 /* a row: an option (options.h), one of these actions, or a control */
 enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_EDIT1, A_EDIT2, A_CONTROL,
@@ -103,21 +104,41 @@ int menu_changed(void)
     return s && memcmp(s, &before, sizeof before) != 0;
 }
 
-/* the Controls tab shows the keys or the gamepads, whichever was used last;
- * the gamepads' first row is each player's controller */
-static int ctl_first(void)
+/* the Gamepad and Keyboard tabs: the controls pages (runtime/ui/controls.h),
+ * as the launcher's Settings has them (docs/design.md section 72) */
+static ctl_page ctl;
+static int controls_tab(void)
 {
-    return ui_device() != UI_DEV_KEYS;
+    return tab == TAB_PAD || tab == TAB_KEYS;
 }
 
 static int rows_in(int t)
 {
-    return t == TAB_CONTROLS ? ACT_COUNT + ctl_first() : nshown[t];
+    return t == TAB_PAD || t == TAB_KEYS ? ctl_count(&ctl) : nshown[t];
 }
 
 static int row_id(int r)
 {
-    return tab == TAB_CONTROLS ? A_CONTROL : shown_rows[tab][r];
+    return controls_tab() ? A_CONTROL : shown_rows[tab][r];
+}
+
+/* to tab t: its first row, or the controls page it is */
+static void tab_to(int t)
+{
+    tab = t;
+    row = top = 0;
+    if (controls_tab())
+        ctl_open(&ctl, tab == TAB_PAD);
+}
+
+int menu_capturing(void)
+{
+    return s && !notice && !ed_on && !typing && controls_tab() && ctl.capturing;
+}
+
+int menu_capture(const SDL_Event *e)
+{
+    return menu_capturing() ? ctl_event(s, &ctl, e) : 0;
 }
 
 /* Updates is a toggle once a newer release is out: "Update when I quit" */
@@ -324,6 +345,24 @@ int menu_command(int cmd)
         return typing_command(cmd);
     if (ed_on)
         return editor_command(cmd);
+    if (controls_tab()) {
+        /* the controls page: Left and Right are the two players' cells; a
+         * cell is set, emptied, or given its default back */
+        armed = -1;
+        switch (cmd) {
+        case MENU_UP: ctl_move(&ctl, -1, 1); return MENU_STAY;
+        case MENU_DOWN: ctl_move(&ctl, 1, 1); return MENU_STAY;
+        case MENU_LEFT: ctl_side(&ctl, 0); return MENU_STAY;
+        case MENU_RIGHT: ctl_side(&ctl, 1); return MENU_STAY;
+        case MENU_OK: ctl_set(s, &ctl); return MENU_LIVE;
+        case MENU_CLEAR: ctl_clear(s, &ctl); return MENU_LIVE;
+        case MENU_UNDO:
+        case MENU_ERASE: ctl_default(s, &ctl); return MENU_LIVE;
+        case MENU_PREV:
+        case MENU_NEXT: tab_to(wrap(tab, cmd == MENU_PREV ? -1 : 1, TABS)); return MENU_STAY;
+        default: return MENU_RESUME;        /* Back, Escape */
+        }
+    }
     if (cmd == MENU_UNDO || cmd == MENU_CLEAR)
         return MENU_STAY;
     if (cmd == MENU_ESCAPE || cmd == MENU_ERASE)
@@ -335,8 +374,7 @@ int menu_command(int cmd)
     case MENU_DOWN: row = wrap(row, 1, rows_in(tab)); return MENU_STAY;
     case MENU_PREV:
     case MENU_NEXT:
-        tab = wrap(tab, cmd == MENU_PREV ? -1 : 1, TABS);
-        row = top = 0;
+        tab_to(wrap(tab, cmd == MENU_PREV ? -1 : 1, TABS));
         return MENU_STAY;
     case MENU_LEFT: return change(-1);
     case MENU_RIGHT: return change(1);
@@ -428,8 +466,29 @@ int menu_mouse(int what, float px, float py, int d)
         default: return -1;
         }
     }
-    int col = -1;
-    int r = tab == TAB_CONTROLS ? ui_bind_table_hit(x, y, &col) : ui_rows_hit(x, y), t = ui_tabs_hit(x, y);
+    int r = controls_tab() ? -1 : ui_rows_hit(x, y), t = ui_tabs_hit(x, y);
+    if (!ed_on && controls_tab() && t < 0 && t != UI_TAB_PREV && t != UI_TAB_NEXT) {
+        /* the controls page: the row under the mouse, a click sets its cell,
+         * a right click closes as elsewhere, the wheel moves the choice */
+        int was_row = ctl.row, was_col = ctl.col;
+        switch (what) {
+        case MENU_MOUSE_MOVE:
+            if (ctl.capturing)
+                return -1;
+            return ctl_point(s, &ctl, x, y, 0) && (ctl.row != was_row || ctl.col != was_col) ? MENU_STAY : -1;
+        case MENU_MOUSE_WHEEL:
+            ctl_move(&ctl, d, 0);
+            return ctl.row != was_row ? MENU_STAY : -1;
+        case MENU_MOUSE_LEFT:
+            if (inside(&badge_at, x, y))
+                return -1;
+            return ctl_point(s, &ctl, x, y, 1) == 2 ? MENU_LIVE : MENU_STAY;
+        case MENU_MOUSE_RIGHT:
+            return menu_command(MENU_BACK);
+        default:
+            return -1;
+        }
+    }
     if (ed_on) {
         switch (what) {
         case MENU_MOUSE_MOVE:
@@ -502,8 +561,7 @@ int menu_mouse(int what, float px, float py, int d)
         if (t >= 0) {
             if (t == tab)
                 return -1;
-            tab = t;
-            row = top = 0;
+            tab_to(t);
             armed = -1;
             return MENU_STAY;
         }
@@ -844,10 +902,7 @@ static void about_of(int id, const char **title, const char **text, const char *
     }
     default:
         *title = "Controls";
-        *text = ui_device() == UI_DEV_KEYS
-                    ? "Both players' keys. Change them in the launcher's Settings."
-                    : "Each player's gamepad and buttons. Change them in the launcher's Settings. The left stick "
-                      "always moves.";
+        *text = "";
         break;
     }
 }
@@ -891,48 +946,6 @@ static void draw_editor(float X, float Y, float W, float H)
 
 /* the ring name's note over the editor: the name typed so far (chosen at
  * first: a letter typed replaces it), OK and Cancel */
-/* the Controls tab: each player's keys, or each player's gamepad and its
- * buttons, to read (the launcher's Settings change them): the launcher's
- * table (docs/design.md section 69) */
-static void draw_controls(float X, float ry, float W, float rh)
-{
-    int pad = ctl_first(), n = ACT_COUNT + pad;
-    static const char *const head[2] = { "Player 1", "Player 2" };
-    const char *const wish[2] = { s->pad_wish[0], s->pad_wish[1] };
-    SDL_JoystickID ids[2] = { 0, 0 };
-    if (pad)
-        ui_pad_players(wish, ids);
-    ui_bind_row rows[ACT_COUNT + 1];
-    static char vals[ACT_COUNT + 1][2][160];
-    SDL_zeroa(rows);
-    if (pad) {
-        rows[0].label = "Controller";
-        rows[0].text = 1;
-        for (int c = 0; c < 2; c++) {
-            if (ids[c])
-                ui_pad_title(ids[c], vals[0][c], sizeof vals[0][c]);
-            else
-                SDL_strlcpy(vals[0][c], "None", sizeof vals[0][c]);
-            rows[0].faint[c] = !ids[c];
-            rows[0].value[c] = vals[0][c];
-        }
-    }
-    for (int a = 0; a < ACT_COUNT; a++) {
-        ui_bind_row *r = &rows[pad + a];
-        r->label = settings_action_text[a];
-        for (int c = 0; c < 2; c++) {
-            settings_binding_text(pad ? &s->pad[c][a] : &s->key[c][a], vals[pad + a][c], sizeof vals[0][0]);
-            r->value[c] = vals[pad + a][c];
-        }
-    }
-    if (row >= n)
-        row = n - 1;        /* the keys were shown and a gamepad is now, or the other way */
-    ui_bind_table(X + 30, ry, W - 60, rh - 30, ROW_H, head, ids, !pad, rows, n, row, -1, &top);
-    const char *title, *text, *note;
-    about_of(A_CONTROL, &title, &text, &note);
-    ui_text_in(UI_REGULAR, 14.5f, X + 46, ry + rh - 12, W - 92, 0, 0, UI_MUTED, text);
-}
-
 static void draw_typing(void)
 {
     ui_fill(-2000, -2000, 5180, 4680, (SDL_Color){ 6, 7, 10, 200 });    /* the whole window, past the panel's shape */
@@ -995,8 +1008,8 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
 
     float ry = Y + 150, rh = H - 150 - 76;
     int any_later = 0;      /* a row is marked: it applies at the next start */
-    if (tab == TAB_CONTROLS) {
-        draw_controls(X, ry, W, rh);
+    if (controls_tab()) {
+        ctl_draw(s, &ctl, X + 30, ry, W - 60, rh, ROW_H);
     } else {
         /* the rows */
         ui_row rows[ACT_COUNT];
@@ -1085,12 +1098,20 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         { "Tabs", { UI_IN_PREV, UI_IN_NEXT } }, { "Select", { UI_IN_OK, UI_IN_NONE } },
         { "Close", { UI_IN_BACK, UI_IN_NONE } },
     };
-    static const ui_hint view_hints[] = {
-        { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Tabs", { UI_IN_PREV, UI_IN_NEXT } },
-        { "Close", { UI_IN_BACK, UI_IN_NONE } },
+    static const ui_hint ctl_hints[] = {
+        { "Set", { UI_IN_OK, UI_IN_NONE } }, { "Clear", { UI_IN_CLEAR, UI_IN_NONE } },
+        { "Default", { UI_IN_DEFAULT, UI_IN_NONE } }, { "Player", { UI_IN_LEFTRIGHT, UI_IN_NONE } },
+        { "Tabs", { UI_IN_PREV, UI_IN_NEXT } }, { "Close", { UI_IN_BACK, UI_IN_NONE } },
     };
-    if (tab == TAB_CONTROLS)
-        ui_hints(X + W - 32, Y + H - 31, 26, view_hints, (int)SDL_arraysize(view_hints), 2);
+    static const ui_hint wait_hints[] = {
+        { "Leave it", { UI_IN_BACK, UI_IN_NONE } }, { "Clear", { UI_IN_CLEAR, UI_IN_NONE } },
+        { "Default", { UI_IN_DEFAULT, UI_IN_NONE } },
+    };
+    if (controls_tab() && ctl_waiting(&ctl)) {
+        if (ctl_waiting(&ctl) == 1)     /* a cell waits: these still do what they say (controls.h) */
+            ui_hints(X + W - 32, Y + H - 31, 26, wait_hints, (int)SDL_arraysize(wait_hints), 2);
+    } else if (controls_tab())
+        ui_hints(X + W - 32, Y + H - 31, 26, ctl_hints, (int)SDL_arraysize(ctl_hints), 2);
     else
         ui_hints(X + W - 32, Y + H - 31, 26, hints, (int)SDL_arraysize(hints), 2);
     if (any_later) {

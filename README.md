@@ -143,7 +143,7 @@ Nintendo pad has them); the game's controls go by where the buttons sit.
 
 | Game (keyboard) | Controls (DualSense) |
 |---|---|
-| <img src="docs/images/menu-game.png" alt="The game's menu, Game tab: Resume, Credits, Card units, Operator test menu, Restart, Quit, with keyboard keys"> | <img src="docs/images/menu-controls.png" alt="The game's menu, Controls tab: each player's gamepad and its buttons"> |
+| <img src="docs/images/menu-game.png" alt="The game's menu, Game tab: Resume, Credits, Card units, Operator test menu, Restart, Quit, with keyboard keys"> | <img src="docs/images/menu-controls.png" alt="The game's menu, Gamepad tab: each player's controller and buttons, changed in the game"> |
 
 ## Status
 
@@ -519,7 +519,8 @@ puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 | Fullscreen | F11 or Alt+Enter | |
 | The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox, PS, Home or Steam button), or hold View + Menu for a second |
 
-The launcher's Settings have a Gamepad tab and a Keyboard tab, each a
+The launcher's Settings and the game's menu have a Gamepad tab and a
+Keyboard tab, each a
 table with a column for player 1 and one for player 2: every action can
 have its own key or button for each player (both players' gamepad buttons
 start the same; player 2 has no keys until you set some). The Gamepad
@@ -538,7 +539,7 @@ s30](docs/design.md#30-steam-inputs-twin-pads-2026-11-13)). The buttons
 shown are the real pad's (a DualSense's shapes, not Xbox letters).
 
 **The game's menu** pauses the game until it closes, over a blurred copy of
-the picture. Its tabs are Game, Cards, Picture, Sound and Controls: Q and E (or
+the picture. Its tabs are Game, Cards, Picture, Sound, Gamepad and Keyboard: Q and E (or
 LB and RB) switch them. Up and Down choose, Left and Right change, A or
 Enter selects, B or Esc goes back (A and B by their labels, so on a Switch
 pad A is the right button). The mouse works too: the row under it is
@@ -582,8 +583,10 @@ the game turns the cabinet off and on (records, settings and cards are
 kept); it and Quit ask for a second A. Quit closes the game, and the
 launcher too when it started the game; Open the launcher goes back to
 it. Changes are saved to
-`settings.txt` when the menu closes. The Controls tab shows the controls;
-they are changed in the launcher's Settings, not here.
+`settings.txt` when the menu closes. The Gamepad and Keyboard tabs are
+the launcher's: each player's controller, buttons and keys can be changed
+here too, so the launcher is not needed for them
+([design.md s72](docs/design.md#72-the-controls-changed-in-the-games-menu-too-2026-11-24)).
 
 **Cards** keep a player's character, rank, record, items and colors, as a
 cabinet's card did, and a card holds its player to its character: the

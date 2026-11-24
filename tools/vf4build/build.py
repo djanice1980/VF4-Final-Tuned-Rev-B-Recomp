@@ -66,7 +66,7 @@ def units(gen_dirs, tables_cs, tc, version):
         out.append((R("host", s), hflags))
     for s in ("monocypher.c", "monocypher-ed25519.c"):    # the two-PC game's cryptography (runtime/crypto, ORIGIN.md)
         out.append((R("crypto", s), COMMON + ["-I" + R("crypto")]))
-    for s in ("ui.c", "fonts.c", "options.c", "kofi_badge.c", "card_editor.c"):    # the menu's drawing kit (runtime/ui)
+    for s in ("ui.c", "fonts.c", "options.c", "kofi_badge.c", "card_editor.c", "controls.c"):    # the menu's drawing kit (runtime/ui)
         out.append((R("ui", s), hflags))
     return out
 

@@ -61,6 +61,7 @@
 #include "cards.h"
 #include "devices.h"
 #include "options.h"
+#include "controls.h"
 #include "settings.h"
 #include "ui.h"
 
@@ -1755,8 +1756,7 @@ static const int tab_rows[T_COUNT][12] = {
 static settings st;
 static char settings_path[1100];
 static int st_tab, st_row, st_top;
-static int st_col;                  /* the controls tabs: player 1's cell (0) or player 2's (1) */
-static int capturing;               /* a controls row waits for its key or button */
+static ctl_page ctl;                /* the controls tabs' page (runtime/ui/controls.h) */
 static int settings_from = P_PLAY;
 
 /* ---- the Cards tab: the card profiles (cards.h; docs/design.md section 37) ----
@@ -2288,7 +2288,7 @@ static void settings_open(void)
     settings_defaults_here(&st);    /* the game's: a Steam Deck's 16:10 picture (docs/design.md section 44) */
     settings_load(&st, settings_path, NULL);
     st_tab = st_row = st_top = 0;
-    capturing = 0;
+    ctl.capturing = 0;
     cp_refresh(NULL);
 }
 
@@ -2543,56 +2543,21 @@ static int controls_tab(void)
     return st_tab >= T_PAD;
 }
 
-/* the Gamepad tab's first row is each player's controller; then the actions */
-static int ctl_first(void)
-{
-    return st_tab == T_PAD ? 1 : 0;
-}
-
 static int tab_count(void)
 {
     if (controls_tab())
-        return ACT_COUNT + ctl_first();
+        return ctl_count(&ctl);
     int n = 0;
     while (n < (int)SDL_arraysize(tab_rows[0]) && tab_rows[st_tab][n] >= 0)
         n++;
     return n;
 }
 
-/* the chosen player's binding of an action on a controls tab */
-static binding *tab_binding(int act)
-{
-    return st_tab == T_PAD ? &st.pad[st_col][act] : &st.key[st_col][act];
-}
-
-/* the Controller row: the next gamepad connected now for player c, one the
- * other player has not been given; past the last, Auto again */
-static void controller_next(int c)
-{
-    int n = 0, at = -1;
-    SDL_JoystickID *ids = ui_gamepads(&n);
-    char w[UI_PAD_WISH_MAX];
-    for (int i = 0; ids && i < n && at < 0; i++) {
-        ui_pad_wish_of(ids[i], w, sizeof w);
-        if (!SDL_strcmp(w, st.pad_wish[c]))
-            at = i;
-    }
-    st.pad_wish[c][0] = 0;
-    for (int i = at + 1; ids && i < n; i++) {
-        ui_pad_wish_of(ids[i], w, sizeof w);
-        if (SDL_strcmp(w, st.pad_wish[!c])) {
-            SDL_strlcpy(st.pad_wish[c], w, sizeof st.pad_wish[c]);
-            break;
-        }
-    }
-    SDL_free(ids);
-}
-
 static void settings_close(void)
 {
     settings_store();
     follow_fullscreen("Settings closed");
-    capturing = 0;
+    ctl.capturing = 0;
     go(settings_from);
 }
 
@@ -2600,6 +2565,8 @@ static void settings_tab_to(int t)
 {
     st_tab = t;
     st_row = st_top = 0;
+    if (controls_tab())
+        ctl_open(&ctl, t == T_PAD);
     if (cards_tab()) {
         cp_refresh(NULL);
         focus = B_CP_P1;
@@ -2615,21 +2582,10 @@ static void settings_tab(int d)
 /* A, Enter or a click on a row */
 static void settings_press(int row)
 {
-    if (controls_tab() && row < ctl_first())
-        controller_next(st_col);
-    else if (controls_tab())
-        capturing = 1;
+    if (controls_tab())
+        ctl_set(&st, &ctl);
     else
         st_change(tab_rows[st_tab][row], 1);
-}
-
-/* what a controls row takes: replaces the row's binding */
-static void capture(const char *name)
-{
-    binding *b = tab_binding(st_row - ctl_first());
-    memset(b, 0, sizeof *b);
-    settings_binding_add(b, name);
-    capturing = 0;
 }
 
 static void settings_event(const SDL_Event *e)
@@ -2638,24 +2594,8 @@ static void settings_event(const SDL_Event *e)
         cp_event(e);
         return;
     }
-    if (capturing) {
-        if (st_tab == T_PAD) {
-            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
-                capture(SDL_GetGamepadStringForButton((SDL_GamepadButton)e->gbutton.button));
-            else if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e->gaxis.value > 16000 &&
-                     (e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER))
-                capture(SDL_GetGamepadStringForAxis((SDL_GamepadAxis)e->gaxis.axis));
-            else if (e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_ESCAPE)
-                capturing = 0;
-        } else if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) {
-            if (e->key.key == SDLK_ESCAPE)
-                capturing = 0;
-            else
-                capture(SDL_GetScancodeName(e->key.scancode));
-        } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
-                   ui_pad_face(e->gbutton.which, e->gbutton.button) == UI_IN_BACK) {
-            capturing = 0;          /* B on a pad: a keyboard row cannot take a pad button */
-        }
+    if (controls_tab() && ctl.capturing) {
+        ctl_event(&st, &ctl, e);        /* the cell's next key or button; nothing else meanwhile */
         return;
     }
     if (e->type != SDL_EVENT_KEY_DOWN && e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN)
@@ -2663,37 +2603,38 @@ static void settings_event(const SDL_Event *e)
     int k = e->type == SDL_EVENT_KEY_DOWN ? (int)e->key.key : -1;
     int g = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.button : -1;
     int face = g >= 0 ? ui_pad_face(e->gbutton.which, g) : UI_IN_NONE;     /* by label */
-    int n = tab_count();
-    if (k == SDLK_DOWN || g == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
-        st_row = (st_row + 1) % n;
-    else if (k == SDLK_UP || g == SDL_GAMEPAD_BUTTON_DPAD_UP)
-        st_row = (st_row + n - 1) % n;
-    else if (k == SDLK_Q || k == SDLK_PAGEUP || g == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
+    int n = tab_count(), ct = controls_tab();
+    if (k == SDLK_DOWN || g == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+        if (ct)
+            ctl_move(&ctl, 1, 1);
+        else
+            st_row = (st_row + 1) % n;
+    } else if (k == SDLK_UP || g == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+        if (ct)
+            ctl_move(&ctl, -1, 1);
+        else
+            st_row = (st_row + n - 1) % n;
+    } else if (k == SDLK_Q || k == SDLK_PAGEUP || g == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
         settings_tab(-1);
     else if (k == SDLK_E || k == SDLK_PAGEDOWN || k == SDLK_TAB || g == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
         settings_tab(1);
-    else if (!controls_tab() && (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT))
-        st_change(tab_rows[st_tab][st_row], -1);
-    else if (!controls_tab() && (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
-        st_change(tab_rows[st_tab][st_row], 1);
-    else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK)
+    else if (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
+        if (ct)
+            ctl_side(&ctl, 0);
+        else
+            st_change(tab_rows[st_tab][st_row], -1);
+    } else if (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+        if (ct)
+            ctl_side(&ctl, 1);
+        else
+            st_change(tab_rows[st_tab][st_row], 1);
+    } else if (k == SDLK_RETURN || k == SDLK_SPACE || face == UI_IN_OK)
         settings_press(st_row);
-    else if (controls_tab() && (k == SDLK_LEFT || g == SDL_GAMEPAD_BUTTON_DPAD_LEFT))
-        st_col = 0;
-    else if (controls_tab() && (k == SDLK_RIGHT || g == SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
-        st_col = 1;
-    else if (controls_tab() && st_row < ctl_first() &&
-             (k == SDLK_DELETE || face == UI_IN_CLEAR || k == SDLK_BACKSPACE || face == UI_IN_DEFAULT))
-        st.pad_wish[st_col][0] = 0;         /* the Controller row: Auto */
-    else if (controls_tab() && (k == SDLK_DELETE || face == UI_IN_CLEAR))
-        memset(tab_binding(st_row - ctl_first()), 0, sizeof(binding));
-    else if (controls_tab() && (k == SDLK_BACKSPACE || face == UI_IN_DEFAULT)) {
-        /* the defaults back in this cell */
-        settings d;
-        settings_defaults(&d);
-        int act = st_row - ctl_first();
-        *tab_binding(act) = st_tab == T_PAD ? d.pad[st_col][act] : d.key[st_col][act];
-    } else if (k == SDLK_ESCAPE || face == UI_IN_BACK)
+    else if (ct && (k == SDLK_DELETE || face == UI_IN_CLEAR))
+        ctl_clear(&st, &ctl);
+    else if (ct && (k == SDLK_BACKSPACE || face == UI_IN_DEFAULT))
+        ctl_default(&st, &ctl);
+    else if (k == SDLK_ESCAPE || face == UI_IN_BACK)
         settings_close();
 }
 
@@ -3600,88 +3541,6 @@ static void devices_for_options(void)
     options_display_names(list, n);
 }
 
-/* what the Controller row says for player c, whose gamepad now is id (0:
- * none): Auto and the pad that gives, or the controller chosen; when that
- * one is not connected, the pad the player has meanwhile. Returns 1 when
- * the chosen controller is missing */
-static int controller_text(int c, SDL_JoystickID id, char *out, size_t n, int *faint)
-{
-    const char *w = st.pad_wish[c];
-    char t[96];
-    *faint = 1;
-    if (id)
-        ui_pad_title(id, t, sizeof t);
-    if (!w[0]) {
-        if (id)
-            SDL_snprintf(out, n, "Auto: %s", t);
-        else
-            SDL_strlcpy(out, "Auto: none connected", n);
-        return 0;
-    }
-    if (id && ui_pad_wish_fits(w, id)) {
-        *faint = 0;
-        SDL_strlcpy(out, t, n);
-        return 0;
-    }
-    if (id)
-        SDL_snprintf(out, n, "Meanwhile: %s", t);
-    else
-        SDL_snprintf(out, n, "%s (not connected)", ui_pad_wish_name(w));
-    return 1;
-}
-
-/* the controls tabs: an action a row, player 1's cell and player 2's; on the
- * Gamepad tab each player's controller first, and each column's buttons as
- * that player's gamepad names them (docs/design.md section 69) */
-static void controls_table(float ry, float rh)
-{
-    int pad = st_tab == T_PAD, first = ctl_first(), n = tab_count();
-    static const char *const head[2] = { "Player 1", "Player 2" };
-    const char *const wish[2] = { st.pad_wish[0], st.pad_wish[1] };
-    SDL_JoystickID ids[2] = { 0, 0 };
-    if (pad)
-        ui_pad_players(wish, ids);
-    ui_bind_row rows[ACT_COUNT + 1];
-    static char vals[ACT_COUNT + 1][2][160];
-    int missing[2] = { 0, 0 };
-    SDL_zeroa(rows);
-    if (pad) {
-        rows[0].label = "Controller";
-        rows[0].text = 1;
-        for (int c = 0; c < 2; c++) {
-            missing[c] = controller_text(c, ids[c], vals[0][c], sizeof vals[0][c], &rows[0].faint[c]);
-            rows[0].value[c] = vals[0][c];
-        }
-    }
-    for (int a = 0; a < ACT_COUNT; a++) {
-        ui_bind_row *r = &rows[first + a];
-        r->label = settings_action_text[a];
-        for (int c = 0; c < 2; c++) {
-            settings_binding_text(pad ? &st.pad[c][a] : &st.key[c][a], vals[first + a][c], sizeof vals[0][0]);
-            r->value[c] = vals[first + a][c];
-        }
-        r->waiting = capturing && st_row == first + a ? st_col + 1 : 0;
-    }
-    /* eight rows show under the heads; the rest scroll */
-    ui_bind_table(40, ry, LW - 80, rh - 30, 33, head, ids, !pad, rows, n, st_row, st_col, &st_top);
-    const char *note;
-    static char gone[200];
-    if (capturing)
-        note = pad ? "Press the button for it (Esc: leave it as it was)." : "Press the key for it (Esc: leave it as it was).";
-    else if (pad && st_row < first && missing[st_col]) {
-        SDL_snprintf(gone, sizeof gone, "Player %d's %s is not connected. It is this player's again when it is.",
-                     st_col + 1, ui_pad_wish_name(st.pad_wish[st_col]));
-        note = gone;
-    } else if (pad && st_row < first)
-        note = "Set: the next gamepad connected now. Clear: Auto, the gamepads in the order they connected (the first "
-               "is player 1's).";
-    else if (pad)
-        note = "The left stick always moves. Each column names the buttons as that player's gamepad does.";
-    else
-        note = "Both players' keys, on the one keyboard. Player 2 has none by default.";
-    ui_text_in(UI_REGULAR, 14.5f, 56, ry + rh - 12, LW - 112, 0, 0, capturing ? UI_ACCENT : UI_MUTED, note);
-}
-
 static void draw_settings(void)
 {
     devices_for_options();
@@ -3725,7 +3584,8 @@ static void draw_settings(void)
     }
     float ry = 164, rh = 336;
     if (controls_tab()) {
-        controls_table(ry, rh);
+        /* eight rows show under the heads; the rest scroll */
+        ctl_draw(&st, &ctl, 40, ry, LW - 80, rh, 33);
     } else {
         ui_row rows[12];
         char vals[12][160];
@@ -3757,7 +3617,14 @@ static void draw_settings(void)
         { "Tabs", { UI_IN_PREV, UI_IN_NEXT } },
     };
     ui_fill(40, 516, LW - 80, 1, UI_LINE);
-    if (controls_tab())
+    static const ui_hint wait_hints[] = {
+        { "Leave it", { UI_IN_BACK, UI_IN_NONE } }, { "Clear", { UI_IN_CLEAR, UI_IN_NONE } },
+        { "Default", { UI_IN_DEFAULT, UI_IN_NONE } },
+    };
+    if (controls_tab() && ctl_waiting(&ctl)) {
+        if (ctl_waiting(&ctl) == 1)     /* a cell waits: these still do what they say (controls.h) */
+            ui_hints(40, 558, 24, wait_hints, 3, 0);
+    } else if (controls_tab())
         ui_hints(40, 558, 24, ctl_hints, 5, 0);
     else
         ui_hints(40, 558, 24, opt_hints, 3, 0);
@@ -4077,19 +3944,14 @@ static void mouse_event(SDL_Event *e)
         ui_to_logical(e->motion.x, e->motion.y, &x, &y);
     else
         ui_to_logical(e->button.x, e->button.y, &x, &y);
-    if (page == P_SETTINGS && !capturing && !pop && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        int col = -1;
-        int t = ui_tabs_hit(x, y), r = controls_tab() ? ui_bind_table_hit(x, y, &col) : ui_rows_hit(x, y);
+    if (page == P_SETTINGS && !ctl.capturing && !pop && e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        int t = ui_tabs_hit(x, y), r = controls_tab() ? -1 : ui_rows_hit(x, y);
         if (t == UI_TAB_PREV || t == UI_TAB_NEXT)
             settings_tab(t == UI_TAB_PREV ? -1 : 1);
         else if (t >= 0) {
             settings_tab_to(t);
-        } else if (r >= 0 && controls_tab()) {
-            st_row = r;             /* a cell: chosen, and set as Enter does */
-            if (col >= 0) {
-                st_col = col;
-                settings_press(r);
-            }
+        } else if (controls_tab()) {
+            ctl_point(&st, &ctl, x, y, 1);      /* a cell: chosen, and set as Enter does */
         } else if (r >= 0 && cards_tab()) {
             st_row = r;             /* a card is only chosen: the bar acts on it */
             cp_focus_fix();

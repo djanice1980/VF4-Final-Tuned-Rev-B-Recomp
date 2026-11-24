@@ -2961,6 +2961,7 @@ static int menu_do(int a)
         game_machine_cull(cull_width());
         game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         game_machine_every(cfg_.skip == SKIP_HALF ? 2 : 1);
+        bindings_compile();     /* the menu's Gamepad and Keyboard tabs (section 72) */
         if (SDL_strcasecmp(cfg_.display, live_display)) {
             display_to_setting(main_win);       /* another screen: its room for Window size too */
             window_room room = screen_room(main_win);
@@ -3795,6 +3796,20 @@ int main(int argc, char **argv)
                 running = 0;
                 continue;
             }
+            /* a cell of the menu's Gamepad or Keyboard tab waits for its
+             * button or key: this one is the menu's first (section 72) */
+            int menu_took = 0;
+            if (menu_on && menu_capturing() &&
+                (ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                 ev.type == SDL_EVENT_GAMEPAD_AXIS_MOTION)) {
+                int took = menu_capture(&ev);
+                menu_took = took != 0;
+                if (took) {
+                    ov_dirty = 1;
+                    if (took == 2)
+                        menu_do(MENU_LIVE);
+                }
+            }
             switch (ev.type) {
             case SDL_EVENT_QUIT:
                 running = 0;
@@ -3848,6 +3863,8 @@ int main(int argc, char **argv)
             case SDL_EVENT_KEY_DOWN: {
                 SDL_Keycode key = ev.key.key;
                 int cmd = -1;
+                if (menu_took)
+                    break;                      /* a controls cell's key (section 72) */
                 if (!ev.key.repeat && (key == SDLK_F11 || (key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
                     fullscreen_to(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
                 else if (menu_on && menu_typing()) {
@@ -3874,6 +3891,8 @@ int main(int argc, char **argv)
                         cmd = MENU_OK;
                     else if (!ev.key.repeat && key == SDLK_BACKSPACE)
                         cmd = MENU_ERASE;       /* back to the game; the card editor's Undo */
+                    else if (!ev.key.repeat && key == SDLK_DELETE)
+                        cmd = MENU_CLEAR;       /* a controls cell emptied */
                     else if (!ev.key.repeat && (key == SDLK_Q || key == SDLK_PAGEUP))
                         cmd = MENU_PREV;
                     else if (!ev.key.repeat && (key == SDLK_E || key == SDLK_PAGEDOWN))
@@ -3886,6 +3905,8 @@ int main(int argc, char **argv)
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
                 int b = ev.gbutton.button;
                 int face = ui_pad_face(ev.gbutton.which, b);    /* A selects, B goes back: by label */
+                if (menu_took)
+                    break;                      /* a controls cell's button (section 72) */
                 if (b == SDL_GAMEPAD_BUTTON_GUIDE) {
                     if (menu_on)
                         menu_do(menu_command(MENU_ESCAPE));
@@ -4028,7 +4049,12 @@ int main(int argc, char **argv)
                             in.sys |= GAME_SYS_SERVICE;
                     }
             }
-        /* in the menu: the D-pad or left stick of any pad moves, held it repeats */
+        /* in the menu: the D-pad or left stick of any pad moves, held it repeats.
+         * Not while a controls cell waits for its button, nor after it until
+         * the D-pad or stick that may have been the button is let go */
+        static int dir_wait;
+        if (menu_on && menu_capturing())
+            dir_wait = 1;
         if (menu_on) {
             memset(&in, 0, sizeof in);
             int dir = -1, n = 0;
@@ -4046,7 +4072,11 @@ int main(int argc, char **argv)
             }
             SDL_free(ids);
             int fire = 0;
-            if (dir != last_dir) {
+            if (dir_wait) {
+                if (dir < 0 && !menu_capturing())
+                    dir_wait = 0;
+                last_dir = dir;
+            } else if (dir != last_dir) {
                 fire = dir >= 0;
                 dir_next = now_ms + 350;
             } else if (dir >= 0 && now_ms >= dir_next) {

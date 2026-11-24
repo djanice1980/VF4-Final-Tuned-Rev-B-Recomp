@@ -6347,3 +6347,114 @@ estimate from another machine, not a measurement.
 pacing at Screen refresh or Off (Game clock was run), and by eye on a real
 screen. A setting that skips frames by itself when the game falls behind
 was not built.
+
+## 72. The controls changed in the game's menu too (2026-11-24)
+
+**Why** (the maintainer's ask). The game's menu only showed the controls
+(section 69); they were changed in the launcher's Settings. A player who
+sets the game up once and turns on Start the game directly (section 29)
+does not see the launcher again, so the menu has to do all of it: a
+controller for each player, the buttons and the keys.
+
+**One page for both.** The launcher's two controls tabs moved out of
+`launcher.c` into `runtime/ui/controls.c` (`ctl_page`: the row and the
+player's cell chosen, and whether the cell waits for its key or button;
+`ctl_draw`, `ctl_move`, `ctl_side`, `ctl_set`, `ctl_clear`,
+`ctl_default`, `ctl_event`, `ctl_point`). The launcher's Settings and the
+game's menu both use it, so the two cannot drift apart: the table, the
+Controller row, its texts and what Set, Clear and Default do are the same
+code. The new file is in both build lists (`CMakeLists.txt`,
+`tools/vf4build/build.py`).
+
+**The game's menu** (`menu.c`). Its Controls tab is two tabs now, Gamepad
+and Keyboard, as in the launcher. Up and Down choose the row, Left and
+Right the player; Enter or A sets the cell (the next key or button
+pressed is it), Delete or X empties it, Backspace or Y puts the default
+back; a click on a cell sets it. On the Controller row Set goes to the
+next gamepad connected. A change applies at once (`MENU_LIVE`: the
+window compiles the bindings again, and who has which gamepad is worked
+out every frame anyway) and is saved with the other settings as the menu
+closes.
+
+**The next key or button** (`main.c`). While a cell waits
+(`menu_capturing`), the window gives every key, button and axis event to
+`menu_capture` before anything else: the key that would toggle
+fullscreen, close the menu or move the choice is the cell's instead (Esc
+alone leaves the cell as it was). The D-pad and the left stick, which the
+window reads as held rather than as events, move nothing while a cell
+waits, nor afterwards until they are let go: a D-pad direction taken as a
+button does not also move the row.
+
+**A cell that waits still takes Clear and Default** (the maintainer's
+report, the same day). The bar under the page offered Clear (Del) and
+Default (Backspace) at all times, but once a cell waited for its key or
+button they did not do it: on the Gamepad page every key but Esc was
+dropped, and on the Keyboard page Del and Backspace were taken as the
+cell's key (reproduced: the file had `key1.punch = Delete` and `key1.kick
+= Backspace`). A cell waits after Enter or a click, which is where a
+player then reaches for Del. Now, while a cell waits, Del empties it and
+Backspace gives its default back on both pages, and on the Keyboard page
+a pad's X and Y do the same (`ctl_event`, `wait_key`); Esc, or a pad's B
+there, leaves it as it was. So Esc, Delete and Backspace cannot be a
+control's key from these pages. The bar shows only those three while a
+cell waits (`ctl_waiting`), and nothing on the Gamepad page worked with a
+gamepad, where every button would be the cell's. The mouse chooses the
+cell under it, not only its row: Clear and Default act on the cell that
+is lit.
+
+**Checked** (the development PC; the game in a headless desktop with two
+test gamepads, an Xbox pad and a DualShock 4; the real DualSense that was
+connected at the time was kept out of the test with SDL's ignore hint,
+since a test pad of its model would have been ignored with it):
+
+- Gamepad tab: Set on player 2's Controller cell gave player 2 the Xbox
+  pad and player 1 (Auto) the other; the columns' names changed places,
+  and the log has the new "gamepads: player 1: ...; player 2: ..." line
+  at once. A cell set with the pad's left stick button shows it; "Press a
+  button" while it waits.
+- A D-pad direction taken as a button: the cell has it and the row did not
+  move; the next press of the D-pad moved one row; X emptied that cell; B
+  closed the menu.
+- Keyboard tab: a key set for player 2, a cell of player 1 emptied with
+  Delete.
+- The file written as the menu closed has `pad2.controller = 045e:0b12
+  Xbox Wireless Controller`, `pad2.punch = leftstick`, `key2.left = F`,
+  `key1.guard = -`, and in the second run `pad1.punch = dpdown`,
+  `pad1.kick = -`.
+- The launcher after the move to the shared page: its controls pages were
+  driven with the same keys as before (a key set for player 2, one
+  emptied, a controller given, a cell's default put back, a click while a
+  cell waits ignored, saved): the file has what was set.
+- The waiting cell, in the game's menu: on the Gamepad tab Enter then Del
+  left the cell "Not set" (it kept waiting before), Enter then Backspace
+  gave `y, a` back, Enter then Esc changed nothing; on the Keyboard tab
+  Enter then Del emptied the cell, a key set and then Enter and Backspace
+  gave the default back. The bar read Leave it, Clear and Default while a
+  cell waited. The mouse moved over player 2's cell and Del: that cell was
+  emptied, player 1's kept. The launcher's pages the same (the file:
+  `pad1.punch = -`, `pad1.kick = b`, `key1.throw = -`).
+- Both builds compile (Linux, Windows), and the builder compiles the new
+  file (128 files).
+- Two real controllers, a DualSense on a cable and an Xbox Series pad on
+  the wireless adapter, with no test pads and no hint (the pages driven by
+  the keyboard's scripted keys; no button of theirs was pressed):
+  - The launcher's Gamepad page: "Auto: DualSense Wireless Controller"
+    for player 1 with the shapes, "Auto: Xbox Series X Controller" for
+    player 2 with the letters. Player 2 given the DualSense, saved, and
+    the page opened again: player 2 has it, player 1 (Auto) the Xbox pad,
+    and the columns' names have changed places.
+  - The game: both are seen ("ps5" and "xboxone"), player 1 the DualSense
+    and player 2 the Xbox pad. In the menu, Set on player 2's Controller
+    cell: the log has "player 1: Xbox Series X Controller; player 2:
+    DualSense Wireless Controller" at once, and the file has the wish with
+    the pad's serial number (the game has the pads open; the launcher's
+    `--shot` does not, so its wish had none).
+  - The game started again with that file: player 2 has the DualSense
+    from the first frame. Delete on the cell: Auto again, and the log and
+    the file say so.
+
+**Not covered.** A button of a real controller pressed: taking one for a
+cell, and each controller moving its own player in a fight (the test
+gamepads did both, section 69). Two real controllers of one model. The
+mouse on the game's controls pages. A two-PC game with the menu open (the
+game does not pause there). Windows itself.

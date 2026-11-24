@@ -1,7 +1,7 @@
 /* The game's own menu, over the picture (docs/design.md sections 21, 22):
  * Insert or Esc, a gamepad's Guide button, or View + Menu held for a second
  * open it, and the game pauses while it is open. Its tabs (Game, Cards,
- * Picture, Sound, Controls) are switched with Q and E or the shoulder buttons, or
+ * Picture, Sound, Gamepad, Keyboard) are switched with Q and E or the shoulder buttons, or
  * clicked; the mouse chooses the row under it (menu_mouse). The Cards tab
  * opens the card editor in the tabs' place (docs/design.md section 42). The
  * player's settings that can change while the game runs change at once;
@@ -32,8 +32,10 @@
 /* what the player asks of it. MENU_ESCAPE: Esc, Insert or Guide (it closes
  * the menu, or the card editor or its note first); MENU_ERASE: Backspace
  * (back to the game; the editor's Undo; a letter less in the note);
- * MENU_UNDO: a pad's Y (the editor's Undo); MENU_CLEAR: a pad's X (a letter
- * less in the note) */
+ * MENU_UNDO: a pad's Y (the editor's Undo); MENU_CLEAR: a pad's X or Delete
+ * (a letter less in the note). On the Gamepad and Keyboard tabs (section
+ * 72) MENU_OK sets the chosen cell, MENU_CLEAR empties it, and MENU_UNDO
+ * and MENU_ERASE put its default back */
 enum {
     MENU_UP, MENU_DOWN, MENU_LEFT, MENU_RIGHT, MENU_OK, MENU_BACK, MENU_PREV, MENU_NEXT, MENU_ESCAPE, MENU_ERASE,
     MENU_UNDO, MENU_CLEAR
@@ -110,6 +112,15 @@ int menu_mouse(int what, float px, float py, int d);
 
 /* 1 when s was changed since menu_open */
 int menu_changed(void);
+
+/* 1 while a cell of the Gamepad or Keyboard tab waits for its button or
+ * key: the window then gives every key, button and axis event to
+ * menu_capture first, and moves nothing by a held D-pad or stick. It
+ * returns 0 when the event is not the menu's (the window goes on with it),
+ * 1 when it was (nothing else is to be done with it), 2 when a control
+ * changed with it (as MENU_LIVE) */
+int menu_capturing(void);
+int menu_capture(const SDL_Event *e);
 
 /* 1 while the card editor's ring name note is up: the window then sends
  * the typed text (menu_text), and of the keys only Enter, Esc, Backspace,
