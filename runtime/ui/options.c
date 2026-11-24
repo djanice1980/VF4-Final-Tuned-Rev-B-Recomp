@@ -89,6 +89,11 @@ const option_info options[OPT_COUNT] = {
                      "now and then. Screen refresh: the game follows a screen at 60 Hz or a multiple of it, "
                      "with no frame passed over, a touch fast or slow. Off: as before 0.5.12. A two-PC game "
                      "uses the host's choice.", 0 },
+    [OPT_SKIP] = { "Frame skip",
+                   "Off: every picture is drawn, 60 a second. Every other frame: the game keeps its full speed "
+                   "and its timing, and every second picture is drawn, 30 a second. Try it if the game runs in "
+                   "slow motion on a PC with a slow processor, after Lighting: GPU. In a two-PC game each PC "
+                   "chooses for itself.", 0 },
     [OPT_LIGHTING] = { "Lighting",
                        "Which chip works out the lights with the GPU renderer. CPU: the processor, as always. "
                        "GPU: the graphics chip, which takes that work off the processor: try it if the game "
@@ -287,6 +292,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_strlcpy(buf, lt[s->lighting], n);
         break;
     }
+    case OPT_SKIP: {
+        static const char *const sk[SKIPS] = { "Off", "Every other frame" };
+        SDL_strlcpy(buf, sk[s->skip], n);
+        break;
+    }
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -368,6 +378,7 @@ void option_change(settings *s, int o, int d)
     case OPT_LATENCY: s->latency = wrap(s->latency, d, LATENCIES); break;
     case OPT_PACING: s->pacing = wrap(s->pacing, d, PACINGS); break;
     case OPT_LIGHTING: s->lighting = wrap(s->lighting, d, LIGHTINGS); break;
+    case OPT_SKIP: s->skip = wrap(s->skip, d, SKIPS); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;

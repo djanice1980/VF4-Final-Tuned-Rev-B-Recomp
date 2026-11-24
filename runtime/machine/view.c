@@ -111,6 +111,7 @@ static FILE *pipe_f;
 static int pipe_fps = 60;
 static int realtime;                    /* --realtime: 60 vertical blanks a second of real time */
 static int host_mode;                   /* recomp: the game window draws every frame (view_host_start) */
+static int host_every = 1;              /* recomp: or every nth one (view_host_every) */
 static int rerun;                       /* recomp: rollback's re-run frames (view_rerun) */
 static int marks;                       /* --view-marks: where the game itself says the fighters are */
 static u32 view_from;                   /* --view-from N: nothing before this vertical blank */
@@ -388,6 +389,8 @@ typedef struct scene {
     u32 vols_n[2], vols_cap[2];
     u32 *order;                         /* the translucent triangles from the back */
     u32 order_n, order_cap;
+    u64 *sortv;                         /* recomp: order_sort's keys and numbers, twice */
+    u32 sortv_cap;
     u32 *edge;                          /* recomp: the 2D triangles from side to side (list << 30 | index) */
     u32 edge_n, edge_cap;
 } scene;
@@ -2837,6 +2840,8 @@ static void lists_begin(int pass)
 {
     u32 key = view_core_reg(0, 0x124) & 0x00fffffcu;
     int active = (png_dir || pipe_cmd || host_mode) && machine_frame >= view_from, want, regular = 0;   /* recomp: host_mode */
+    if (host_mode)                      /* recomp: the game window's frame skip */
+        every = __atomic_load_n(&host_every, __ATOMIC_RELAXED);
     if (!pass) {
         regular = active && screens % (u32)every == 0;
         want = pic_request || regular;
@@ -2983,6 +2988,57 @@ static int by_depth(const void *pa, const void *pb)
     if (ka != kb)
         return ka < kb ? -1 : 1;
     return a < b ? -1 : a > b;
+}
+
+/* recomp (section 71): by_depth's order without its comparisons. The keys
+ * as unsigned numbers that rise as the floats do (-0 as 0, which by_depth
+ * takes for equal), each with its triangle's number below it, sorted by the
+ * key in three passes that keep the order of equals: triangles of one depth
+ * stay in the order of their numbers, as by_depth puts them, when the
+ * numbers came in rising. Anything else (numbers not rising, a key that is
+ * not a number) is left to qsort as before. */
+static void order_sort(scene *sc, int rising)
+{
+    u32 n = sc->order_n;
+    const dtri *base = sc->tris[2];
+    int plain = rising;
+    if (plain) {
+        GROW(sc->sortv, sc->sortv_cap, 2 * n);
+        for (u32 i = 0; i < n && plain; i++) {
+            u32 u;
+            memcpy(&u, &base[sc->order[i]].key, 4);
+            if ((u & 0x7fffffffu) > 0x7f800000u)
+                plain = 0;                  /* not a number: by_depth's own answer */
+            if (u == 0x80000000u)
+                u = 0;
+            u = u & 0x80000000u ? ~u : u | 0x80000000u;
+            sc->sortv[i] = (u64)u << 32 | sc->order[i];
+        }
+    }
+    if (!plain) {
+        sort_base = base;
+        qsort(sc->order, n, sizeof(u32), by_depth);
+        return;
+    }
+    u64 *a = sc->sortv, *b = sc->sortv + n;
+    static const int shift[3] = { 32, 43, 54 }, bits[3] = { 11, 11, 10 };
+    for (int pass = 0; pass < 3; pass++) {
+        u32 count[2048] = { 0 }, mask = (1u << bits[pass]) - 1, at = 0;
+        for (u32 i = 0; i < n; i++)
+            count[(a[i] >> shift[pass]) & mask]++;
+        for (u32 k = 0; k <= mask; k++) {
+            u32 c = count[k];
+            count[k] = at;
+            at += c;
+        }
+        for (u32 i = 0; i < n; i++)
+            b[count[(a[i] >> shift[pass]) & mask]++] = a[i];
+        u64 *t = a;
+        a = b;
+        b = t;
+    }
+    for (u32 i = 0; i < n; i++)
+        sc->order[i] = (u32)a[i];
 }
 
 /* The picture is drawn in horizontal bands, each by one thread: a band has
@@ -3496,6 +3552,11 @@ void view_host_wide(int width)
     __atomic_store_n(&wide_ox, ox > WIDE_MAX ? WIDE_MAX : ox, __ATOMIC_RELAXED);
 }
 
+void view_host_every(int n)
+{
+    __atomic_store_n(&host_every, n < 1 ? 1 : n > 4 ? 4 : n, __ATOMIC_RELAXED);
+}
+
 /* recomp: rollback's re-run frames (view.h) */
 void view_rerun(int mode)
 {
@@ -3683,15 +3744,16 @@ static void scene_draw(scene *sc, int to_texture)
     pool_run(strip_job_item, (int)sc->jobs_n, sc);
     /* the translucent list from the back to the front */
     sc->order_n = 0;
+    int rising = 1;                     /* recomp: the numbers come in rising (order_sort) */
     for (u32 r = 0; r < sc->runs_n[2]; r++) {
         GROW(sc->order, sc->order_cap, sc->order_n + sc->runs[2][r].n);
+        if (sc->order_n && sc->runs[2][r].n && sc->runs[2][r].first <= sc->order[sc->order_n - 1])
+            rising = 0;
         for (u32 i = 0; i < sc->runs[2][r].n; i++)
             sc->order[sc->order_n++] = sc->runs[2][r].first + i;
     }
-    if (sc->order_n > 1) {
-        sort_base = sc->tris[2];
-        qsort(sc->order, sc->order_n, sizeof(u32), by_depth);
-    }
+    if (sc->order_n > 1)
+        order_sort(sc, rising);
     for (int k = 0; k < 3; k++)
         for (u32 r = 0; r < sc->runs_n[k]; r++)
             tri_count += sc->runs[k][r].n;

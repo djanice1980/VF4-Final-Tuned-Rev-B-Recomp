@@ -62,6 +62,11 @@ int hw_maple_command(char **tok, int n, char *msg, size_t msg_len);   /* the con
 int hw_sound_command(char **tok, int n, char *msg, size_t msg_len);   /* the controller's "sound" */
 u8 *hw_maple_eeprom(void);           /* the settings EEPROM model's 128 bytes */
 extern int hw_sandbox_unmodelled;   /* accesses without a model made inside sandboxes (harness calls) */
+/* recomp: 1 (the default, VF4debug's way) keeps every device access in the
+ * table hw_report prints, by the routine that made it; 0 keeps only those
+ * no model answered. The game sets 0: the table costs a look-up of the
+ * routine at every access, and nothing reads it there (section 71) */
+extern int hw_access_notes;
 void low_ram_w32(u32 addr, u32 v);
 void low_ram_w16(u32 addr, u32 v);
 

@@ -565,6 +565,12 @@ u32 rt_io_read(sh4 *c, u64 atk, u32 addr, int size)
 
 void rt_io_write(sh4 *c, u64 atk, u32 addr, u32 val, int size)
 {
+    /* a word into a store queue is that and no more (io_write): the game
+     * sends its lists this way, eight words a block (section 71) */
+    if (size == 4 && addr - 0xe0000000u < 0x04000000u && !hw_access_notes) {
+        c->sq[(addr >> 5) & 1][(addr >> 2) & 7] = val;
+        return;
+    }
     mem_track(addr);        /* the page armed for rollback (mem_track.h) */
     /* most stores into code pages are not into code: the interrupt
      * handler's stack, for one, is inside the program's .text */

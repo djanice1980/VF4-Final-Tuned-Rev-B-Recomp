@@ -29,6 +29,7 @@ const char *const settings_region_text[REGIONS] = { "Japan", "USA", "Export", "K
 const char *const settings_latency_name[LATENCIES] = { "auto", "on", "off" };
 const char *const settings_pacing_name[PACINGS] = { "game", "screen", "off" };
 const char *const settings_lighting_name[LIGHTINGS] = { "cpu", "gpu" };
+const char *const settings_skip_name[SKIPS] = { "off", "half" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -184,6 +185,7 @@ void settings_defaults(settings *s)
     s->latency = LATENCY_AUTO;
     s->pacing = PACING_GAME;
     s->lighting = LIGHTING_CPU;
+    s->skip = SKIP_OFF;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -529,6 +531,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "lighting")) {
                 if ((ok = choice(v, settings_lighting_name, LIGHTINGS, &x)))
                     s->lighting = x;
+            } else if (!strcmp(name, "frameskip")) {
+                if ((ok = choice(v, settings_skip_name, SKIPS, &x)))
+                    s->skip = x;
             } else if (!strcmp(name, "pacing")) {
                 if ((ok = choice(v, settings_pacing_name, PACINGS, &x)))
                     s->pacing = x;
@@ -650,6 +655,9 @@ int settings_save(const settings *s, const char *path)
         "                       # graphics chip, which takes that work off a slow processor (the software\n"
         "                       # renderer's are always the processor's)\n",
         settings_lighting_name[s->lighting]);
+    PUT("frameskip = %s        # off | half: half draws every second picture (30 a second) while the game\n"
+        "                       # keeps its full speed, for a PC whose processor cannot keep up\n",
+        settings_skip_name[s->skip]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

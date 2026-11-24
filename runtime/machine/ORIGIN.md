@@ -188,6 +188,14 @@ What the recomp changed:
   declares it and `hle.c` installs it. At 640, the default (VF4debug has
   no wide picture), the hook does nothing. `runtime/headless/main.c` has
   `--cull-wide W` for it.
+- Less work on the machine's thread, and frame skip (2026-11-24,
+  docs/design.md section 71). `hw.h`, `hw.c`: `hw_access_notes`; 0 (the
+  game sets it) keeps only the device accesses no model answers out of
+  `note_access`'s table; 1, the default, is VF4debug's way. `view.c`:
+  `order_sort`, the translucent triangles' order by a radix sort that
+  gives `by_depth`'s order (this could go back to VF4debug);
+  `view_host_every` (`view.h`), the game window's draw-every-nth-frame,
+  which uses VF4debug's own `every`.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

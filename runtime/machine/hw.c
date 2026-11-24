@@ -37,6 +37,7 @@ static access_row access_tab[ACCESS_ROWS];
 static int access_used, access_overflow;
 
 int hw_sandbox_unmodelled;
+int hw_access_notes = 1;                /* recomp */
 
 static void note_access(sh4 *c, u32 addr, u32 val, int size, int is_write, int modelled)
 {
@@ -46,6 +47,8 @@ static void note_access(sh4 *c, u32 addr, u32 val, int size, int is_write, int m
         hw_sandbox_unmodelled += !modelled;
         return;
     }
+    if (modelled && !hw_access_notes)
+        return;                         /* recomp: the game keeps no table of what its models answer */
     u32 pc = c->pc - 2;
     routine *r = routine_containing(pc);
     u32 fn = r ? r->addr : pc;

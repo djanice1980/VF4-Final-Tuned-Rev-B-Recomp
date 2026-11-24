@@ -556,7 +556,11 @@ is the window in pixels at the picture's
 shape, in the usual screens' sizes from 640 x 480 to 5120 x 2160 (21:9 at
 the ultrawide screens' own widths; Auto is the largest of the sizes that
 leaves a tenth of the screen free); Internal resolution is the size the GPU renderer draws at, before
-the picture is scaled to the window or the screen. Picture, window size,
+the picture is scaled to the window or the screen. For a PC whose
+processor cannot keep the game at full speed, the same tab has Lighting:
+GPU (the graphics chip works out the lights) and Frame skip: Every other
+frame (the game keeps its full speed and 30 pictures a second are drawn).
+Picture, window size,
 scaling, fullscreen, display, renderer, GPU, internal resolution and volume
 change at once (the launcher's window follows Renderer and GPU too). A GPU
 the game has drawn on stays open in the game until it quits, also after
@@ -650,6 +654,10 @@ with only a gamepad, the menu's Operator test menu does the same.
   `lighting` (cpu | gpu: which chip works out the lights with the GPU
   renderer; gpu takes that work off a slow processor; default cpu:
   [design.md s67](docs/design.md#67-lighting-on-the-gpu-as-an-option-2026-11-24)),
+  `frameskip` (off | half: half draws every second picture, 30 a second,
+  while the game keeps its full speed, for a PC whose processor cannot
+  keep up; each PC of a two-PC game chooses for itself; default off:
+  [design.md s71](docs/design.md#71-a-slow-processor-less-work-on-the-machines-thread-and-frame-skip-2026-11-24)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad1.*` and `pad2.*` for each player's gamepad (a

@@ -6229,3 +6229,121 @@ and the launcher's window after the game ends (the same call as at the
 start). A
 window manager that maximizes nothing (a tiling one) leaves the window as
 it places it; nothing is written then.
+
+## 71. A slow processor: less work on the machine's thread, and Frame skip (2026-11-24)
+
+**Why** (issue 3 again). The laptop's owner tried Lighting GPU (section 67)
+on 0.5.19: no fault in the picture on Intel HD Graphics 620, and the
+machine's thread went from 22.6 to 23.0 ms a frame in a fight to 19.0 to
+20.4. The screen still got every frame. Full speed needs 16.7 or less, so
+the processor was still the limit.
+
+**Where the thread's time goes.** No profiler is installed on the
+development PC, so the game got a temporary one (removed): a timer on the
+machine thread's own CPU time that takes the instruction pointer every
+half millisecond, sorted afterwards by `nm`'s symbols. (A timer on the
+process's time signals the main thread, and SDL blocks SIGPROF in the
+threads it makes: both had to be seen first.) The run: the game held to
+two cores and their second threads (`taskset`: the laptop's shape, not its
+speed), GPU renderer at 640 x 480's 16:9, Lighting GPU, sound on, the
+scripted fight from vertical blank 4,800 to 9,000 as fast as it goes. The
+thread took 4.00 ms of CPU time a frame and 4.05 of the wall's: it is
+busy, not waiting.
+
+| Share | What |
+|---|---|
+| 27.2% | the game's own code, translated (a third of it its skinning of the fighters) |
+| 12.2% | the picture: transform and triangles |
+| 9.5% | sound: the sound processor's driver |
+| 9.3% | the C library: copying, and qsort |
+| 9.1% | sound: the chip's channels and effects |
+| 6.8% | the picture: reading the lists |
+| 6.5% | the picture: hand-over to the GPU |
+| 6.2% | the picture: the comparisons of the translucent triangles' sort |
+| 4.8% | device writes and reads |
+| 2.5% | looking a routine up by an address |
+| 2.4%, 1.7%, 1.0% | the memory watch, the runtime between blocks, the interpreter |
+
+**Three things done for nothing, or the long way.**
+
+- *The table of device accesses.* VF4debug keeps every device access by
+  the routine that made it, for its closing report (`hw.c`,
+  `note_access`): a binary search of the routines at every access. The
+  game never prints it. `hw_access_notes` is 1 by default (the headless
+  program's report is as it was) and the game sets 0: only accesses no
+  model answers are kept.
+- *A store queue's word.* The game sends its lists through the store
+  queues, eight words a block, and each word took the whole slow path of a
+  store that is not into RAM (`rt_io_write`: the rollback mark, the
+  code-page test, the clock put right, `io_write`). It now goes straight
+  into the queue.
+- *The translucent triangles' order.* `qsort` with a comparison a call.
+  `order_sort` gives the same order with a radix sort: the depth as an
+  unsigned number that rises as the float does (-0 as 0), three passes
+  that keep the order of equals, so equal depths stay in the order of
+  their numbers as the comparison had them. Numbers that do not come in
+  rising, or a depth that is not a number, go to `qsort` as before.
+
+After these the same run takes 3.39 ms of CPU time a frame. The machine is
+the same: the headless game's fingerprint after a scripted match is
+4285abed93237ec5 at vertical blank 9,118 after 4,687,557,790 instructions,
+before and after.
+
+*Looked at and left.* The sound processor's driver is not idle between
+its jobs: it scans its tables in a loop (58 to 66% of its instructions are
+in three loops of six or seven instructions, each a pass over 64 records),
+so there is no wait to skip exactly, and running it for fewer instructions
+a sample would change what the machine does. It stays at 128 a sample.
+
+**Frame skip.** A setting (settings.txt `frameskip = off | half`, the
+Picture tab of the game's menu and of the launcher's Settings; off by
+default): with it on, the screen is drawn for every second frame the game
+renders, 30 a second, while the game runs every frame as ever. The view
+already had the means (`every`, for the headless program's pictures):
+`view_host_every` sets it for the game window. The lists of a frame that
+is not drawn are not taken, so its reading, transform and hand-over are
+all saved. A pass into a texture is drawn throughout, as in a re-run frame
+(section 56): its picture goes into the machine's texture memory. So the
+machine is the same whatever the setting says, and each PC of a two-PC
+game chooses for itself.
+
+**Checked** (the development PC):
+
+- Pictures against release 0.5.21's, the windowed game from the headless
+  game's snapshots: 12 pictures at 4:3, 16:9 and 21:9 on the GPU renderer
+  and at 4:3 on the software renderer, the same to the pixel. Those four
+  runs' time a frame: 3.63 to 2.95 ms, 4.52 to 3.81, 5.56 to 5.23 (a
+  water stage, whose reflection's pass is most of its work) and 8.68 to
+  7.67 (software).
+- Frame skip at the game's own pace: 300 frames drawn in 600 vertical
+  blanks, none of them never shown, 600 presents; the pictures shown at
+  vertical blanks 5,600 and 5,601 are the same, 5,602 and 5,603 the same,
+  and the two pairs differ.
+- Frame skip and the machine: the fingerprints every 500 vertical blanks
+  of the same fight with it off and on, 18 of 18 the same. A two-PC
+  fight, the Linux game hosting with Frame skip on and the Windows game
+  joining under Wine with it off: 154 fingerprints agreed, 18 of 18 logged
+  ones in common.
+- The machine thread's time a frame in the fight, held to two cores and
+  their second threads, as the log gives it (wall time, two runs each):
+
+  | | Lighting CPU | Lighting GPU |
+  |---|---|---|
+  | release 0.5.21 | 4.44, 4.48 ms | 3.90, 3.82 ms |
+  | this | 3.90, 3.91 ms | 3.07, 3.55 ms |
+  | this, Frame skip | 2.77, 3.17 ms | 2.36, 2.61 ms |
+
+  With the profiler's CPU time: 3.35 ms without Frame skip, 2.54 with.
+- The row in the game's menu and in the launcher's Settings (the Picture
+  tab has eleven rows now and scrolls); the file written has
+  `frameskip = half`.
+- Both builds compile (Linux, Windows).
+
+**What it should mean for the laptop**, if its 20 ms scales as this PC's
+does: about 17 ms without Frame skip and about 13 with it. That is an
+estimate from another machine, not a measurement.
+
+**Not covered.** The laptop itself. Windows itself. Frame skip with Frame
+pacing at Screen refresh or Off (Game clock was run), and by eye on a real
+screen. A setting that skips frames by itself when the game falls behind
+was not built.

@@ -34,6 +34,12 @@ const u8 *view_host_picture(int *w);
  * what the camera sees past its sides around it. VIEW_W: no wide screen.
  * Any thread; the next pass drawn takes it */
 void view_host_wide(int width);
+/* recomp: the game window's frame skip (docs/design.md section 71): the
+ * screen is drawn for every nth frame the game renders (1: all of them; 2:
+ * every second one). The others' lists are not taken. A pass into a texture
+ * is drawn throughout, as in a re-run frame, so the machine is the same
+ * whatever this says. Any thread, at any time. */
+void view_host_every(int n);
 
 /* recomp: rollback's re-run frames (docs/design.md section 56) were shown
  * the first time. VIEW_RERUN: a screen's lists are not taken and no screen

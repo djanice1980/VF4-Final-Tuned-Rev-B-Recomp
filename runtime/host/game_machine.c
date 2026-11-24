@@ -51,6 +51,11 @@ void game_machine_cull(int width)
     hle_cull_wide(width);
 }
 
+void game_machine_every(int n)
+{
+    view_host_every(n);
+}
+
 void game_machine_lighting(int gpu)
 {
     view_host_gpu_lighting(gpu);
@@ -470,6 +475,7 @@ int game_machine_init(const char *image, const char *dimm, const char *dimm_key,
     if (dimm_mem ? hw_cart_init_memory(dimm_mem, dimm_size) : hw_cart_init(dimm))
         return 1;
     sh4_reset(&cpu, IMAGE_BASE);
+    hw_access_notes = 0;        /* no table of device accesses: nothing here reads it (section 71) */
     if (control_init(NULL) || hle_init(&cpu))
         return 1;
     hw_net_boot(&cpu);

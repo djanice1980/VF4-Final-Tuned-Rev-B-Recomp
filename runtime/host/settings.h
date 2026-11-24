@@ -65,6 +65,8 @@ enum { PACING_GAME, PACING_SCREEN, PACING_OFF, PACINGS };
  * takes that work off a slow processor. The software renderer's are always
  * the processor's. */
 enum { LIGHTING_CPU, LIGHTING_GPU, LIGHTINGS };
+/* Frame skip (docs/design.md section 71): the screen drawn for every frame, or for every second one */
+enum { SKIP_OFF, SKIP_HALF, SKIPS };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
@@ -90,6 +92,7 @@ typedef struct settings {
     int latency;            /* LATENCY_*: Auto by default; this PC's own choice in a two-PC game */
     int pacing;             /* PACING_*: Game clock by default */
     int lighting;           /* LIGHTING_*: the processor's by default */
+    int skip;               /* SKIP_*: off by default */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[2][ACT_COUNT];      /* gamepad, player 1's and player 2's (the same by default) */
     char pad_wish[2][PAD_WISH_MAX]; /* the controller each player asks for: "" Auto (the pads in the
@@ -179,6 +182,7 @@ extern const char *const settings_card_default[2];
 extern const char *const settings_region_text[REGIONS];      /* "Japan", "USA", "Export", "Korea", "Australia" */
 extern const char *const settings_latency_name[LATENCIES];   /* "auto", "on", "off" (settings.txt's) */
 extern const char *const settings_lighting_name[LIGHTINGS];   /* "cpu", "gpu" (settings.txt's) */
+extern const char *const settings_skip_name[SKIPS];           /* "off", "half" */
 extern const char *const settings_pacing_name[PACINGS];       /* "game", "screen", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",

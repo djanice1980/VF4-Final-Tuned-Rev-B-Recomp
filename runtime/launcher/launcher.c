@@ -1748,7 +1748,7 @@ static const int tab_rows[T_COUNT][12] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, OPT_LATENCY, -1 },
     [T_CARDS] = { -1 },
     [T_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
-                    OPT_SCALE, OPT_LIGHTING, OPT_PACING, -1 },
+                    OPT_SCALE, OPT_LIGHTING, OPT_SKIP, OPT_PACING, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEYS] = { -1 },
 };
@@ -3732,8 +3732,8 @@ static void draw_settings(void)
         int n = tab_count();
         for (int i = 0; i < n; i++)
             option_row(&st, tab_rows[st_tab][i], &rows[i], vals[i], sizeof vals[i]);
-        /* nine options (the Picture tab) fit the panel a little closer; more than that scroll */
-        ui_rows(40, ry, 540, rh, n == 9 ? 37 : n == 10 ? 33 : 42, rows, n, st_row, &st_top);
+        /* nine options fit the panel a little closer, ten closer still; more (the Picture tab) scroll at that */
+        ui_rows(40, ry, 540, rh, n == 9 ? 37 : n >= 10 ? 33 : 42, rows, n, st_row, &st_top);
         int o = tab_rows[st_tab][st_row];
         const char *note = NULL;
         static char whole[2 * GPU_NAME_MAX + DISPLAY_NAME_MAX + 100];
