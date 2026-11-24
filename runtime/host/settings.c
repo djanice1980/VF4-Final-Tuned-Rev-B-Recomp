@@ -168,7 +168,7 @@ void settings_defaults(settings *s)
     memset(s, 0, sizeof *s);
     s->coins = COINS_FREE_PLAY;
     s->fullscreen = FULLSCREEN_AUTO;
-    s->window = WINDOW_AUTO;
+    s->window = WINDOW_MAXIMIZED;
     s->picture = PICTURE_4_3;
     s->filter = FILTER_SMOOTH;
     s->renderer = RENDERER_GPU;
@@ -384,7 +384,7 @@ void settings_window_size(const settings *s, const window_room *room, int *w, in
 {
     int known = room->w > 0 && room->h > 0, ht = s->window, mw, mh;
     window_min(room, &mw, &mh);
-    if (ht == WINDOW_AUTO) {
+    if (ht == WINDOW_AUTO || ht == WINDOW_MAXIMIZED) {     /* maximized: Auto's size when it is taken out of it */
         window_room most = *room;
         most.w = room->w * 9 / 10;
         most.h = room->h * 9 / 10;
@@ -439,7 +439,7 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
         }
         return -1;
     }
-    int line_no = 0;
+    int line_no = 0, layout = 1, window_auto = 0;
     for (char *line = text; line;) {
         char *nl = strchr(line, '\n');
         if (nl)
@@ -467,10 +467,16 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
                     ok = 1, s->fullscreen = FULLSCREEN_AUTO;
                 else if ((ok = choice(v, onoff_names, 2, &x)))
                     s->fullscreen = x;
+            } else if (!strcmp(name, "layout")) {
+                layout = atoi(v);
+                ok = layout >= 1;
             } else if (!strcmp(name, "window")) {
                 x = atoi(v);
-                if (!strcmp(v, "auto"))
-                    ok = 1, s->window = WINDOW_AUTO;
+                window_auto = 0;
+                if (!strcmp(v, "maximized"))
+                    ok = 1, s->window = WINDOW_MAXIMIZED;
+                else if (!strcmp(v, "auto"))
+                    ok = 1, s->window = WINDOW_AUTO, window_auto = 1;
                 else if ((ok = x >= WINDOW_MIN && x <= WINDOW_MAX))
                     s->window = x;
             } else if (!strcmp(name, "picture")) {
@@ -569,6 +575,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
         line = nl ? nl + 1 : NULL;
     }
     SDL_free(text);
+    /* a file from before Maximized was the default: its auto was the default then */
+    if (layout < 2 && window_auto)
+        s->window = WINDOW_MAXIMIZED;
     return 0;
 }
 
@@ -580,16 +589,20 @@ int settings_save(const settings *s, const char *path)
     PUT("# Virtua Fighter 4 Final Tuned (recomp): settings. The launcher's Settings page and the\n"
         "# game's menu write this file; the game reads it when it starts. Lines it does not know\n"
         "# are skipped.\n\n");
+    PUT("layout = %d              # this file's layout (2: Window size's default is maximized)\n", SETTINGS_LAYOUT);
     PUT("coins = %s            # free play | arcade (coins; an operator's own coin setting is kept)\n",
         coins_names[s->coins]);
     PUT("fullscreen = %s       # auto (on for the Steam Deck and Big Picture) | on | off\n",
         s->fullscreen == FULLSCREEN_AUTO ? "auto" : onoff_names[s->fullscreen]);
-    if (s->window == WINDOW_AUTO)
-        PUT("window = auto           # the window's height: auto (the largest of these that leaves a tenth of\n");
+    if (s->window == WINDOW_MAXIMIZED)
+        PUT("window = maximized      # maximized (the default), or the window's height: auto (the largest of\n");
+    else if (s->window == WINDOW_AUTO)
+        PUT("window = auto           # maximized (the default), or the window's height: auto (the largest of\n");
     else
-        PUT("window = %-4d           # the window's height: auto (the largest of these that leaves a tenth of\n",
+        PUT("window = %-4d           # maximized (the default), or the window's height: auto (the largest of\n",
             s->window);
-    PUT("                         # the screen) | 480 | 576 | 600 | 720 | 768 | 800 | 900 | 960 | 1050 |\n"
+    PUT("                         # these that leaves a tenth of the screen) | 480 | 576 | 600 | 720 | 768 |\n"
+        "                         # 800 | 900 | 960 | 1050 |\n"
         "                         # 1080 | 1200 | 1440 | 1536 | 1600 | 1920 | 2160 (pixels; the width is\n"
         "                         # the picture's shape)\n");
     PUT("picture = %s          # 4:3 | 16:10 | 16:9 | 21:9 (wide: the 3D fills the sides) | stretch\n"

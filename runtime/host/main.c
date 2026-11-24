@@ -2510,7 +2510,8 @@ static window_room screen_room(SDL_Window *w)
  * middle of its screen when it was there already (move 1): of Display's
  * screen when that is connected (section 51; moved there first, so that
  * the size is that screen's). Fullscreen keeps the screen: the size waits
- * for it to end. A maximized window is restored to it */
+ * for it to end. A maximized window is restored to it. Window size
+ * Maximized, the default (section 70), maximizes it instead */
 static void window_to_setting(SDL_Window *w, int move)
 {
     SDL_strlcpy(live_display, cfg_.display, sizeof live_display);
@@ -2524,12 +2525,13 @@ static void window_to_setting(SDL_Window *w, int move)
         return;
     }
     window_later = 0;
-    if (fl & SDL_WINDOW_MAXIMIZED) {
-        SDL_RestoreWindow(w);
-        SDL_SyncWindow(w);
-    }
+    int maxed = cfg_.window == WINDOW_MAXIMIZED;
     int pw, ph, cw, ch, ow = 0, oh = 0;
     SDL_DisplayID want = move ? display_wanted() : 0, on = SDL_GetDisplayForWindow(w);
+    if ((fl & SDL_WINDOW_MAXIMIZED) && (!maxed || (want && want != on))) {
+        SDL_RestoreWindow(w);       /* to a size, or to move it to Display's screen first */
+        SDL_SyncWindow(w);
+    }
     if (want && want != on) {
         /* to Display's screen first (Wayland: SDL cannot place a window, and it stays) */
         if (SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want),
@@ -2539,6 +2541,13 @@ static void window_to_setting(SDL_Window *w, int move)
             logf_("window: cannot be placed on %s (%s): it stays where the system put it", cfg_.display,
                   SDL_GetError());
         on = SDL_GetDisplayForWindow(w);
+    }
+    if (maxed) {                    /* Window size Maximized (section 70): the screen's room, with its frame */
+        if (!(SDL_GetWindowFlags(w) & SDL_WINDOW_MAXIMIZED)) {
+            SDL_MaximizeWindow(w);
+            logf_("window: maximized (Window size Maximized)");
+        }
+        return;
     }
     window_room room = screen_room(w);
     settings_window_size(&cfg_, &room, &pw, &ph);
@@ -3682,7 +3691,9 @@ int main(int argc, char **argv)
         SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, ww);
         SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, wh);
         SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
-                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+                                  (fullscreen ? SDL_WINDOW_FULLSCREEN
+                                   : cfg_.window == WINDOW_MAXIMIZED ? SDL_WINDOW_MAXIMIZED : 0));
         if (want) {
             /* in the middle of Display's display, and fullscreen there (SDL takes the display a
              * window is centered on for its fullscreen, on Wayland too, which places windows itself) */
@@ -3695,8 +3706,9 @@ int main(int argc, char **argv)
         main_win = win;
         SDL_SetWindowMinimumSize(win, MENU_MIN_W, MENU_MIN_H);  /* the menu always fits */
         logf_("window: %d x %d pixels (Window size %s, %s screen %d x %d)%s", ww, wh,
-              cfg_.window == WINDOW_AUTO ? "Auto" : "set", want ? "Display's" : "primary", room.w, room.h,
-              fullscreen ? "; fullscreen" : "");
+              cfg_.window == WINDOW_MAXIMIZED ? "Maximized" : cfg_.window == WINDOW_AUTO ? "Auto" : "set",
+              want ? "Display's" : "primary", room.w, room.h,
+              fullscreen ? "; fullscreen" : cfg_.window == WINDOW_MAXIMIZED ? "; maximized" : "");
         SDL_SyncWindow(win);        /* its frame, for the room left (X11) */
         window_to_setting(win, 1);
         {
@@ -3793,6 +3805,14 @@ int main(int argc, char **argv)
             case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
                 logf_("window: fullscreen");    /* its screen: "now on" when it moved (Wayland: after this) */
                 break;
+            case SDL_EVENT_WINDOW_MAXIMIZED:
+            case SDL_EVENT_WINDOW_RESTORED: {
+                int pw = 0, ph = 0;
+                SDL_GetWindowSizeInPixels(win, &pw, &ph);
+                logf_("window: %s (%d x %d pixels)",
+                      ev.type == SDL_EVENT_WINDOW_MAXIMIZED ? "maximized" : "no longer maximized or minimized", pw, ph);
+                break;
+            }
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 vsync_rate_forget();            /* what its presents did behind others says nothing (section 61) */
                 break;

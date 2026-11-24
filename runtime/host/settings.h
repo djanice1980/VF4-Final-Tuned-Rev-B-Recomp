@@ -45,7 +45,10 @@ enum { PICTURE_4_3, PICTURE_16_10, PICTURE_16_9, PICTURE_21_9, PICTURE_STRETCH, 
 /* the board's region: the country number the BIOS gives the game (its board
  * settings, docs/design.md section 41) */
 enum { REGION_JAPAN, REGION_USA, REGION_EXPORT, REGION_KOREA, REGION_AUSTRALIA, REGIONS };
-enum { WINDOW_AUTO = 0, WINDOW_MIN = 240, WINDOW_MAX = 4320 };
+enum { WINDOW_MAXIMIZED = -1, WINDOW_AUTO = 0, WINDOW_MIN = 240, WINDOW_MAX = 4320 };
+/* the settings file's layout: 2 since Window size's default is Maximized (a file
+ * of layout 1 that says auto, its default then, is read as maximized) */
+#define SETTINGS_LAYOUT 2
 enum { FILTER_SMOOTH, FILTER_SHARP };
 enum { RENDERER_GPU, RENDERER_SOFTWARE };
 /* latency optimization in a two-PC game (rollback, docs/design.md section
@@ -66,8 +69,8 @@ enum { LIGHTING_CPU, LIGHTING_GPU, LIGHTINGS };
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
     int fullscreen;         /* FULLSCREEN_*: auto is on for the Steam Deck and Big Picture */
-    int window;             /* the game's window: WINDOW_AUTO, or its height in pixels (the width is the
-                             * picture's shape: settings_window_size) */
+    int window;             /* the game's window: WINDOW_MAXIMIZED (the default), WINDOW_AUTO, or its
+                             * height in pixels (the width is the picture's shape: settings_window_size) */
     int picture;            /* PICTURE_* */
     int filter;             /* FILTER_* */
     int renderer;           /* RENDERER_*: the GPU (Vulkan) by default, the software picture when it cannot */

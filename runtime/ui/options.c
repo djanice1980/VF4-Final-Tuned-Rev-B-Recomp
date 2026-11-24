@@ -32,6 +32,7 @@ const option_info options[OPT_COUNT] = {
     [OPT_WINDOW] = { "Window size",
                      "The game's window, at the picture's shape, in the usual screens' sizes (1366" NB "x" NB "768, "
                      "1920" NB "x" NB "1080, 2560" NB "x" NB "1080 at 21:9 and so on), smallest first. "
+                     "Maximized, the default, fills the screen's free room. "
                      "Auto is the largest size that leaves a tenth of the screen free; only the sizes that fit "
                      "the screen are offered. Fullscreen "
                      "fills the screen whatever this is, and the window has this size outside it. Dragging "
@@ -181,13 +182,14 @@ static int window_height(const settings *s, int v)
  * screen, smallest first, with Auto in the place of the size it gives (in
  * the place of the listed height of that size, which it stands for). Left
  * is always a smaller window and Right a larger one: the ends do not wrap.
+ * Maximized is past the largest, at the right end.
  * A value not in the list (a hand edit, another screen's size, a listed
  * height that is Auto's size here) steps from the window it gives to the
  * next smaller or larger one, so no size shows twice. The value after Left
  * (d -1) or Right (+1): s->window itself at that end */
 static int window_step(const settings *s, int d)
 {
-    int list[WINDOW_SIZES + 1], hs[WINDOW_SIZES + 1], n = 0, auto_h = window_height(s, WINDOW_AUTO), auto_in = 0;
+    int list[WINDOW_SIZES + 2], hs[WINDOW_SIZES + 2], n = 0, auto_h = window_height(s, WINDOW_AUTO), auto_in = 0;
     for (int i = 0; i < WINDOW_SIZES; i++) {
         int h = settings_window_heights[i];
         if (!settings_window_fits(s->picture, h, &screen))
@@ -201,6 +203,7 @@ static int window_step(const settings *s, int d)
     }
     if (!auto_in)
         list[n] = WINDOW_AUTO, hs[n++] = auto_h;
+    list[n] = WINDOW_MAXIMIZED, hs[n++] = 1 << 30;      /* past the largest: the whole of the screen's room */
     int at = -1;
     for (int i = 0; i < n; i++)
         if (list[i] == s->window)
@@ -297,7 +300,9 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
     case OPT_WINDOW: {
         int w, h;
         settings_window_size(s, &screen, &w, &h);
-        if (s->window != WINDOW_AUTO)
+        if (s->window == WINDOW_MAXIMIZED)
+            SDL_strlcpy(buf, "Maximized", n);
+        else if (s->window != WINDOW_AUTO)
             SDL_snprintf(buf, n, "%d x %d", w, h);
         else if (screen.w > 0 && screen.h > 0)
             SDL_snprintf(buf, n, "Auto (%d x %d)", w, h);

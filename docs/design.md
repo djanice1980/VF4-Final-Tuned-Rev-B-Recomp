@@ -6149,3 +6149,83 @@ model (told apart by serial number or by place), a pad on a cable and then
 on Bluetooth. Steam Input, where every pad is Steam's own model and they
 are told apart by place only. The Windows launcher. The pages by hand in a
 window (they were driven by scripted keys and looked at as pictures).
+
+## 70. The launcher's and the game's windows start maximized (2026-11-24)
+
+**Why** (the maintainer's ask). The launcher's window started at the
+page's own size (960 x 600 times the desktop's scale, at least half the
+screen's height): small on a handheld's screen in its desktop mode and on a
+television, where nothing says it should be fullscreen (that is the game's
+Fullscreen setting: on, or auto on a Steam Deck or in Big Picture, section
+44). The game's window started at Auto: the largest listed size that leaves
+a tenth of the screen free (section 40). A maximized window is the default
+for both from now on; fullscreen stays the setting's, and the game's
+Window size still names a size for whoever wants one.
+
+**The launcher** (`launcher.c`). The window is maximized as it is shown
+(`win_show`: at the start, after the game ends, and when Start the game
+directly shows it after all): `SDL_MaximizeWindow` on the hidden window,
+which SDL applies as it shows. It is a window still, with its title bar.
+
+A player who takes it out of maximized (the title bar's button, a drag)
+has a plain window from then on: `launcher-window.txt` beside the launcher
+says "window", and the next start shows the first size as before.
+Maximizing it again removes the file. Only the player's own changes
+count: SDL's maximized and restored events while the window shows as a
+window, not while it is hidden for the game, minimized, or fullscreen by
+the setting (`win_full`). A `--shot` picture keeps the page's own size.
+For tests, `--unmaximize-after S` takes the window out of maximized as the
+title bar's button does.
+
+**The game** (`settings.h`, `settings.c`, `options.c`, `main.c`). Window
+size has a new value, Maximized (`window = maximized`,
+`WINDOW_MAXIMIZED`), and it is the default. In the row's list it is past
+the largest size, at the right end: Left from it is the largest size that
+fits, and from there on the row is as it was (section 51). The window is
+made maximized (not when it starts fullscreen: then it is maximized when
+fullscreen ends, as any Window size waits for that), and
+`window_to_setting` maximizes it when the setting changes to Maximized and
+restores it to a size when the setting names one. Under Maximized the
+window's size when it is taken out of maximized is Auto's. The picture
+keeps its shape in the middle, as in fullscreen.
+
+A settings file written before this has `window = auto`, the default then,
+whether the player chose it or not. So the file has a layout number now
+(`layout = 2`): a file without it that says auto is read as maximized, and
+the next save writes the number, after which auto means Auto. A size in an
+old file stays that size. Unlike the launcher's, the game's window does not
+keep what the title bar's button did: the setting is what it starts with.
+The log has a line when the window is maximized or taken out of it.
+
+**Checked** (a headless desktop of 1920 x 1080; the Linux launcher, and
+the Windows launcher under Wine, each run from a folder of its own):
+
+| Case | Linux | Windows under Wine |
+|---|---|---|
+| No file | 1920 x 1052 pixels (the room under the title bar); no file written | the same |
+| `--unmaximize-after 3` | 960 x 600, "no longer maximized (kept for the next start)", the file says window | the same |
+| Started again with the file | 960 x 600, not maximized | the same |
+| No file, the game's Fullscreen on | fullscreen, 1920 x 1080; no file written | the same |
+
+The picture of the first case shows the launcher's page filling the
+screen under its title bar.
+
+The game, in the same desktop (its log's window lines; the Linux game and
+the Windows game under Wine gave the same):
+
+| Case | Result |
+|---|---|
+| No settings file | Window size Maximized; maximized, 1920 x 1052 pixels, the 4:3 picture in the middle |
+| A file without a layout number that says `window = auto` | read as Maximized; maximized |
+| `window = 720` | a 960 x 720 window |
+| `layout = 2` and `window = auto` | Auto's window (1280 x 960 on Linux, 1200 x 900 under Wine, whose room is smaller) |
+| `fullscreen = on` | fullscreen |
+| In the menu, Window size Left twice, then Right twice | the largest size that fits, the next smaller, the largest again, then maximized again |
+| `fullscreen = on`, then F11 three times | a maximized window, fullscreen, a maximized window again |
+
+**Not covered.** A real Steam Deck in its desktop mode and in Game Mode
+(there the setting makes it fullscreen as before), Windows itself, Proton,
+and the launcher's window after the game ends (the same call as at the
+start). A
+window manager that maximizes nothing (a tiling one) leaves the window as
+it places it; nothing is written then.

@@ -18,6 +18,8 @@
  *   launcher-set.txt   the set folder last chosen
  *   launcher-game.txt  the install folder chosen (none: game/ beside the launcher)
  *   launcher-direct.txt  "1": Start the game directly (the Play page's switch)
+ *   launcher-window.txt  "window": the player took the window out of maximized (none:
+ *                      it starts maximized)
  *   launcher-two-pc.txt  Two PCs: the address last joined, then the player to host as (1 or 2)
  *   launcher.log       what it showed (Windows has no console for it)
  * On Linux, Python is the system's python3.
@@ -39,7 +41,9 @@
  * (set, build, update, play or steam: pressed at the start) and --exit (quit
  * when that action's process ends, with its result as the exit code; 1 when
  * the action started nothing), --cancel-after S (presses Cancel S seconds
- * after it started); --shot PAGE FILE draws one page (files,
+ * after it started), --unmaximize-after S (takes the window out of maximized
+ * S seconds after it started, as the title bar's button does); --shot PAGE
+ * FILE draws one page (files,
  * build, work, fail, play, settings, picture, pad, keys, cards) to a BMP file and quits,
  * its caps in the style --shot-device names (keys, xbox, ps5, switch, steam...:
  * ui_device_named), --shot-pads TYPE[,TYPE] with virtual gamepads of those
@@ -665,6 +669,7 @@ static void go(int p);
 static void press(int b);
 static void two_unwrite(void);
 static void follow_fullscreen(const char *when);
+static void win_show(void);
 
 /* a note over the Play page (Add to Steam's, and Play's under plain Wine): only its buttons answer */
 enum { POP_NONE, POP_FROM_STEAM, POP_CLOSE_STEAM, POP_ADDED, POP_WINE, POP_RENAME, POP_DELETE, POP_RINGNAME, POP_TWO,
@@ -1015,7 +1020,7 @@ static void watch_game(void)
         }
         follow_fullscreen("the game ended");
         follow_renderer("the game ended");
-        SDL_ShowWindow(win);
+        win_show();
         SDL_RaiseWindow(win);
     }
 }
@@ -2301,6 +2306,55 @@ static void settings_store(void)
         say("settings saved: %s", settings_path);
 }
 
+/* ---- the window: maximized to start with (docs/design.md section 70) ----
+ * The window's first size is small on a handheld's screen and on a
+ * television. So it is maximized when it shows, a window still: fullscreen
+ * is the game's Fullscreen setting, below. A player who takes it out of
+ * maximized (the title bar's button, a drag) has a plain window from then
+ * on, kept in launcher-window.txt; maximizing it again forgets that. */
+static int win_max = 1;             /* maximized when shown */
+static int win_full;                /* fullscreen now by the setting (follow_fullscreen): its changes are not the player's */
+
+static void win_path(char *p, size_t n)
+{
+    const char *b = SDL_GetBasePath();     /* base, before find_paths has set it */
+    snprintf(p, n, "%slauncher-window.txt", b ? b : "./");
+}
+
+static void win_load(void)
+{
+    char p[1100];
+    win_path(p, sizeof p);
+    size_t n = 0;
+    char *t = SDL_LoadFile(p, &n);
+    win_max = !(t && n >= 6 && !strncmp(t, "window", 6));
+    SDL_free(t);
+}
+
+/* shown, maximized unless the player chose otherwise */
+static void win_show(void)
+{
+    if (win_max)
+        SDL_MaximizeWindow(win);    /* hidden: SDL maximizes it as it shows */
+    SDL_ShowWindow(win);
+}
+
+/* the window was maximized or taken out of it while it shows as a window:
+ * the player's doing, kept for the next start */
+static void win_changed(int maxed)
+{
+    if (maxed == win_max || shot_mode)
+        return;
+    win_max = maxed;
+    char p[1100];
+    win_path(p, sizeof p);
+    if (maxed)
+        SDL_RemovePath(p);
+    else
+        SDL_SaveFile(p, "window\n", 7);
+    say("window: %s (kept for the next start)", maxed ? "maximized" : "no longer maximized");
+}
+
 /* The window fullscreen or not as the game's own is (its Fullscreen
  * setting in the install folder's user/settings.txt: on, or auto on a Steam
  * Deck or in Big Picture): as the launcher starts, as Settings closes, as the
@@ -2323,6 +2377,7 @@ static void follow_fullscreen(const char *when)
     now = want;
     say("window: %s (%s; the game's Fullscreen is %s)", want ? "fullscreen" : "a window", when,
         s.fullscreen == FULLSCREEN_AUTO ? "auto" : s.fullscreen == FULLSCREEN_ON ? "on" : "off");
+    win_full = want;
     SDL_SetWindowFullscreen(win, want);
 }
 
@@ -4216,7 +4271,7 @@ int main(int argc, char **argv)
     int shot_scale = 1;
     const char *unknown[8];
     int opt_exit = 0, opt_show = 0, nunknown = 0;
-    double opt_cancel = -1;
+    double opt_cancel = -1, opt_unmax = -1;
 #ifdef _WIN32
     if (argc > 0 && argv[0])
         argv0 = argv[0];
@@ -4230,6 +4285,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--after-game")) after_game = 1;
         else if (!strcmp(argv[i], "--show")) opt_show = 1;
         else if (!strcmp(argv[i], "--cancel-after") && i + 1 < argc) opt_cancel = SDL_atof(argv[++i]);
+        else if (!strcmp(argv[i], "--unmaximize-after") && i + 1 < argc) opt_unmax = SDL_atof(argv[++i]);
         else if (!strcmp(argv[i], "--shot") && i + 2 < argc) shot_page = argv[++i], shot_file = argv[++i];
         else if (!strcmp(argv[i], "--shot-device") && i + 1 < argc) shot_device = argv[++i];
         else if (!strcmp(argv[i], "--shot-pads") && i + 1 < argc) shot_pads = argv[++i];
@@ -4312,9 +4368,11 @@ int main(int argc, char **argv)
             win_usable.w, win_usable.h);
     say("install folder: %s", game);
     if (!shot_page) {
+        win_load();
+        say("window: %s to start with", win_max ? "maximized" : "a plain window (launcher-window.txt: the player's choice)");
         follow_fullscreen("the launcher starts");
         if (!want_direct)
-            SDL_ShowWindow(win);
+            win_show();
     }
     steam_setup();
     upd_startup();
@@ -4481,7 +4539,7 @@ int main(int argc, char **argv)
             direct_run = game_proc != NULL;
         }
         if (!direct_run)
-            SDL_ShowWindow(win);
+            win_show();
     }
     if (upd == U_IDLE && !after_game && !direct_run)
         upd_start(1);       /* the check at every start: a line on GitHub's API, no download */
@@ -4517,6 +4575,12 @@ int main(int argc, char **argv)
                         sizes == 12 ? " (no more of these)" : "");
             } else if (e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN || e.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
                 say("window: %s", e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ? "now fullscreen" : "no longer fullscreen");
+            } else if ((e.type == SDL_EVENT_WINDOW_MAXIMIZED || e.type == SDL_EVENT_WINDOW_RESTORED) && !win_full) {
+                /* while it shows as a window (not hidden for the game, not
+                 * fullscreen, not minimized) this is the player's doing */
+                SDL_WindowFlags f = SDL_GetWindowFlags(win);
+                if (!(f & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED | SDL_WINDOW_FULLSCREEN)))
+                    win_changed((f & SDL_WINDOW_MAXIMIZED) != 0);
             }
             if (e.type == SDL_EVENT_QUIT)
                 running = 0;
@@ -4539,6 +4603,11 @@ int main(int argc, char **argv)
             say("set: %s", set_path);
             if (page == P_FILES)
                 focus = default_focus();
+        }
+        if (opt_unmax >= 0 && SDL_GetTicks() >= (Uint64)(opt_unmax * 1000)) {
+            say("--unmaximize-after %.1f: the window out of maximized", opt_unmax);
+            SDL_RestoreWindow(win);
+            opt_unmax = -1;
         }
         if (opt_cancel >= 0 && proc && (proc_kind == K_BUILD || proc_kind == K_UPDATE) &&
             SDL_GetTicks() - proc_t0 >= (Uint64)(opt_cancel * 1000)) {

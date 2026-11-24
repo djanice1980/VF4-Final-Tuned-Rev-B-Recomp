@@ -240,7 +240,13 @@ game and closes with it, so its Steam entry plays the game; it still shows
 itself when it is needed (nothing built, an update, an error), and the
 game's menu has **Open the launcher** ([details](docs/design.md#29-start-the-game-directly-2026-11-13)). The mouse,
 the keyboard (arrows, Enter, Esc; Q and E switch tabs) and a gamepad
-(D-pad, A, B; LB and RB switch tabs) all work it. The game goes into
+(D-pad, A, B; LB and RB switch tabs) all work it. Its window starts
+maximized (and fullscreen when the game's Fullscreen setting says so);
+take it out of maximized and it starts as a plain window from then on.
+The game's window starts maximized too, unless Fullscreen is on or Window
+size names a size
+([design.md s70](docs/design.md#70-the-launchers-and-the-games-windows-start-maximized-2026-11-24)).
+The game goes into
 `game/` beside the launcher unless you choose another folder with Change…
 on the Build page: an empty folder or an earlier install is used as it is,
 and any other folder gets a `VF4 Final Tuned` folder of its own inside it
@@ -544,7 +550,9 @@ at its foot, as the keyboard or the gamepad last used names them, and the
 panel on the right says what the chosen row does. Picture is 4:3, 16:10
 (the Steam Deck), 16:9 or 21:9 without stretching (the 3D scene goes on
 at the sides; the HUD and the 2D screens stay 4:3 in the middle), or
-Stretch. Window size is the game's window in pixels at the picture's
+Stretch. Window size is Maximized by default: the game's window fills
+the screen's free room, with the picture at its shape in the middle. Or it
+is the window in pixels at the picture's
 shape, in the usual screens' sizes from 640 x 480 to 5120 x 2160 (21:9 at
 the ultrawide screens' own widths; Auto is the largest of the sizes that
 leaves a tenth of the screen free); Internal resolution is the size the GPU renderer draws at, before
@@ -625,7 +633,9 @@ with only a gamepad, the menu's Operator test menu does the same.
   Big Picture; the launcher's window follows it too), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
   ones keep the cabinet's screen in the middle, unstretched, and draw what
   the camera sees past its sides; default 4:3, and 16:10 on a Steam
-  Deck), `filter` (smooth | sharp),
+  Deck), `window` (maximized | auto | the window's height in pixels;
+  default maximized; a file from before 0.5.21 that says auto, the default
+  then, is read as maximized), `filter` (smooth | sharp),
   `renderer` (gpu | software), `gpu` (auto | a GPU's name, as the menu
   lists it), `display` (auto | a display's name), `scale` (1 to 4 times
   640 x 480; default 2),
