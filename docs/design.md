@@ -6458,3 +6458,95 @@ cell, and each controller moving its own player in a fight (the test
 gamepads did both, section 69). Two real controllers of one model. The
 mouse on the game's controls pages. A two-PC game with the menu open (the
 game does not pause there). Windows itself.
+
+## 73. Ambient occlusion out of the depth buffer (SSAO), as an option (2026-11-24)
+
+**Why.** The maintainer asked for it, as an option. The cabinet's picture
+has no ambient occlusion: a fighter's foot does not darken the floor it
+stands on, and a fold of cloth is as bright inside as out. SSAO (screen
+space ambient occlusion) gives a little of that from the depth buffer
+alone, on any GPU the game's GPU renderer runs on.
+
+**What is done.** A setting, Ambient occlusion (settings.txt
+`occlusion = off | ssao`, the Picture tab of the game's menu and of the
+launcher's Settings; off by default), for the GPU renderer. A change
+applies at once. The software renderer has none, and its row says so.
+
+- Where in the frame (`gpu_render.c`). A frame was one render pass. With
+  the setting on, the pass ends after the opaque and punch-through lists
+  and the shadow volumes; the depth buffer, now made as a texture a shader
+  can read, goes through two small passes; then a pass goes on from what
+  the first left (color, depth and stencil loaded), multiplies the
+  occlusion into the picture, and draws the translucent list as before. So
+  translucent polygons are neither darkened nor do they darken anything.
+- The game's 2D layer is not touched. The game sends its bars, numbers and
+  flat screens straight to the rendering chips, in the same lists and with
+  depths of their own. `view.c` now says of each batch whether it is a
+  model's strips, the 3D scene (`view_gpu_draw.solid`), and the opaque and
+  punch-through pipelines write that into stencil bit 3 with the bit they
+  already wrote (bit 0, the polygon takes shadows). The occlusion is
+  multiplied in only where bit 3 is set. A 2D pixel's depth is far from
+  any scene pixel's, so it does not count as something standing near one
+  either.
+- The occlusion (`ssao.frag`). A pixel's place before the eye comes back
+  from its depth by the scene's projection, which `view.c` now hands over
+  with the frame (`view_gpu_frame.proj`: its first strip's, with the wide
+  picture's shift; a frame with no strip, a 2D screen, gets no occlusion
+  pass at all). The surface's normal is made from the neighbours' places,
+  on each axis from the neighbour nearer in depth, so that an edge's far
+  side does not tilt it. Twelve places on a spiral within 0.45 of the
+  scene's units of the pixel (a fighter is about 1.7 tall), drawn smaller
+  with distance and left out when it comes to under a pixel and a half:
+  each one that stands over the surface counts by the cosine of its angle
+  to the normal, and less the farther it is, to nothing at the radius. The
+  spiral is turned by one of 16 angles by the pixel's place in a 4 x 4
+  block.
+- The smoothing (`ssao_blur.frag`): the mean over that 4 x 4 block, of the
+  pixels within a tenth of the pixel's own distance only, so the pattern
+  goes and an edge keeps its side.
+- The depth buffer is a texture only while the setting is on (the targets
+  are made again when it changes), so with it off a frame is drawn as
+  before, pass for pass. A device that cannot read its depth buffer in a
+  shader, or has no one-channel target, draws as with the setting off (the
+  log says so).
+
+Found on the way: `gpu_render_quit` released four of the renderer's six
+buffers (the two of section 67's lighting on the GPU were left). It
+releases all six now.
+
+**Checked** (the development PC; the windowed games from stage snapshots
+in a headless desktop, the picture shown at a vertical blank in a fight,
+internal resolution 1280 x 960 unless said):
+
+- Off: the picture is the same to the pixel as before the change.
+- SSAO against off, three stages: about 100,000 of the 1,228,800 pixels
+  differ, on the fighters (folds, under the arms, between the legs) and
+  on the floor around their feet; the largest change is 39 to 49 steps of
+  255. A band inside a health bar: no pixel differs.
+- A wide picture (16:9): its middle against the 4:3 picture differs by
+  no more than the two differ with the setting off (the largest
+  difference the same 5 steps, the mean a hundredth of a step: the 4 x 4
+  pattern falls on other pixels there). So the projection handed over is
+  right with the wide picture's shift.
+- Internal resolution 640 x 480, 1920 x 1440 and 2560 x 1920: the game
+  runs and the pixels that change grow with the picture's area. The
+  software renderer: the same picture with the setting on as off.
+- The game's menu: the row set to SSAO during a fight; the file has
+  `occlusion = ssao`, and the picture 200 vertical blanks later is the
+  same to the pixel as with the setting on from the start.
+- The launcher's row, Linux and the Windows launcher under Wine: both
+  save `occlusion = ssao`.
+- The Windows game under Wine: the same pictures to the pixel as the
+  Linux game, off and on.
+- Two GPUs: an NVIDIA RTX 5070 Ti and the Radeon 8060S (Mesa's RADV). The
+  two differ with SSAO by about what they differ without (a mean of a
+  hundredth of a step against half of that), and the occlusion's size is
+  the same on both.
+
+**Not covered.** What it costs: the GPU's time for the extra passes was
+not measured, and no slow GPU was tried (it is off by default, and the
+laptop of issue 3 should leave it off). The picture in motion on a real
+screen, by eye: only still pictures were looked at. Intel graphics, a
+Steam Deck, Windows itself. The occlusion darkens the whole color of a
+pixel, the lights' direct part too, as SSAO does; its radius and strength
+are fixed (`AO_RADIUS`, `AO_STRENGTH`), not settings.

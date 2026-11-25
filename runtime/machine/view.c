@@ -3280,17 +3280,18 @@ static inline u32 gpu_rgba(float r, float g, float b, float a)
 #undef B8
 }
 
-static void gpu_tri(const scene *sc, const dtri *d, u32 list, float *zmax)
+static void gpu_tri(const scene *sc, const dtri *d, u32 list, float *zmax, u32 solid)
 {
     const rstate *st = &sc->st[d->st];
     u32 depth = st->isp >> 29;
     if (!depth)
         return;
     view_gpu_draw k = { gpu_v_n, 3, list, depth, list != 2 && !(st->isp >> 26 & 1), list == 2 ? st->tsp >> 29 : 1,
-                        list == 2 ? st->tsp >> 26 & 7 : 0, list != 2 && (st->pcw >> 7 & 1) };
+                        list == 2 ? st->tsp >> 26 & 7 : 0, list != 2 && (st->pcw >> 7 & 1), solid };
     view_gpu_draw *last = gpu_d_n ? &gpu_d[gpu_d_n - 1] : NULL;
     if (last && last->first + last->count == gpu_v_n && last->list == k.list && last->depth == k.depth &&
-        last->zwrite == k.zwrite && last->src == k.src && last->dst == k.dst && last->shadow == k.shadow) {
+        last->zwrite == k.zwrite && last->src == k.src && last->dst == k.dst && last->shadow == k.shadow &&
+        last->solid == k.solid) {
         last->count += 3;
     } else {
         GROW(gpu_d, gpu_d_cap, gpu_d_n + 1);
@@ -3363,14 +3364,24 @@ static void gpu_export(scene *sc)
     }
     float zmax = 0;
     gpu_v_n = gpu_d_n = 0;
+    /* recomp (section 73): which runs are a strip's (the 3D scene); the others came straight to the chips */
+    static u8 *strips[2];
+    static u32 strips_cap[2];
+    for (u32 k = 0; k < 2; k++) {
+        GROW(strips[k], strips_cap[k], sc->runs_n[k] + 1);
+        memset(strips[k], 0, sc->runs_n[k] + 1);
+    }
+    for (u32 i = 0; i < sc->jobs_n; i++)
+        if (sc->jobs[i].k < 2)
+            strips[sc->jobs[i].k][sc->jobs[i].run] = 1;
     for (u32 k = 0; k < 2; k++)
         for (u32 r = 0; r < sc->runs_n[k]; r++) {
             const dtri *d = sc->tris[k] + sc->runs[k][r].first;
             for (u32 i = sc->runs[k][r].n; i; i--, d++)
-                gpu_tri(sc, d, k, &zmax);
+                gpu_tri(sc, d, k, &zmax, strips[k][r]);
         }
     for (u32 i = 0; i < sc->order_n; i++)
-        gpu_tri(sc, sc->tris[2] + sc->order[i], 2, &zmax);
+        gpu_tri(sc, sc->tris[2] + sc->order[i], 2, &zmax, 0);
     /* the opaque list's volumes */
     gpu_vol_n = 0;
     GROW(gpu_vols, gpu_vols_cap, sc->vols_n[0] + 1);
@@ -3401,6 +3412,13 @@ static void gpu_export(scene *sc)
     f.w = tg.w;
     f.h = tg.h;
     f.zmax = zmax;
+    if (sc->jobs_n) {                   /* recomp (section 73): the wide picture's shift is in the pixels already */
+        const xform *xf = &sc->xf[sc->jobs[0].xf];
+        f.proj[0] = xf->sx;
+        f.proj[1] = xf->cx + (float)draw_ox;
+        f.proj[2] = xf->sy;
+        f.proj[3] = xf->cy;
+    }
     f.alpha_ref = tg.alpha_ref;
     f.fog_on = tg.fog_on;
     f.fog_density = tg.fog_density;

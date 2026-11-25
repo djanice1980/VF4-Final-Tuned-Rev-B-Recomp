@@ -557,7 +557,10 @@ is the window in pixels at the picture's
 shape, in the usual screens' sizes from 640 x 480 to 5120 x 2160 (21:9 at
 the ultrawide screens' own widths; Auto is the largest of the sizes that
 leaves a tenth of the screen free); Internal resolution is the size the GPU renderer draws at, before
-the picture is scaled to the window or the screen. For a PC whose
+the picture is scaled to the window or the screen. Ambient occlusion: SSAO
+makes corners, folds and the places where things meet (a foot on the
+floor) a little darker, which the cabinet's picture does not have; it is
+off by default. For a PC whose
 processor cannot keep the game at full speed, the same tab has Lighting:
 GPU (the graphics chip works out the lights) and Frame skip: Every other
 frame (the game keeps its full speed and 30 pictures a second are drawn).
@@ -661,6 +664,10 @@ with only a gamepad, the menu's Operator test menu does the same.
   while the game keeps its full speed, for a PC whose processor cannot
   keep up; each PC of a two-PC game chooses for itself; default off:
   [design.md s71](docs/design.md#71-a-slow-processor-less-work-on-the-machines-thread-and-frame-skip-2026-11-24)),
+  `occlusion` (off | ssao: ssao darkens corners and the places where
+  things meet a little, worked out of the picture's depth by the GPU
+  renderer; default off:
+  [design.md s73](docs/design.md#73-ambient-occlusion-out-of-the-depth-buffer-ssao-as-an-option-2026-11-24)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad1.*` and `pad2.*` for each player's gamepad (a

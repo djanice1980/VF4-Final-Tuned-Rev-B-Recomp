@@ -67,6 +67,10 @@ enum { PACING_GAME, PACING_SCREEN, PACING_OFF, PACINGS };
 enum { LIGHTING_CPU, LIGHTING_GPU, LIGHTINGS };
 /* Frame skip (docs/design.md section 71): the screen drawn for every frame, or for every second one */
 enum { SKIP_OFF, SKIP_HALF, SKIPS };
+/* Ambient occlusion (docs/design.md section 73): none, as the cabinet draws; or SSAO, the GPU
+ * renderer's, out of the depth buffer: corners and the places where things meet are a little
+ * darker. The software renderer has none. */
+enum { OCCLUSION_OFF, OCCLUSION_SSAO, OCCLUSIONS };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
@@ -93,6 +97,7 @@ typedef struct settings {
     int pacing;             /* PACING_*: Game clock by default */
     int lighting;           /* LIGHTING_*: the processor's by default */
     int skip;               /* SKIP_*: off by default */
+    int occlusion;          /* OCCLUSION_*: off by default */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[2][ACT_COUNT];      /* gamepad, player 1's and player 2's (the same by default) */
     char pad_wish[2][PAD_WISH_MAX]; /* the controller each player asks for: "" Auto (the pads in the
@@ -183,6 +188,7 @@ extern const char *const settings_region_text[REGIONS];      /* "Japan", "USA", 
 extern const char *const settings_latency_name[LATENCIES];   /* "auto", "on", "off" (settings.txt's) */
 extern const char *const settings_lighting_name[LIGHTINGS];   /* "cpu", "gpu" (settings.txt's) */
 extern const char *const settings_skip_name[SKIPS];           /* "off", "half" */
+extern const char *const settings_occlusion_name[OCCLUSIONS]; /* "off", "ssao" */
 extern const char *const settings_pacing_name[PACINGS];       /* "game", "screen", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",

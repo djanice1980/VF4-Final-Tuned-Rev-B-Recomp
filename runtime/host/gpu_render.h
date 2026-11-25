@@ -33,6 +33,14 @@ int gpu_render_waiting(unsigned frame[2], Uint64 pts[2]);
  * size in pixels and the game's vertical blank. */
 SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h, unsigned *frame, unsigned upto);
 
+/* on the window's thread, at any time (before gpu_render_init too; it stays
+ * over a start again): ambient occlusion out of the depth buffer (SSAO,
+ * docs/design.md section 73) is multiplied into the 3D scene's solid
+ * surfaces; the game's 2D layer and what is translucent are as before. Off
+ * (the default), a frame is drawn as ever. A device that cannot draws as
+ * with it off. */
+void gpu_render_occlusion(int on);
+
 /* any thread: the frames the machine handed over, and those of them never
  * drawn (a newer one came first) */
 void gpu_render_counts(unsigned *submitted, unsigned *replaced);

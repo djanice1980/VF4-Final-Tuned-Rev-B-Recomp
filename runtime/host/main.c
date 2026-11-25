@@ -2961,6 +2961,7 @@ static int menu_do(int a)
         game_machine_cull(cull_width());
         game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         game_machine_every(cfg_.skip == SKIP_HALF ? 2 : 1);
+        gpu_render_occlusion(cfg_.occlusion == OCCLUSION_SSAO);
         bindings_compile();     /* the menu's Gamepad and Keyboard tabs (section 72) */
         if (SDL_strcasecmp(cfg_.display, live_display)) {
             display_to_setting(main_win);       /* another screen: its room for Window size too */
@@ -3617,12 +3618,13 @@ int main(int argc, char **argv)
     if (!fullscreen)
         fullscreen = fullscreen_wanted();
     logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s (volume %d%%), cards %s, "
-          "network %s, region %s, lighting %s, frame skip %s",
+          "network %s, region %s, lighting %s, frame skip %s, ambient occlusion %s",
           cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
           cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
           settings_picture_name(cfg_.picture), cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
           silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off",
-          settings_region_text[cfg_.region], settings_lighting_name[cfg_.lighting], settings_skip_name[cfg_.skip]);
+          settings_region_text[cfg_.region], settings_lighting_name[cfg_.lighting], settings_skip_name[cfg_.skip],
+          settings_occlusion_name[cfg_.occlusion]);
     logf_("settings: gpu %s, display %s", cfg_.gpu[0] ? cfg_.gpu : "auto", cfg_.display[0] ? cfg_.display : "auto");
     if (in_session)
         logf_("settings: a two-PC game: the stage's far objects are drawn for a 21:9 picture on both PCs");
@@ -3684,6 +3686,7 @@ int main(int argc, char **argv)
         game_machine_cull(cull_width());
         game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         game_machine_every(cfg_.skip == SKIP_HALF ? 2 : 1);
+        gpu_render_occlusion(cfg_.occlusion == OCCLUSION_SSAO);
         settings_window_size(&cfg_, &room, &ww, &wh);
         const char *title = !in_session ? VF4FT_TITLE
                             : session_role() == SESSION_GUEST ? VF4FT_TITLE " (joining)"    /* its player once joined */

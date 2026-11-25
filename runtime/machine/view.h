@@ -88,6 +88,8 @@ typedef struct view_gpu_draw {
     u32 depth;                          /* the depth compare: bit 0 less, 1 equal, 2 greater (new against stored) */
     u32 zwrite, src, dst;               /* the blend factors (translucent): the chip's 0..7 */
     u32 shadow;                         /* the polygons take shadows (opaque, punch-through) */
+    u32 solid;                          /* a model's strips, the 3D scene (opaque, punch-through); 0: what the game
+                                         * sends straight to the chips, its 2D layer (docs/design.md section 73) */
 } view_gpu_draw;
 typedef struct view_gpu_volume {
     u32 first, count;                   /* in vol_xyz: triangles' corners, 3 floats each */
@@ -101,6 +103,9 @@ typedef struct view_gpu_frame {
     unsigned frame;                     /* the vertical blank */
     int w, h;                           /* the target, pixels */
     float zmax;                         /* the largest z of anything drawn */
+    /* the 3D scene's projection, its first strip's (section 73): a point (X, Y, Z) before the eye is
+     * at x = proj[1] + proj[0] X / Z, y = proj[3] + proj[2] Y / Z, and its z is 1 / Z. proj[0] 0: no strip */
+    float proj[4];
     u32 alpha_ref;
     int fog_on;
     float fog_density;

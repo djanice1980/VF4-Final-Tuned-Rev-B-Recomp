@@ -196,6 +196,12 @@ What the recomp changed:
   gives `by_depth`'s order (this could go back to VF4debug);
   `view_host_every` (`view.h`), the game window's draw-every-nth-frame,
   which uses VF4debug's own `every`.
+- Ambient occlusion's needs (2026-11-24, docs/design.md section 73).
+  `view.h`, `view.c`: `gpu_export` says of each batch it hands over
+  whether it is a model's strips or what came straight to the chips
+  (`view_gpu_draw.solid`), and hands over the first strip's projection
+  (`view_gpu_frame.proj`). The host's GPU path alone reads them; nothing
+  drawn here changes.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

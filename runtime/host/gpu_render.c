@@ -23,6 +23,14 @@
  *
  * Not drawn: the translucent list's volumes (shadows on translucent
  * polygons); a frame that has them is counted (gpu_render_stats).
+ *
+ * With ambient occlusion on (gpu_render_occlusion, docs/design.md section
+ * 73) the pass ends after step 3 and the depth buffer is read: one pass
+ * works the occlusion out of it, one smooths it, and the pass that goes on
+ * with step 4 first multiplies it into the picture where stencil bit 3
+ * says the 3D scene is (the opaque and punch-through lists write that bit
+ * for a model's strips, and clear it for what the game sends straight to
+ * the chips: its 2D layer keeps its colours).
  */
 #include "gpu_render.h"
 #include "view.h"
@@ -184,8 +192,18 @@ static SDL_GPUTexture *t_color, *t_ds;
 static Uint32 t_w, t_h;
 static unsigned last_frame;
 static int have_picture;
+/* ambient occlusion (section 73): asked for (the window's thread sets it and draws); what this
+ * device can do; the targets as they were last made */
+static int ao_want, ao_can, t_ao_made;
+static SDL_GPUShader *sh_ao_f, *sh_ao_blur_f, *sh_ao_apply_f;
+static SDL_GPUGraphicsPipeline *pl_ao, *pl_ao_blur, *pl_ao_apply;
+static SDL_GPUTexture *t_ao, *t_ao_smooth;
+static SDL_GPUSampler *smp_texel;
+#define AO_RADIUS 0.45f         /* in the scene's units: a fighter is about 1.7 tall */
+#define AO_STRENGTH 1.0f
 
-static SDL_GPUShader *shader(const unsigned char *code, size_t n, SDL_GPUShaderStage stage, Uint32 storage, Uint32 uniforms)
+static SDL_GPUShader *shader(const unsigned char *code, size_t n, SDL_GPUShaderStage stage, Uint32 storage, Uint32 uniforms,
+                             Uint32 samplers)
 {
     SDL_GPUShaderCreateInfo ci;
     SDL_zero(ci);
@@ -194,6 +212,7 @@ static SDL_GPUShader *shader(const unsigned char *code, size_t n, SDL_GPUShaderS
     ci.entrypoint = "main";
     ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
     ci.stage = stage;
+    ci.num_samplers = samplers;
     ci.num_storage_buffers = storage;
     ci.num_uniform_buffers = uniforms;
     return SDL_CreateGPUShader(gpu, &ci);
@@ -234,6 +253,7 @@ typedef struct pipe_desc {
     SDL_GPUCompareOp st_op;
     SDL_GPUStencilOp st_pass, st_depth_fail;
     Uint8 st_cmask, st_wmask;
+    int occlusion_target;       /* one channel of 8 bits and no depth: the occlusion's own targets */
 } pipe_desc;
 
 static SDL_GPUGraphicsPipeline *pipeline(const pipe_desc *p)
@@ -285,7 +305,7 @@ static SDL_GPUGraphicsPipeline *pipeline(const pipe_desc *p)
     }
     SDL_GPUColorTargetDescription ct;
     SDL_zero(ct);
-    ct.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ct.format = p->occlusion_target ? SDL_GPU_TEXTUREFORMAT_R8_UNORM : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     if (p->blend) {
         ct.blend_state.enable_blend = true;
         ct.blend_state.src_color_blendfactor = ct.blend_state.src_alpha_blendfactor = p->src;
@@ -298,8 +318,10 @@ static SDL_GPUGraphicsPipeline *pipeline(const pipe_desc *p)
     }
     ci.target_info.color_target_descriptions = &ct;
     ci.target_info.num_color_targets = 1;
-    ci.target_info.depth_stencil_format = ds_format;
-    ci.target_info.has_depth_stencil_target = true;
+    if (!p->occlusion_target) {
+        ci.target_info.depth_stencil_format = ds_format;
+        ci.target_info.has_depth_stencil_target = true;
+    }
     return SDL_CreateGPUGraphicsPipeline(gpu, &ci);
 }
 
@@ -321,12 +343,12 @@ static SDL_GPUGraphicsPipeline *scene_pipeline(const view_gpu_draw *d)
             p.src = blend_of(d->src, 1);
             p.dst = blend_of(d->dst, 0);
         } else {
-            /* bit 0: the polygon on top takes shadows (the reference is the draw's) */
+            /* bit 0: the polygon on top takes shadows; bit 3: it is of the 3D scene (the reference is the draw's) */
             p.stencil = 1;
             p.st_op = SDL_GPU_COMPAREOP_ALWAYS;
             p.st_pass = SDL_GPU_STENCILOP_REPLACE;
             p.st_depth_fail = SDL_GPU_STENCILOP_KEEP;
-            p.st_wmask = 1;
+            p.st_wmask = 9;
             p.st_cmask = 0;
         }
         *slot = pipeline(&p);
@@ -353,12 +375,12 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     ds_format = SDL_GPUTextureSupportsFormat(gpu, SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT, SDL_GPU_TEXTURETYPE_2D,
                                              SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
                     ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
-    sh_scene_v = shader(spv_scene_vert, sizeof spv_scene_vert, SDL_GPU_SHADERSTAGE_VERTEX, 2, 1);
-    sh_scene_f = shader(spv_scene_frag, sizeof spv_scene_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
-    sh_vol_v = shader(spv_volume_vert, sizeof spv_volume_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-    sh_rect_v = shader(spv_rect_vert, sizeof spv_rect_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-    sh_bg_f = shader(spv_background_frag, sizeof spv_background_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1);
-    sh_const_f = shader(spv_constant_frag, sizeof spv_constant_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1);
+    sh_scene_v = shader(spv_scene_vert, sizeof spv_scene_vert, SDL_GPU_SHADERSTAGE_VERTEX, 2, 1, 0);
+    sh_scene_f = shader(spv_scene_frag, sizeof spv_scene_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1, 0);
+    sh_vol_v = shader(spv_volume_vert, sizeof spv_volume_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
+    sh_rect_v = shader(spv_rect_vert, sizeof spv_rect_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
+    sh_bg_f = shader(spv_background_frag, sizeof spv_background_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 0);
+    sh_const_f = shader(spv_constant_frag, sizeof spv_constant_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 0);
     if (!sh_scene_v || !sh_scene_f || !sh_vol_v || !sh_rect_v || !sh_bg_f || !sh_const_f)
         return -1;
     pipe_desc p;
@@ -408,6 +430,50 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     pl_shadow = pipeline(&p);
     if (!pl_bg || !pl_vol || !pl_resolve || !pl_shadow)
         return -1;
+    /* Ambient occlusion: the depth buffer must be one a shader can read, and there must be a
+     * target of one channel. A device without them draws as with the setting off. */
+    ao_can = SDL_GPUTextureSupportsFormat(gpu, ds_format, SDL_GPU_TEXTURETYPE_2D,
+                                          SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER) &&
+             SDL_GPUTextureSupportsFormat(gpu, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTURETYPE_2D,
+                                          SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+    if (ao_can) {
+        sh_ao_f = shader(spv_ssao_frag, sizeof spv_ssao_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 1);
+        sh_ao_blur_f = shader(spv_ssao_blur_frag, sizeof spv_ssao_blur_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 2);
+        sh_ao_apply_f = shader(spv_ssao_apply_frag, sizeof spv_ssao_apply_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 1);
+        SDL_GPUSamplerCreateInfo si;
+        SDL_zero(si);
+        si.min_filter = si.mag_filter = SDL_GPU_FILTER_NEAREST;
+        si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        smp_texel = SDL_CreateGPUSampler(gpu, &si);
+        if (sh_ao_f && sh_ao_blur_f && sh_ao_apply_f && smp_texel) {
+            SDL_zero(p);
+            p.vs = sh_rect_v;
+            p.fs = sh_ao_f;
+            p.occlusion_target = 1;
+            pl_ao = pipeline(&p);
+            p.fs = sh_ao_blur_f;
+            pl_ao_blur = pipeline(&p);
+            /* where bit 3 is set: the colour times the occlusion */
+            SDL_zero(p);
+            p.vs = sh_rect_v;
+            p.fs = sh_ao_apply_f;
+            p.blend = 1;
+            p.src = SDL_GPU_BLENDFACTOR_ZERO;
+            p.dst = SDL_GPU_BLENDFACTOR_SRC_COLOR;
+            p.stencil = 1;
+            p.st_op = SDL_GPU_COMPAREOP_EQUAL;
+            p.st_pass = SDL_GPU_STENCILOP_KEEP;
+            p.st_depth_fail = SDL_GPU_STENCILOP_KEEP;
+            p.st_cmask = 8;
+            p.st_wmask = 0;
+            pl_ao_apply = pipeline(&p);
+        }
+        if (!pl_ao || !pl_ao_blur || !pl_ao_apply) {
+            SDL_Log("gpu_render: no ambient occlusion on this device: %s", SDL_GetError());
+            ao_can = 0;
+        }
+    }
     SDL_GPUBufferCreateInfo bi;
     SDL_zero(bi);
     bi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
@@ -436,14 +502,20 @@ static int buffer_room(SDL_GPUBuffer **b, Uint32 *size, Uint32 need, SDL_GPUBuff
     return *b ? 0 : -1;
 }
 
-static int targets(Uint32 w, Uint32 h)
+/* ao: the depth buffer is one a shader can read, and the occlusion's two targets are there */
+static int targets(Uint32 w, Uint32 h, int ao)
 {
-    if (t_color && w == t_w && h == t_h)
+    if (t_color && w == t_w && h == t_h && ao == t_ao_made)
         return 0;
     if (t_color)
         SDL_ReleaseGPUTexture(gpu, t_color);
     if (t_ds)
         SDL_ReleaseGPUTexture(gpu, t_ds);
+    if (t_ao)
+        SDL_ReleaseGPUTexture(gpu, t_ao);
+    if (t_ao_smooth)
+        SDL_ReleaseGPUTexture(gpu, t_ao_smooth);
+    t_ao = t_ao_smooth = NULL;
     SDL_GPUTextureCreateInfo ti;
     SDL_zero(ti);
     ti.type = SDL_GPU_TEXTURETYPE_2D;
@@ -455,11 +527,23 @@ static int targets(Uint32 w, Uint32 h)
     ti.num_levels = 1;
     t_color = SDL_CreateGPUTexture(gpu, &ti);
     ti.format = ds_format;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | (ao ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
     t_ds = SDL_CreateGPUTexture(gpu, &ti);
+    if (ao) {
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        t_ao = SDL_CreateGPUTexture(gpu, &ti);
+        t_ao_smooth = SDL_CreateGPUTexture(gpu, &ti);
+    }
     t_w = w;
     t_h = h;
-    return t_color && t_ds ? 0 : -1;
+    t_ao_made = ao;
+    return t_color && t_ds && (!ao || (t_ao && t_ao_smooth)) ? 0 : -1;
+}
+
+void gpu_render_occlusion(int on)
+{
+    ao_want = on;
 }
 
 typedef struct { float rect[4], screen[4]; } rect_u;
@@ -572,7 +656,9 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     }
     SDL_EndGPUCopyPass(cp);
 
-    if (targets((Uint32)f->w * (Uint32)scale, (Uint32)f->h * (Uint32)scale))
+    /* ambient occlusion: asked for, the device can, and the frame has a 3D scene whose projection is known */
+    int ao = ao_want && ao_can && f->proj[0] != 0 && f->proj[2] != 0;
+    if (targets((Uint32)f->w * (Uint32)scale, (Uint32)f->h * (Uint32)scale, ao_want && ao_can))
         return;
     SDL_GPUColorTargetInfo ct;
     SDL_zero(ct);
@@ -585,9 +671,9 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     dt.texture = t_ds;
     dt.clear_depth = 0;
     dt.load_op = SDL_GPU_LOADOP_CLEAR;
-    dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    dt.store_op = ao ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
     dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
-    dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    dt.stencil_store_op = ao ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
     dt.clear_stencil = 0;
     SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
     float zs = f->zmax > 0 ? 1.0f / (f->zmax * 1.0001f) : 1.0f;
@@ -644,7 +730,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
                 list_pushed = (int)d->list;
             }
             if (d->list != 2)
-                SDL_SetGPUStencilReference(rp, d->shadow ? 1 : 0);
+                SDL_SetGPUStencilReference(rp, (Uint8)((d->shadow ? 1 : 0) | (d->solid ? 8 : 0)));
             SDL_DrawGPUPrimitives(rp, d->count, 1, d->first, 0);
         }
         if (phase == 0 && f->nvols && f->shadow_scale < 256) {
@@ -671,6 +757,45 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
             SDL_SetGPUStencilReference(rp, 5);
             float s = (float)f->shadow_scale / 256.0f, col[4] = { s, s, s, 1 };
             SDL_PushGPUFragmentUniformData(cmd, 0, col, sizeof col);
+            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            bound = NULL;
+            list_pushed = -1;
+        }
+        if (phase == 0 && ao) {
+            /* The ambient occlusion (section 73), between the solid lists and the translucent one.
+             * The pass ends so that the depth buffer can be read: the occlusion out of it, then
+             * smoothed; the pass that goes on multiplies it into the picture where bit 3 is set. */
+            SDL_EndGPURenderPass(rp);
+            SDL_GPUColorTargetInfo at;
+            SDL_zero(at);
+            at.texture = t_ao;
+            at.load_op = SDL_GPU_LOADOP_DONT_CARE;
+            at.store_op = SDL_GPU_STOREOP_STORE;
+            rp = SDL_BeginGPURenderPass(cmd, &at, 1, NULL);
+            SDL_BindGPUGraphicsPipeline(rp, pl_ao);
+            SDL_GPUTextureSamplerBinding depth = { t_ds, smp_texel };
+            SDL_BindGPUFragmentSamplers(rp, 0, &depth, 1);
+            float au[8] = { f->proj[0], f->proj[1], f->proj[2], f->proj[3], (float)scale, zs, AO_RADIUS, AO_STRENGTH };
+            SDL_PushGPUFragmentUniformData(cmd, 0, au, sizeof au);
+            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            SDL_EndGPURenderPass(rp);
+            at.texture = t_ao_smooth;
+            rp = SDL_BeginGPURenderPass(cmd, &at, 1, NULL);
+            SDL_BindGPUGraphicsPipeline(rp, pl_ao_blur);
+            SDL_GPUTextureSamplerBinding two[2] = { { t_ao, smp_texel }, { t_ds, smp_texel } };
+            SDL_BindGPUFragmentSamplers(rp, 0, two, 2);
+            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            SDL_EndGPURenderPass(rp);
+            ct.load_op = SDL_GPU_LOADOP_LOAD;
+            dt.load_op = SDL_GPU_LOADOP_LOAD;
+            dt.stencil_load_op = SDL_GPU_LOADOP_LOAD;
+            dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+            rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+            SDL_BindGPUGraphicsPipeline(rp, pl_ao_apply);
+            SDL_SetGPUStencilReference(rp, 8);
+            SDL_GPUTextureSamplerBinding smooth = { t_ao_smooth, smp_texel };
+            SDL_BindGPUFragmentSamplers(rp, 0, &smooth, 1);
             rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
             bound = NULL;
             list_pushed = -1;
@@ -738,16 +863,17 @@ void gpu_render_quit(void)
                 for (int d = 0; d < 64; d++)
                     if (pl_scene[a][b][c][d])
                         SDL_ReleaseGPUGraphicsPipeline(gpu, pl_scene[a][b][c][d]);
-    SDL_GPUGraphicsPipeline *pls[] = { pl_bg, pl_vol, pl_resolve, pl_shadow };
-    for (int i = 0; i < 4; i++)
+    SDL_GPUGraphicsPipeline *pls[] = { pl_bg, pl_vol, pl_resolve, pl_shadow, pl_ao, pl_ao_blur, pl_ao_apply };
+    for (int i = 0; i < 7; i++)
         if (pls[i])
             SDL_ReleaseGPUGraphicsPipeline(gpu, pls[i]);
-    SDL_GPUShader *shs[] = { sh_scene_v, sh_scene_f, sh_vol_v, sh_rect_v, sh_bg_f, sh_const_f };
-    for (int i = 0; i < 6; i++)
+    SDL_GPUShader *shs[] = { sh_scene_v, sh_scene_f, sh_vol_v, sh_rect_v, sh_bg_f, sh_const_f, sh_ao_f, sh_ao_blur_f,
+                             sh_ao_apply_f };
+    for (int i = 0; i < 9; i++)
         if (shs[i])
             SDL_ReleaseGPUShader(gpu, shs[i]);
     SDL_GPUBuffer *bs[] = { b_tex, b_vert, b_state, b_vol, b_lit, b_lights };
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 6; i++)         /* was 4: the two of lighting on the GPU were never released */
         if (bs[i])
             SDL_ReleaseGPUBuffer(gpu, bs[i]);
     if (xfer)
@@ -756,6 +882,17 @@ void gpu_render_quit(void)
         SDL_ReleaseGPUTexture(gpu, t_color);
     if (t_ds)
         SDL_ReleaseGPUTexture(gpu, t_ds);
+    if (t_ao)
+        SDL_ReleaseGPUTexture(gpu, t_ao);
+    if (t_ao_smooth)
+        SDL_ReleaseGPUTexture(gpu, t_ao_smooth);
+    if (smp_texel)
+        SDL_ReleaseGPUSampler(gpu, smp_texel);
+    pl_ao = pl_ao_blur = pl_ao_apply = NULL;
+    sh_ao_f = sh_ao_blur_f = sh_ao_apply_f = NULL;
+    t_ao = t_ao_smooth = NULL;
+    smp_texel = NULL;
+    ao_can = t_ao_made = 0;
     /* all of it gone, for a start again on this device or another (the
      * lock, the frames handed over and the counts stay) */
     SDL_zeroa(pl_scene);

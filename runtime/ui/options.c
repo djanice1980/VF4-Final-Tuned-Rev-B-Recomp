@@ -94,6 +94,12 @@ const option_info options[OPT_COUNT] = {
                    "and its timing, and every second picture is drawn, 30 a second. Try it if the game runs in "
                    "slow motion on a PC with a slow processor, after Lighting: GPU. In a two-PC game each PC "
                    "chooses for itself.", 0 },
+    [OPT_OCCLUSION] = { "Ambient occlusion",
+                        "Off: the picture as the cabinet draws it. SSAO: corners, folds and the places where things "
+                        "meet (a foot on the floor) are a little darker, which gives the picture more depth. The GPU "
+                        "renderer works it out of the picture's own depth; it needs a little more of the graphics "
+                        "chip. The scores, bars and other flat parts are not touched. A change applies at once. "
+                        "Software has none.", 0 },
     [OPT_LIGHTING] = { "Lighting",
                        "Which chip works out the lights with the GPU renderer. CPU: the processor, as always. "
                        "GPU: the graphics chip, which takes that work off the processor: try it if the game "
@@ -297,6 +303,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_strlcpy(buf, sk[s->skip], n);
         break;
     }
+    case OPT_OCCLUSION: {
+        static const char *const oc[OCCLUSIONS] = { "Off", "SSAO" };
+        SDL_strlcpy(buf, oc[s->occlusion], n);
+        break;
+    }
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -379,6 +390,7 @@ void option_change(settings *s, int o, int d)
     case OPT_PACING: s->pacing = wrap(s->pacing, d, PACINGS); break;
     case OPT_LIGHTING: s->lighting = wrap(s->lighting, d, LIGHTINGS); break;
     case OPT_SKIP: s->skip = wrap(s->skip, d, SKIPS); break;
+    case OPT_OCCLUSION: s->occlusion = wrap(s->occlusion, d, OCCLUSIONS); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;
