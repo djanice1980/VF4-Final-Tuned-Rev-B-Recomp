@@ -2952,6 +2952,19 @@ static int cull_width(void)
     return settings_picture_width(in_session ? PICTURE_21_9 : cfg_.picture);
 }
 
+/* The ray tracing the setting names (sections 74 and 75), or NULL for none. DirectX 12's is in
+ * the Windows game only: the game built for Linux never has that value (it reads it as off). */
+static const rt_backend *raytracing_wanted(void)
+{
+    switch (cfg_.raytracing) {
+    case RAYTRACING_VULKAN: return &rt_vulkan;
+#ifdef _WIN32
+    case RAYTRACING_DIRECTX: return &rt_directx;
+#endif
+    default: return NULL;
+    }
+}
+
 /* what the menu asked for; 0 to quit */
 static int menu_do(int a)
 {
@@ -2962,7 +2975,7 @@ static int menu_do(int a)
         game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         game_machine_every(cfg_.skip == SKIP_HALF ? 2 : 1);
         gpu_render_occlusion(cfg_.occlusion == OCCLUSION_SSAO);
-        gpu_render_raytracing(cfg_.raytracing == RAYTRACING_VULKAN ? &rt_vulkan : NULL);
+        gpu_render_raytracing(raytracing_wanted());
         bindings_compile();     /* the menu's Gamepad and Keyboard tabs (section 72) */
         if (SDL_strcasecmp(cfg_.display, live_display)) {
             display_to_setting(main_win);       /* another screen: its room for Window size too */
@@ -3608,6 +3621,17 @@ int main(int argc, char **argv)
             logf_("no %s: the defaults", sp);
         else if (!settings_load(&cfg_, sp, say_line))
             logf_("settings from %s", sp);
+        /* Ray tracing through DirectX 12 (section 75) is the Windows game's alone: its menu
+         * offers it; this game, built for Linux, takes the file's word for it as off */
+#ifdef _WIN32
+        options_directx(1);
+#else
+        if (cfg_.raytracing == RAYTRACING_DIRECTX) {
+            cfg_.raytracing = RAYTRACING_OFF;
+            logf_("settings: raytracing = directx is the Windows game's alone: off in this game (vulkan traces the "
+                  "same light here)");
+        }
+#endif
         SDL_snprintf(backup_path, sizeof backup_path, "%sbackup.bin", user_dir);
         start_cfg = cfg_;
         live_fullscreen = cfg_.fullscreen;
@@ -3688,7 +3712,7 @@ int main(int argc, char **argv)
         game_machine_lighting(cfg_.lighting == LIGHTING_GPU);
         game_machine_every(cfg_.skip == SKIP_HALF ? 2 : 1);
         gpu_render_occlusion(cfg_.occlusion == OCCLUSION_SSAO);
-        gpu_render_raytracing(cfg_.raytracing == RAYTRACING_VULKAN ? &rt_vulkan : NULL);
+        gpu_render_raytracing(raytracing_wanted());
         settings_window_size(&cfg_, &room, &ww, &wh);
         const char *title = !in_session ? VF4FT_TITLE
                             : session_role() == SESSION_GUEST ? VF4FT_TITLE " (joining)"    /* its player once joined */

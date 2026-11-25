@@ -65,6 +65,8 @@ def units(gen_dirs, tables_cs, tc, version):
               "art.c", "cards.c", "udp.c", "session.c", "snap_patch.c", "secure.c", "devices.c", "compositor.c",
               "vsync.c", "rt_scene.c", "rt_vk.c"):
         out.append((R("host", s), hflags))
+    if tc.target == "windows":      # the ray tracing through DirectX 12 (toolchain.py links Windows' d3d12 and dxgi)
+        out.append((R("host", "rt_dx12.c"), hflags))
     for s in ("monocypher.c", "monocypher-ed25519.c"):    # the two-PC game's cryptography (runtime/crypto, ORIGIN.md)
         out.append((R("crypto", s), COMMON + ["-I" + R("crypto")]))
     for s in ("ui.c", "fonts.c", "options.c", "kofi_badge.c", "card_editor.c", "controls.c"):    # the menu's drawing kit (runtime/ui)

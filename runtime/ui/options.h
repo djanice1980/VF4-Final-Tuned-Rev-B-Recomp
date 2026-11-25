@@ -49,6 +49,16 @@ void options_gpu_names(const char *const *names, int n);
  * options. buf holds it (n bytes) */
 const char *option_note(const settings *s, int o, char *buf, size_t n);
 
+/* Ray tracing's DirectX 12 (docs/design.md section 75) is the Windows game's alone: offered (1)
+ * in the Windows game and in a launcher that keeps one (the Windows launcher, and a Linux
+ * launcher whose game is the Windows one, for Steam), never for the native Linux game. Not
+ * offered (0, the start), Left and Right pass it by and the row shows Off for it */
+void options_directx(int offered);
+
+/* what option o does, for the description panel: options[o].about, but Ray tracing's with its
+ * sentence about DirectX 12 where that is offered */
+const char *option_about(int o);
+
 /* the displays Display goes through (Auto, then these; devices.h
  * displays_list's names). The names stay the caller's */
 void options_display_names(const char *const *names, int n);

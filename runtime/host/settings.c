@@ -31,7 +31,7 @@ const char *const settings_pacing_name[PACINGS] = { "game", "screen", "off" };
 const char *const settings_lighting_name[LIGHTINGS] = { "cpu", "gpu" };
 const char *const settings_skip_name[SKIPS] = { "off", "half" };
 const char *const settings_occlusion_name[OCCLUSIONS] = { "off", "ssao" };
-const char *const settings_raytracing_name[RAYTRACINGS] = { "off", "vulkan" };
+const char *const settings_raytracing_name[RAYTRACINGS] = { "off", "vulkan", "directx" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -672,9 +672,11 @@ int settings_save(const settings *s, const char *path)
         "                       # (ambient occlusion, worked out of the picture's depth by the GPU renderer;\n"
         "                       # the cabinet's picture has none, and the software renderer draws none)\n",
         settings_occlusion_name[s->occlusion]);
-    PUT("raytracing = %s       # off | vulkan: vulkan traces the light of the GPU renderer's picture with the\n"
-        "                       # GPU's ray tracing: soft shadows, light and shade from what is around,\n"
-        "                       # reflections in glass. It needs a GPU with ray tracing, and a fast one\n",
+    PUT("raytracing = %s       # off | vulkan | directx: traces the light of the GPU renderer's picture with\n"
+        "                       # the GPU's ray tracing: soft shadows, light and shade from what is around,\n"
+        "                       # reflections in glass. It needs a GPU with ray tracing, and a fast one.\n"
+        "                       # vulkan and directx give the same picture; directx (DirectX 12) is the\n"
+        "                       # Windows game's alone: the native Linux game takes it as off\n",
         settings_raytracing_name[s->raytracing]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");

@@ -562,7 +562,9 @@ makes corners, folds and the places where things meet (a foot on the
 floor) a little darker, which the cabinet's picture does not have; it is
 off by default. Ray tracing: Vulkan has the graphics chip trace rays for
 the picture's light: the fighters' shadows get soft edges, the fighters
-shade themselves and each other, and glass mirrors the scene. It needs a
+shade themselves and each other, and glass mirrors the scene; DirectX 12,
+in the Windows game (on Windows or under Proton), traces the same picture
+through DirectX instead. It needs a
 graphics chip with ray tracing, and a fast one; it is off by default. For a PC whose
 processor cannot keep the game at full speed, the same tab has Lighting:
 GPU (the graphics chip works out the lights) and Frame skip: Every other
@@ -671,9 +673,13 @@ with only a gamepad, the menu's Operator test menu does the same.
   things meet a little, worked out of the picture's depth by the GPU
   renderer; default off:
   [design.md s73](docs/design.md#73-ambient-occlusion-out-of-the-depth-buffer-ssao-as-an-option-2026-11-24)),
-  `raytracing` (off | vulkan: vulkan traces the light of the GPU
-  renderer's picture with the GPU's ray tracing; default off:
-  [design.md s74](docs/design.md#74-ray-traced-light-step-1-vulkan-2026-11-24)),
+  `raytracing` (off | vulkan | directx: traces the light of the GPU
+  renderer's picture with the GPU's ray tracing, through Vulkan or
+  through DirectX 12; directx is the Windows game's alone (on Windows, or
+  the Windows game built for Steam on Linux): the native Linux game takes
+  it as off and does not offer it; default off:
+  [design.md s74](docs/design.md#74-ray-traced-light-step-1-vulkan-2026-11-24),
+  [s75](docs/design.md#75-ray-traced-light-through-directx-12-2026-11-24)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad1.*` and `pad2.*` for each player's gamepad (a
@@ -743,6 +749,23 @@ The shaders' SPIR-V is committed (`runtime/host/gpu_shaders.h`), so
 building needs no shader compiler. After changing a shader in
 `runtime/host/shaders/`, install glslc (`sudo pacman -S shaderc`) and
 run `python3 tools/make_shaders.py`.
+
+The two `.hlsl` shaders there are the DirectX 12 ray tracing's; their
+DXIL is committed too (`runtime/host/dx_shaders.h`). To make it again
+after changing one, the tool needs Microsoft's own build of its shader
+compiler, dxc: from
+https://github.com/microsoft/DirectXShaderCompiler/releases take the
+`linux_dxc_*.tar.gz` of a release (v1.9.2609's
+`linux_dxc_2026_09_28.x86_x64.tar.gz` was used), unpack it into a folder
+of its own (`mkdir dxc && tar -xf linux_dxc_*.tar.gz -C dxc`), and run
+`DXC="$PWD/dxc/bin/dxc" python3 tools/make_shaders.py` (the tool finds
+the compiler's libraries in `lib/` beside `bin/`). Without `DXC` and
+without a `dxc` in PATH the tool leaves `dx_shaders.h` as it is. A
+distribution's own package of dxc may not do: CachyOS's (1.10.2605) failed
+on every shader, and a build that does not sign its DXIL is refused by the
+tool, since Windows would refuse the shader. `rt_light.hlsl` and
+`rt_light.comp` are the same shader in two languages (and so the two
+filters): change both.
 
 ## Running the game headless (development, M2)
 

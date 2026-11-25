@@ -74,5 +74,8 @@ typedef struct rt_backend {
 } rt_backend;
 
 extern const rt_backend rt_vulkan;      /* rt_vk.c */
+#ifdef _WIN32
+extern const rt_backend rt_directx;     /* rt_dx12.c: DirectX 12, in the Windows game only (section 75) */
+#endif
 
 #endif

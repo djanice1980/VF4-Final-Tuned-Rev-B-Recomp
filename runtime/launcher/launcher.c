@@ -2282,11 +2282,26 @@ static void text_event(const SDL_Event *e)
     }
 }
 
+/* Whether the game these settings are for can use DirectX 12 (its ray tracing, docs/design.md
+ * section 75): the Windows game, which is also what a Linux launcher builds for Steam; never the
+ * native Linux program. Before a build: what the next one will be. */
+static int directx_here(void)
+{
+#ifdef _WIN32
+    return 1;
+#else
+    return built ? !built_linux : !target_linux;
+#endif
+}
+
 static void settings_open(void)
 {
     snprintf(settings_path, sizeof settings_path, "%s/user/settings.txt", game);
     settings_defaults_here(&st);    /* the game's: a Steam Deck's 16:10 picture (docs/design.md section 44) */
     settings_load(&st, settings_path, NULL);
+    options_directx(directx_here());
+    if (st.raytracing == RAYTRACING_DIRECTX && !directx_here())
+        st.raytracing = RAYTRACING_OFF;     /* a native Linux game's file with the Windows game's value: off, as the game takes it */
     st_tab = st_row = st_top = 0;
     ctl.capturing = 0;
     cp_refresh(NULL);
@@ -3605,7 +3620,7 @@ static void draw_settings(void)
             note = whole;           /* GPU's or Display's whole name: the row cuts a long one short */
         else if (options[o].at_start || o == OPT_CREDITS)
             note = "The game reads it when it starts.";
-        ui_about(604, ry, LW - 40 - 604, rh, options[o].label, options[o].about, note);
+        ui_about(604, ry, LW - 40 - 604, rh, options[o].label, option_about(o), note);
     }
     static const ui_hint opt_hints[] = {
         { "Choose", { UI_IN_UPDOWN, UI_IN_NONE } }, { "Change", { UI_IN_LEFTRIGHT, UI_IN_NONE } },

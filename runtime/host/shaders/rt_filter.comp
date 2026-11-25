@@ -1,9 +1,9 @@
 #version 450
 // The traced light's ratio smoothed (docs/design.md section 74): a few rays a pixel leave grain,
-// most of all in a shadow's soft edge. Each pixel takes the mean of its neighbours' ratios, the
+// most of all in a shadow's soft edge. Each pixel takes the mean of its neighbors' ratios, the
 // nearer ones counting more, among those whose surface is about as far from the eye as its own:
 // the edge of a thing keeps its side. The reflections are smoothed the same way over a smaller
-// neighbourhood: enough for the speckle a ray or two a pixel leave, and a mirror's picture stays
+// neighborhood: enough for the speckle a ray or two a pixel leave, and a mirror's picture stays
 // a picture.
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -14,10 +14,10 @@ layout(std140, set = 0, binding = 0) uniform P {
 layout(std430, set = 0, binding = 1) readonly buffer LightIn { uint light_in[]; };    // the ratio / 4, 10 bits a channel
 layout(std430, set = 0, binding = 2) readonly buffer Depth { float depth[]; };        // how far along the eye's ray; 0: nothing
 layout(std430, set = 0, binding = 3) writeonly buffer LightOut { uint light_out[]; };
-layout(std430, set = 0, binding = 4) readonly buffer ReflIn { uint refl_in[]; };      // the mirrored colour times its share; the share
+layout(std430, set = 0, binding = 4) readonly buffer ReflIn { uint refl_in[]; };      // the mirrored color times its share; the share
 layout(std430, set = 0, binding = 5) writeonly buffer ReflOut { uint refl_out[]; };
 
-const int R = 3, RR = 1;        // the ratio's neighbourhood, the reflection's
+const int R = 3, RR = 1;        // the ratio's neighborhood, the reflection's
 
 void main()
 {

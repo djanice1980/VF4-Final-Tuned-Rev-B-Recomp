@@ -763,7 +763,7 @@ static void about_of(int id, const char **title, const char **text, const char *
     }
     if (id < OPT_COUNT) {
         *title = options[id].label;
-        *text = options[id].about;
+        *text = option_about(id);
         if (id == OPT_CREDITS || id == OPT_NETWORK || id == OPT_REGION)
             *note = "Applies when the game restarts (Restart the game).";
         else if (id == OPT_VOLUME && run.no_device)

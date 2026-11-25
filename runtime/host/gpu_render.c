@@ -651,7 +651,7 @@ static void rt_follow(void)
         rt_failed = 1;
         return;
     }
-    SDL_Log("gpu_render: ray tracing (%s) on %s", rt_want->name, name ? name : "the GPU");
+    SDL_Log("gpu_render: ray tracing (%s) started; the picture is drawn on %s", rt_want->name, name ? name : "the GPU");
     rt_run = rt_want;
     rt_whole = 0;
     SDL_LockMutex(lock);

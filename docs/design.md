@@ -6694,3 +6694,177 @@ Intel graphics, a two-PC game, frame skip with it, the game at its own
 pace for long. The steps to come: motion from frame to frame, the game's
 own shadow light, a list of materials, the renderer owning the whole
 frame so that DLSS and FSR can work, and the DirectX 12 renderer.
+
+## 75. Ray traced light through DirectX 12 (2026-11-24)
+
+**Why.** The maintainer decided on two ray tracing renderers, one on
+Vulkan and one on DirectX 12, each with what its API offers: FSR's ray
+regeneration exists for DirectX 12 only, and a player on Windows may have
+a driver whose DirectX ray tracing is the better one. Section 74 put the
+traced light into the game through Vulkan. This section does the same
+step through DirectX 12: the same scene, the same rays, the same picture.
+
+**What is done.** The Ray tracing setting has a third value: settings.txt
+`raytracing = off | vulkan | directx`, "DirectX 12" on the row of the
+game's menu and of the launcher's Settings. It is in the Windows game
+only (on Windows, or under Proton, where DirectX 12 is vkd3d-proton's).
+
+- One interface, two modules (`rt.h`, `rt_backend`: start, stop, texels,
+  trace). `rt_vk.c` was written to it in section 74; `rt_dx12.c` is the
+  second, compiled into the Windows game only. Everything before and
+  after is shared and untouched: the scene from `view.c`, its packing
+  (`rt_scene.c`), and what the renderer does with the two results
+  (`gpu_render.c`, `rt_apply.frag`). The renderer itself stays SDL's GPU
+  layer on Vulkan with either.
+- The device (`rt_dx12.c`). A Direct3D 12 device of the ray tracing's own
+  with inline ray queries (ray tracing tier 1.1). Each frame, in one
+  command list, what `rt_vk.c` does: the scene's buffers and the texels
+  that changed copied in, an acceleration structure built for each of the
+  four groups and one over them, the tracing shader run over the picture,
+  the filter over its results, and those copied where the processor reads
+  them. The call waits for it. Every buffer a shader reads or writes is a
+  root descriptor, so there are no descriptor heaps. Nothing is read from
+  the memory the processor writes into, and the results come back through
+  a readback buffer (section 74's finding).
+- Buffer states. The buffers in the GPU's own memory are made in the
+  common state. A frame's first use promotes one (Direct3D's rule for
+  buffers), a barrier takes it on within the list, and the list's end
+  puts back every buffer a barrier moved, so each list finds all of them
+  in the common state without leaning on what Direct3D does to buffers
+  after a list.
+- Which GPU. The renderer's, by its name: DXGI's description of a GPU is
+  as a rule the name Vulkan gives it. The GPUs DirectX lists are tried in
+  this order: the one of that very name, those whose name holds the
+  other's, then the rest; the first with ray queries is taken. When that
+  is not the renderer's by name the log says which it is (the traced
+  light comes back through the processor, so the picture is the same).
+- The shaders (`shaders/rt_light.hlsl`, `rt_filter.hlsl`). The same two
+  shaders in DirectX's language, compiled to DXIL by `tools/make_shaders.py`
+  into `dx_shaders.h`, which is committed like the SPIR-V. One source for
+  both was tried first: DXC can write SPIR-V from the HLSL, and the
+  picture was the same, but on Mesa's RADV that shader ran 2.5 to 3 times
+  slower than the GLSL one. So Vulkan keeps the GLSL, and the two must be
+  changed together. The tool needs Microsoft's own build of DXC for the
+  DXIL (the README says where to get it): the one CachyOS packages
+  (1.10.2605) failed inside the compiler on every shader, even a one-line
+  one, and a DXIL that is not signed is refused by Windows, so the tool
+  refuses to write one.
+- Never in the native Linux game (the maintainer's decision: the Linux
+  version does not use DirectX). DirectX 12 goes with the game, not with
+  the launcher's system: a Linux launcher builds either the Windows game
+  (for Steam, where it runs under Proton and DirectX 12 works) or a native
+  Linux program. So the word `directx` is read by every build, because a
+  Linux launcher keeps the settings of the Windows game too, and
+  `options_directx` says whether the row offers it: always in the Windows
+  game and the Windows launcher; in a Linux launcher when its game is the
+  Windows one (`build.json`; before a build, the kind the next build will
+  be); never for the native Linux game. That game reads the word as off
+  and says so in the log; its menu and its launcher show Off for it, pass
+  DirectX 12 by, and write `off` or `vulkan` at the next save. The help
+  text has its sentence about DirectX 12 only where the value is offered.
+- Builds: `rt_dx12.c` and Windows' own `d3d12`, `dxgi` (and the
+  compiler's `dxguid`) in the Windows build only, in `CMakeLists.txt` and
+  in the builder (`tools/vf4build`). The Direct3D declarations are the
+  pinned compiler's own (llvm-mingw's headers); nothing was added to the
+  repository for them.
+
+Found on the way:
+
+- The Ray tracing row's help text had been two lines too long for the
+  launcher's help box since section 74 (the launcher's window is smaller
+  than the game's menu, and section 74 looked at the saved file, not at
+  the box). It is shorter now and fits in both launchers, with the
+  Windows one's sentence more.
+- The renderer's log line said "ray tracing (...) on" and the renderer's
+  GPU, which is wrong when the ray tracing's device is another: it now
+  says that the ray tracing started and where the picture is drawn.
+
+**Checked** (the development PC; the Windows dev game under Proton
+Experimental, started with umu-run in a headless desktop from the stage
+snapshots; the picture shown at a vertical blank in a fight, internal
+resolution 1280 x 960 unless said, on an RTX 5070 Ti in an external
+enclosure; "against Vulkan" is the same Windows game with
+`raytracing = vulkan`):
+
+- Four stages: the DirectX picture against the Vulkan one differs in 487,
+  31, 467 and 153 of 1,228,800 pixels, by 2 steps of 255 at most. To
+  trace a frame and bring it back: 10.0 to 14.6 ms, against 9.5 to 13.8
+  for Vulkan in the same runs (DirectX is 0.5 to 1.1 ms slower here).
+- The Windows game's Vulkan ray traced picture under Proton: the same to
+  the pixel as the Linux game's.
+- Internal resolution 640 x 480: 142 pixels differ, 2 steps at most;
+  6.8 ms (Vulkan 6.0). 1920 x 1440: 2,709 pixels, 4 steps at most;
+  25.4 ms (Vulkan 24.6). A wide picture (16:9, 1708 x 960): 60 pixels,
+  1 step at most; 16.5 ms (Vulkan 14.5).
+- The Radeon 8060S (Mesa's RADV under vkd3d-proton). In the headless
+  desktop the Radeon could not show the Windows game's window under
+  Proton (the renderer fell back to the NVIDIA card, by its own rule), so
+  the renderer stayed on the NVIDIA card and DirectX was shown the Radeon
+  alone (DXVK's filter): the ray tracing took it as "another GPU", said
+  so in the log, and traced a frame in 20.2 ms (Vulkan on that Radeon:
+  20.9 ms, section 74). Against the NVIDIA picture 3,111 pixels differ,
+  27 of them by more than 5 steps, 8 steps at most.
+- The game's menu, at the game's own pace, in a fight: Off to DirectX 12;
+  DirectX 12 to Vulkan; DirectX 12 to Off. Each time the file has the
+  value, and the picture 200 vertical blanks later is the same to the
+  pixel as with that value from the start.
+- No DirectX ray tracing (the Windows game under plain Wine, whose
+  Direct3D 12 has none): the log says that it could not start and why,
+  and the picture is the same to the pixel as with the setting off.
+- The native Linux game with `raytracing = directx` in the file: the log
+  says it takes it as off, and the picture is the same to the pixel as
+  off. Its menu's row shows Off; Right once makes it Vulkan, the file then
+  says vulkan, and the picture 200 vertical blanks later is the same to
+  the pixel as Vulkan from the start. Off and Vulkan: the same to the
+  pixel as before this change.
+- The launchers, by the file each saved after keys on the row, and by
+  pictures. The Windows one (under Wine): Off, Vulkan, DirectX 12, Off;
+  it saves `directx` and shows "DirectX 12" for a file that has it. The
+  Linux one with the Windows game (one built, and none built yet): the
+  same, and a file that says directx is kept. The Linux one with a native
+  Linux game: Right twice from Off is Off again, a file that says directx
+  shows as Off, and Right from it saves vulkan. The help text fits its
+  box in all of them, with and without its sentence about DirectX 12.
+- After that change the Windows game under Proton again: the DirectX
+  picture, and the menu's switches to and from DirectX 12, the same to
+  the pixel as before it.
+- Both development builds compile with no warning. The builder's own
+  Windows build (`tools/make_game.py`, into a folder of its own) compiles
+  and links with the new file and libraries, and its game's DirectX
+  picture is the same to the pixel as the development build's.
+
+**Known.**
+
+- Windows itself has not run it. Under Proton, Direct3D 12 is
+  vkd3d-proton, which does not check a program's use of the API as
+  Windows' own debug layer does; the buffer states above were written to
+  Direct3D's documented rules, and that is all that stands behind them
+  until someone runs it on Windows.
+- The cost is section 74's: most of the time goes into bringing the scene
+  to a second device and the results back through the processor's memory,
+  and the ray counts are fixed (too slow on the Radeon).
+- Two shader sources to keep the same (GLSL and HLSL); the check is the
+  two pictures against each other, as above.
+- The GPU is matched by name. A GPU whose DXGI description differs from
+  its Vulkan name is still found when one name holds the other, or as the
+  first with ray queries; with two such GPUs it may be the other one (the
+  picture is the same, the speed may not be).
+- Everything section 74 lists as known holds for this one too.
+
+**Not covered.** Windows itself; AMD's and Intel's Windows drivers; a
+Steam Deck; a GPU with DirectX 12 but ray tracing tier 1.0 only (the
+message for it was read, not seen); a two-PC game; frame skip with it; a
+long run at the game's own pace. Still to come, for both: a quality
+setting (fewer rays for a slower card), motion from frame to frame, the
+game's own shadow light, a list of materials, the renderer owning the
+whole frame so that DLSS and FSR can work, FSR's ray regeneration on the
+DirectX side.
+
+**Decided for those steps** (the maintainer, 2026-11-24). The launcher may
+download what a feature needs and the repository cannot hold (a vendor's
+DLL such as DLSS's or FSR's, a compiler), as long as the player is told
+before anything is downloaded: what it is, from whom, and how large, as
+the launcher already does for the compiler of the first build and for an
+update. Nothing of this section needs a download: the DirectX shaders are
+in the repository ready made, and Direct3D 12 is Windows' own (under
+Proton, vkd3d-proton's).

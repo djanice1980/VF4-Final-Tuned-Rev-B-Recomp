@@ -42,7 +42,7 @@ layout(std430, set = 0, binding = 4) readonly buffer States { State st[]; };
 layout(std430, set = 0, binding = 5) readonly buffer Lights { float lf[]; };
 layout(std430, set = 0, binding = 6) readonly buffer Arena { uint tx[]; };
 layout(std430, set = 0, binding = 7) writeonly buffer LightOut { uint lightpix[]; };  // the ratio / 4: 10 bits each of red, green, blue
-layout(std430, set = 0, binding = 8) writeonly buffer ReflOut { uint reflpix[]; };    // the mirrored colour times its share; the share
+layout(std430, set = 0, binding = 8) writeonly buffer ReflOut { uint reflpix[]; };    // the mirrored color times its share; the share
 layout(std430, set = 0, binding = 9) writeonly buffer DepthOut { float depthpix[]; }; // how far the eye's ray went; 0: it met nothing
 
 const uint ALL = 3u, FIGHTERS = 1u;
@@ -182,7 +182,7 @@ float alpha_light(uint ls, vec3 P, vec3 N)
     return la;
 }
 
-// a point of a triangle: its colour before the lights (0..1) and its alpha (0..255)
+// a point of a triangle: its color before the lights (0..1) and its alpha (0..255)
 void surface(uint ti, vec2 b, vec3 P, out vec3 rgb, out float alpha)
 {
     uint ji = tri[ti].job;
@@ -365,7 +365,7 @@ vec3 ray_origin(uint ti, vec2 b, vec3 P, vec3 nf)
     return P + nf * p.tune.x;
 }
 
-// what a surface point sends back along a ray that met it: its colour times the game's sum for it
+// what a surface point sends back along a ray that met it: its color times the game's sum for it
 vec3 radiance(Hit h, vec3 o, vec3 d)
 {
     vec3 P = o + d * h.t, c;

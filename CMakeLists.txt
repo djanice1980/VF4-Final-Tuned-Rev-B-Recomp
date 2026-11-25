@@ -130,6 +130,9 @@ if(TARGET vf4ft_gen_main AND TARGET vf4ft_gen_test)
         # Nothing from the toolchain's own DLLs: only system DLLs and SDL3.dll beside the exe.
         target_link_options(vf4ft PRIVATE -static)
         target_link_libraries(vf4ft PRIVATE ws2_32 bcrypt)    # the two-PC game's sockets and random numbers (Windows' own)
+        # The ray tracing through DirectX 12 (section 75): Windows' own d3d12.dll and dxgi.dll
+        target_sources(vf4ft PRIVATE runtime/host/rt_dx12.c)
+        target_link_libraries(vf4ft PRIVATE d3d12 dxgi dxguid)
         add_custom_command(TARGET vf4ft POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3-shared> $<TARGET_FILE_DIR:vf4ft>)
     endif()

@@ -73,8 +73,11 @@ enum { SKIP_OFF, SKIP_HALF, SKIPS };
 enum { OCCLUSION_OFF, OCCLUSION_SSAO, OCCLUSIONS };
 /* Ray tracing (docs/design.md section 74): off, or the light of the GPU renderer's picture traced
  * by the GPU's ray tracing through Vulkan: shadows with soft edges, light and shade from what is
- * around, reflections in glass. It needs a GPU with ray tracing. */
-enum { RAYTRACING_OFF, RAYTRACING_VULKAN, RAYTRACINGS };
+ * around, reflections in glass. It needs a GPU with ray tracing. Or the same through DirectX 12
+ * (section 75): the Windows game only (on Windows, or under Proton). The word is read in every
+ * build, because a Linux launcher keeps the settings of the Windows game it builds for Steam;
+ * the game built for Linux takes it as off (main.c), and nothing offers it for that game. */
+enum { RAYTRACING_OFF, RAYTRACING_VULKAN, RAYTRACING_DIRECTX, RAYTRACINGS };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
@@ -194,7 +197,7 @@ extern const char *const settings_latency_name[LATENCIES];   /* "auto", "on", "o
 extern const char *const settings_lighting_name[LIGHTINGS];   /* "cpu", "gpu" (settings.txt's) */
 extern const char *const settings_skip_name[SKIPS];           /* "off", "half" */
 extern const char *const settings_occlusion_name[OCCLUSIONS]; /* "off", "ssao" */
-extern const char *const settings_raytracing_name[RAYTRACINGS]; /* "off", "vulkan" */
+extern const char *const settings_raytracing_name[RAYTRACINGS]; /* "off", "vulkan", "directx" */
 extern const char *const settings_pacing_name[PACINGS];       /* "game", "screen", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",
