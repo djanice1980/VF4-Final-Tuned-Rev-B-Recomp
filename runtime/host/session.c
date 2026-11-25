@@ -22,7 +22,8 @@
  *   REFUSE   host -> joining PC: why the host gave the join up
  *   WELCOME  host -> joining: the session's number, the cabinet's settings,
  *            the input delay, whether a backup follows, which player the
- *            host is, its player's card
+ *            host is, the host's board clock as its machine starts (section
+ *            77), its player's card
  *   CHUNK    host -> joining: 1,024 bytes of the backup, sent again until
  *            all are acknowledged
  *   CHUNKS   joining -> host: which chunks have come (a bit each)
@@ -34,7 +35,8 @@
  * and for a PC joining a game going on (section 49):
  *   LATE     host -> joining, in place of WELCOME: the session's start as
  *            it was (the cabinet's settings, the input delay, whether the
- *            backup follows, the host's player, both players' cards then)
+ *            backup follows, the host's player, its board clock then, both
+ *            players' cards then)
  *            and the host's reference (the vertical blank at the end of the
  *            start-up, the machine's size and fingerprint there); the
  *            backup follows in CHUNKs as after a WELCOME
@@ -328,7 +330,7 @@ static int put_player(unsigned char *p, const session_player *pl)
     return 1 + GAME_CARD_SIZE + CARD_NAME_MAX;
 }
 #define PLAYER_BYTES (1 + GAME_CARD_SIZE + CARD_NAME_MAX)
-#define LATE_BYTES (7 + 16 + 2 * PLAYER_BYTES)
+#define LATE_BYTES (7 + 4 + 16 + 2 * PLAYER_BYTES)
 /* a HELLO's size, before section 50 and since: the host answers a shorter
  * one with nothing, so what it sends a PC outside the session (a REFUSE of
  * HDR + 199 bytes at most, a CHALLENGE of HDR + 32) is never more than came
@@ -955,10 +957,11 @@ static void late_accept(const session_player *pl, const udp_addr *from, Uint64 n
     w[m++] = (unsigned char)s->delay;
     w[m++] = (unsigned char)s->backup;
     w[m++] = (unsigned char)side;       /* the host's player: the joining PC is the other */
-    put32(w + m, ref_frame);
-    put32(w + m + 4, ref_size);
-    put64(w + m + 8, ref_hash);
-    m += 16;
+    put32(w + m, s->clock);
+    put32(w + m + 4, ref_frame);
+    put32(w + m + 8, ref_size);
+    put64(w + m + 12, ref_hash);
+    m += 20;
     m += put_player(w + m, &s->player[0]);
     m += put_player(w + m, &s->player[1]);
     welcome_len = m;
@@ -1436,6 +1439,8 @@ static int host_wait(const session_start *mine_s, session_start *out)
         w[m++] = (unsigned char)out->delay;
         w[m++] = (unsigned char)out->backup;
         w[m++] = (unsigned char)h;          /* the host's player: the joining PC is the other */
+        put32(w + m, out->clock);
+        m += 4;
         m += put_player(w + m, &out->player[h]);
         welcome_len = m;
         send_sealed(&peer, w, m);
@@ -1546,7 +1551,7 @@ static int guest_join(const session_start *mine_s, session_start *out)
             refuse_text(why, sizeof why, b, r);
             return fail("%s", why);
         }
-        if (k == P_WELCOME && !welcomed && r >= HDR + 7 + PLAYER_BYTES) {
+        if (k == P_WELCOME && !welcomed && r >= HDR + 11 + PLAYER_BYTES) {
             const unsigned char *p = b + HDR;
             sid = get32(b + 6);
             *out = *mine_s;
@@ -1557,7 +1562,8 @@ static int guest_join(const session_start *mine_s, session_start *out)
             out->delay = p[4] ? p[4] : SESSION_DELAY;
             out->backup = p[5];
             int h = p[6] == 1;              /* the host's player */
-            get_player(p + 7, &out->player[h]);
+            out->clock = get32(p + 7);
+            get_player(p + 11, &out->player[h]);
             out->player[!h] = mine_s->own;
             out->side = !h;
             welcomed = 1;
@@ -1583,14 +1589,15 @@ static int guest_join(const session_start *mine_s, session_start *out)
             out->delay = p[4] ? p[4] : SESSION_DELAY;
             out->backup = p[5];
             int h = p[6] == 1;
+            out->clock = get32(p + 7);
             SDL_LockMutex(lock);
-            ref_frame = get32(p + 7);
-            ref_size = get32(p + 11);
-            ref_hash = get64(p + 15);
+            ref_frame = get32(p + 11);
+            ref_size = get32(p + 15);
+            ref_hash = get64(p + 19);
             late = 1;
             SDL_UnlockMutex(lock);
-            get_player(p + 23, &out->player[0]);
-            get_player(p + 23 + PLAYER_BYTES, &out->player[1]);
+            get_player(p + 27, &out->player[0]);
+            get_player(p + 27 + PLAYER_BYTES, &out->player[1]);
             out->side = !h;
             welcomed = 1;
             backup = out->backup;

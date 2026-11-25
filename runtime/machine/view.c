@@ -273,6 +273,7 @@ typedef struct rstate {
     s16 clip[4];                        /* x0, y0, x1, y1 in pixels, when pcw bits 16-17 say 2 (inside) or 3 (outside) */
     int textured;
     int wide_u;                         /* recomp: drawn with a wide picture: u is u / 2 + 1/4 (section 65) */
+    int target, target_ox;              /* recomp (section 78): 1 + the host's target picture its texture is; 0: none */
 } rstate;
 
 typedef struct dtri {
@@ -2840,12 +2841,18 @@ static void lists_begin(int pass)
 {
     u32 key = view_core_reg(0, 0x124) & 0x00fffffcu;
     int active = (png_dir || pipe_cmd || host_mode) && machine_frame >= view_from, want, regular = 0;   /* recomp: host_mode */
+    static int screen_wanted;           /* recomp (section 78): the lists of the last screen begun were taken */
     if (host_mode)                      /* recomp: the game window's frame skip */
         every = __atomic_load_n(&host_every, __ATOMIC_RELAXED);
     if (!pass) {
         regular = active && screens % (u32)every == 0;
         want = pic_request || regular;
         screens++;
+    } else if (host_mode) {
+        /* recomp (section 78): the game window. The game sends a screen's lists, then those of the
+         * pass into a texture that screen uses, renders the pass and then the screen: the pass is
+         * wanted when its screen is (frame skip, a re-run frame) */
+        want = screen_wanted;
     } else {
         /* its texture is used by the screens that follow: wanted when one of the next few is */
         want = pic_request;
@@ -2857,6 +2864,8 @@ static void lists_begin(int pass)
     }
     if (!pass && rerun == VIEW_RERUN)
         want = regular = 0;             /* recomp: a re-run frame's screen (view_rerun) */
+    if (!pass)
+        screen_wanted = want;
     /* a scene that is not wanted is noted all the same: its render must find it, and nothing else */
     cur = scene_open(key);
     cur->capture = want;
@@ -3201,6 +3210,101 @@ static void tables_once(void)
  * only what changed is sent. */
 
 static void (*gpu_submit)(const view_gpu_frame *f);
+/* recomp (docs/design.md section 78): passes into textures drawn by the host. The game draws a
+ * stage's reflection in its water into a texture every frame: as many triangles as the screen's
+ * again, which the rasterizer here drew on the processor whatever drew the screen. With
+ * view_host_gpu_passes on, a pass of the one kind the game makes (16 bits a pixel as 5, 6 and 5,
+ * rows as long as the picture is wide) leaves here as a pass to the screen does, and nothing is
+ * written into texture memory, which the game never reads. gpu_tg: where in texture memory each
+ * of the host's target pictures would be, and its size; a state of a later pass whose texture is
+ * exactly that (the same place, size and format, not twiddled, one level) is drawn with the
+ * host's picture. sum: texture memory there as the pass was drawn (the texture cache's own sum of
+ * it); once the game has written a texture of its own there, a texture's sum is another, and the
+ * picture is no longer what that memory holds. A texture that reads the very same memory another
+ * way sends the place back to the rasterizer for good (gpu_tg_bad). */
+static int gpu_passes_on;
+static struct gpu_target {
+    u32 addr;                           /* the target's place in video memory */
+    int w, h, ox;                       /* the pass's own size; the columns drawn beyond each side */
+    int live;
+    u32 sum, serial;
+} gpu_tg[VIEW_GPU_TARGETS];
+static u32 gpu_tg_serial;
+static u32 gpu_tg_bad[8];
+static int gpu_tg_bad_n;
+static int gpu_tg_slot = -1;            /* the pass being drawn is for this one of the host's pictures; -1: not */
+
+void view_host_gpu_passes(int on)
+{
+    __atomic_store_n(&gpu_passes_on, on != 0, __ATOMIC_RELAXED);
+}
+
+/* the host's picture for the pass about to be drawn (tg is set; own_w is the pass's own width, ox
+ * the columns beyond each side), or -1: the rasterizer draws it */
+static int gpu_target_take(int own_w, int ox)
+{
+    u32 bytes = (u32)own_w * (u32)tg.h * 2;
+    if ((tg.pack & 7) != 1 || tg.stride != (u32)own_w * 2 || (u64)tg.addr + bytes > VRAM_SIZE)
+        return -1;
+    const u8 *mem = mem_ptr(VRAM1 + tg.addr);
+    if (!mem)
+        return -1;
+    for (int i = 0; i < gpu_tg_bad_n; i++)
+        if (gpu_tg_bad[i] == tg.addr)
+            return -1;
+    struct gpu_target *e = NULL;
+    for (int i = 0; i < VIEW_GPU_TARGETS && !e; i++)
+        if (gpu_tg[i].live && gpu_tg[i].addr == tg.addr)
+            e = &gpu_tg[i];
+    for (int i = 0; i < VIEW_GPU_TARGETS && !e; i++)
+        if (!gpu_tg[i].live)
+            e = &gpu_tg[i];
+    if (!e) {
+        e = &gpu_tg[0];
+        for (int i = 1; i < VIEW_GPU_TARGETS; i++)
+            if (gpu_tg[i].serial < e->serial)
+                e = &gpu_tg[i];
+    }
+    e->addr = tg.addr;
+    e->w = own_w;
+    e->h = tg.h;
+    e->ox = ox;
+    e->live = 1;
+    e->sum = tex_sum(mem, bytes);
+    e->serial = ++gpu_tg_serial;
+    return (int)(e - gpu_tg);
+}
+
+/* a state of a pass the host draws: its texture is one of the host's pictures (but the one being
+ * drawn into) */
+static void gpu_target_use(rstate *st, int self)
+{
+    const tex *t = st->t;
+    u32 addr = (st->tcw & 0x1fffffu) << 3;
+    for (int k = 0; k < VIEW_GPU_TARGETS; k++) {
+        struct gpu_target *e = &gpu_tg[k];
+        if (!e->live || e->addr != addr || k == self)
+            continue;
+        if (e->sum != t->sum) {
+            e->live = 0;                /* the game has written there since the pass: texture memory's again */
+            return;
+        }
+        /* 5, 6 and 5 bits, row after row, the pass's size, no smaller levels, no codebook */
+        if ((st->tcw >> 25 & 0x7f) != 0x06 || t->levels != 1 || t->w != e->w || t->h != e->h) {
+            fprintf(stderr, "view: the texture at %06x (control word %08x, %d x %d) reads the pass drawn there (%d x %d) "
+                    "another way: passes there are drawn by the processor from now on\n", addr, st->tcw, t->w, t->h,
+                    e->w, e->h);
+            if (gpu_tg_bad_n < 8)
+                gpu_tg_bad[gpu_tg_bad_n++] = addr;
+            e->live = 0;
+            return;
+        }
+        st->target = k + 1;
+        st->target_ox = e->ox;
+        return;
+    }
+}
+
 static view_gpu_vertex *gpu_v;
 static u32 gpu_v_n, gpu_v_cap;
 static view_gpu_state *gpu_st;
@@ -3453,7 +3557,13 @@ static void gpu_export(scene *sc)
             o->tcw = r->tcw;
             for (int k = 0; k < 4; k++)
                 o->clip[k] = r->clip[k];
-            if (r->t) {
+            if (r->target) {            /* recomp (section 78): the host's own picture, not the arena */
+                o->target = (u32)r->target;
+                o->target_ox = (u32)r->target_ox;
+                o->tex_w = (u32)r->t->w;
+                o->tex_h = (u32)r->t->h;
+                o->tex_levels = 1;
+            } else if (r->t) {
                 u32 at = gpu_tex(r->t, &full);
                 if (at != 0xffffffffu) {
                     o->tex_at = at;
@@ -3516,6 +3626,8 @@ static void gpu_export(scene *sc)
     f.frame = machine_frame;
     f.w = tg.w;
     f.h = tg.h;
+    f.target = tg.to_texture ? gpu_tg_slot + 1 : 0;     /* recomp (section 78) */
+    f.target_ox = tg.to_texture ? draw_ox : 0;
     f.zmax = zmax;
     if (sc->jobs_n) {                   /* recomp (section 73): the wide picture's shift is in the pixels already */
         const xform *xf = &sc->xf[sc->jobs[0].xf];
@@ -3548,7 +3660,7 @@ static void gpu_export(scene *sc)
     f.vols = gpu_vols;
     f.nvols = sc->vols_n[0];
     f.translucent_volumes = sc->vols_n[1];
-    int rt = __atomic_load_n(&rt_on, __ATOMIC_RELAXED);     /* recomp (section 74) */
+    int rt = !tg.to_texture && __atomic_load_n(&rt_on, __ATOMIC_RELAXED);      /* recomp (section 74) */
     if (sc->gl_on || rt) {              /* recomp (section 67): the strip records and the light sets */
         static float *sets;
         static u32 sets_cap;
@@ -3853,7 +3965,11 @@ static void scene_draw(scene *sc, int to_texture)
     tg.shadow_scale = shad & 0x100 ? (int)(shad & 0xff) : 256;
 
     tables_once();
-    int gpu = gpu_submit && !to_texture;    /* recomp (M6): the GPU path draws it */
+    /* recomp (section 78): the host draws a pass into a texture too, when it is of the kind it takes */
+    gpu_tg_slot = -1;
+    if (to_texture && gpu_submit && __atomic_load_n(&gpu_passes_on, __ATOMIC_RELAXED))
+        gpu_tg_slot = gpu_target_take(own_w, draw_ox);
+    int gpu = gpu_submit && (!to_texture || gpu_tg_slot >= 0);     /* recomp (M6): the GPU path draws it */
     if (!gpu)
         target_clear();
     /* the textures as video memory has them now: a pass into a texture that the game
@@ -3861,7 +3977,10 @@ static void scene_draw(scene *sc, int to_texture)
     for (u32 i = 0; i < sc->st_n; i++) {
         sc->st[i].t = sc->st[i].textured ? tex_get(sc->st[i].tsp, sc->st[i].tcw) : NULL;
         sc->st[i].wide_u = 0;
-        if (draw_ox && !to_texture && sc->st[i].t)
+        sc->st[i].target = 0;
+        if (gpu && sc->st[i].t)
+            gpu_target_use(&sc->st[i], gpu_tg_slot);    /* recomp (section 78) */
+        if (draw_ox && !to_texture && sc->st[i].t && !sc->st[i].target)
             wide_tex_use(&sc->st[i], screen);       /* recomp (section 65) */
     }
     /* recomp (section 67): lighting on the GPU, for a pass the GPU draws */

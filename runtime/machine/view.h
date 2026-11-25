@@ -36,9 +36,9 @@ const u8 *view_host_picture(int *w);
 void view_host_wide(int width);
 /* recomp: the game window's frame skip (docs/design.md section 71): the
  * screen is drawn for every nth frame the game renders (1: all of them; 2:
- * every second one). The others' lists are not taken. A pass into a texture
- * is drawn throughout, as in a re-run frame, so the machine is the same
- * whatever this says. Any thread, at any time. */
+ * every second one). The others' lists are not taken, nor those of the
+ * passes into textures the game makes for them (section 78). Any thread,
+ * at any time. */
 void view_host_every(int n);
 
 /* recomp: rollback's re-run frames (docs/design.md section 56) were shown
@@ -46,18 +46,26 @@ void view_host_every(int n);
  * is drawn; set it as the machine goes back (the textures are looked at
  * again). VIEW_RERUN_LAST: the last re-run frame, whose lists the frame
  * after it shows: they are taken, still no screen drawn. VIEW_LIVE: as
- * ever. A pass into a texture is drawn throughout: its picture goes into
- * the machine's texture memory. */
+ * ever. A pass into a texture goes as the screen it is made for (section
+ * 78): taken when that one's lists are. */
 enum { VIEW_LIVE, VIEW_RERUN_LAST, VIEW_RERUN };
 void view_rerun(int mode);
 
 /* recomp (M6): the GPU path. With view_host_gpu set, a pass to the screen
  * is not rasterized here: after transform, lighting and the translucent
  * sort, what the rasterizer would draw is handed to submit, on the
- * machine's thread, and the game goes on (passes into textures are still
- * drawn here, into texture memory). The host draws it on the GPU with the
- * rasterizer's rules (runtime/host/gpu_render.c). Everything in the frame
- * is valid only during the call. */
+ * machine's thread, and the game goes on. The host draws it on the GPU with
+ * the rasterizer's rules (runtime/host/gpu_render.c). Everything in the
+ * frame is valid only during the call.
+ *
+ * A pass into a texture (docs/design.md section 78: a stage's reflection
+ * in its water) is drawn here, into texture memory, unless
+ * view_host_gpu_passes is on: then it is handed to submit as well, before
+ * the pass to the screen that uses it, with `target` saying which of the
+ * host's VIEW_GPU_TARGETS target pictures it is for. Nothing goes into
+ * texture memory then, and a state whose texture is such a pass's says so
+ * (its `target`): the host takes its texels from that picture. */
+#define VIEW_GPU_TARGETS 4
 typedef struct view_gpu_vertex {
     float x, y, z, u, v;                /* the target's pixels; z = 1/w, larger is nearer; texture coordinates */
     u32 col, ofs;                       /* base and offset colour, 0xAABBGGRR (bytes R, G, B, A in memory) */
@@ -80,7 +88,11 @@ typedef struct view_gpu_state {
     u32 pcw, isp, tsp, tcw;             /* the chip's control words */
     u32 tex_at, tex_w, tex_h, tex_levels;   /* the texture in the texel arena (tex_w 0: none) */
     s32 clip[4];                        /* x0, y0, x1, y1: the user clip, pixels, inclusive */
-    u32 pad[4];
+    /* section 78: target not 0: the texture is the host's target picture target - 1, not the arena's
+     * (tex_w x tex_h its size, one level); texel (x, y) is the picture's pixel (x + target_ox, y), and
+     * where u is clamped it may run target_ox texels past each side (the wide screen) */
+    u32 target, target_ox;
+    u32 pad[2];
 } view_gpu_state;
 typedef struct view_gpu_draw {
     u32 first, count;                   /* vertices: count / 3 triangles */
@@ -127,6 +139,10 @@ typedef struct view_rt_strip {
 typedef struct view_gpu_frame {
     unsigned frame;                     /* the vertical blank */
     int w, h;                           /* the target, pixels */
+    /* section 78: 0: the pass to the screen. 1 + n: a pass into a texture, for the host's target
+     * picture n, w x h pixels: the texture's own width in its middle and target_ox columns drawn
+     * beyond each side (the wide screen). It comes before the pass to the screen that uses it. */
+    int target, target_ox;
     float zmax;                         /* the largest z of anything drawn */
     /* the 3D scene's projection, its first strip's (section 73): a point (X, Y, Z) before the eye is
      * at x = proj[1] + proj[0] X / Z, y = proj[3] + proj[2] Y / Z, and its z is 1 / Z. proj[0] 0: no strip */
@@ -171,6 +187,9 @@ typedef struct view_gpu_frame {
 #define VIEW_GPU_ARENA (16u << 20)      /* texels */
 void view_program_changed(void);   /* recomp (test mode): look the program's tables up again */
 void view_host_gpu(void (*submit)(const view_gpu_frame *f));
+/* recomp (section 78): the passes into textures go to submit too (on), or are drawn here into
+ * texture memory as ever (off, the default). Any thread; the next pass takes it */
+void view_host_gpu_passes(int on);
 /* recomp (section 67): the GPU path's lights are worked out by the host's vertex shader (on) or
  * here as ever (off, the default). Any thread; the next pass to the screen takes it */
 void view_host_gpu_lighting(int on);

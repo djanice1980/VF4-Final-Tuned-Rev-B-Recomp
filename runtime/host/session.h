@@ -8,7 +8,8 @@
  *
  * The start: the joining PC says which build it is and sends its player's
  * card; the host answers with the cabinet (its backup, coins, region,
- * network, card units) and its own player's card. Both machines start from
+ * network, card units, and what its board clock shows as its machine
+ * starts) and its own player's card. Both machines start from
  * that. Nothing of the host's is written on the joining PC: its own backup
  * and settings stay as they were, and each PC keeps only its own player's
  * card.
@@ -44,6 +45,7 @@ typedef struct session_player {
 /* what both machines start from */
 typedef struct session_start {
     int coins, region, network, cards;  /* the host's settings (settings.h's COINS_*, REGION_*; 0/1) */
+    unsigned clock;                     /* the host's board clock as its machine starts (game_machine_clock) */
     int backup;                         /* 1: backup_bytes is the host's backup.bin; 0: a blank cabinet */
     unsigned char backup_bytes[GAME_BACKUP_SIZE];
     session_player own;                 /* mine: this PC's player's card (both roles) */

@@ -133,6 +133,27 @@ void game_machine_cards(int on);
  * game_machine_restart. */
 void game_machine_region(int country);
 
+/* The board's clock (docs/design.md section 77): what it shows as the
+ * machine starts, in its own count, seconds from 1950-01-01 00:00:00; it
+ * runs on with the machine. Before game_machine_init. 0 (the default) is
+ * the fixed date the machine has by itself, 2004-11-10 07:18:24, with which
+ * every run is the same run: the tests', and the headless program's. */
+void game_machine_clock(unsigned seconds);
+
+/* the count of seconds for a date and time (year 1950 to 2085), for
+ * game_machine_clock; 0 for a date the clock cannot show */
+unsigned game_machine_clock_seconds(int year, int month, int day, int hour, int minute, int second);
+
+/* after init (and after game_machine_resume: a snapshot has its own): the
+ * date and time the board's clock started at: year, month, day, hour,
+ * minute, second */
+void game_machine_clock_get(int date[6]);
+
+/* The match the game is loading, from the frame function: 1 once at the
+ * start of each (the game's mode has become GAME MODE.GAME_LOAD), with its
+ * stage and both players' characters as the game numbers them; else 0. */
+int game_machine_match(int *stage, int chara[2]);
+
 /* after init: a card goes into player side's unit (0 or 1) and stays; card
  * NULL is a card never used. 0, or -1 (no units, or a card in already) */
 int game_machine_card_put(int side, const unsigned char *card);

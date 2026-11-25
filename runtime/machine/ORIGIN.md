@@ -209,6 +209,18 @@ What the recomp changed:
   `view_gpu_frame.rt_tris`, `.rt_strips`, `.rt_near`), and the light sets
   whatever lights the vertices. Off (the default, and always without the
   host's GPU path) nothing is done and nothing behaves differently.
+- Passes into textures drawn by the host (2026-11-25, docs/design.md
+  section 78). `view.h`, `view.c`: `view_host_gpu_passes`; with it on (and
+  the host's GPU path), `scene_draw` hands a pass into a texture of the
+  kind the game makes to `gpu_export` instead of rasterizing it
+  (`view_gpu_frame.target`, `.target_ox`; `gpu_target_take`), does not
+  call `target_store`, and marks the states of later passes whose texture
+  is that place (`gpu_target_use`: `view_gpu_state.target`,
+  `.target_ox`). Off (the default, and always without the host's GPU
+  path) those passes are drawn here as ever. `lists_begin`: in the game
+  window (`host_mode`) a pass's lists are taken when the lists of the
+  screen before it were (frame skip, a frame run again); the headless
+  program's rule is VF4debug's, unchanged.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

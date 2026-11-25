@@ -2,7 +2,7 @@
 // A pixel of a scene's triangle, by the software rasterizer's rules
 // (runtime/machine/view.c, raster()): the user clip, the texture (its own
 // wrap, mirror and clamp, nearest or four texels, the mip-map level, bump
-// maps), the shading instruction, the offset colour, the alpha test of the
+// maps), the shading instruction, the offset color, the alpha test of the
 // punch-through list, the fog of the table or of the vertex.
 layout(location = 0) noperspective in vec4 v_col;
 layout(location = 1) noperspective in vec4 v_ofs;
@@ -15,14 +15,20 @@ struct State {
     uint pcw, isp, tsp, tcw;
     uint tex_at, tex_w, tex_h, tex_levels;
     ivec4 clip;
-    uvec4 pad;
+    uvec4 pad;          // x: 1 + the target picture the texture is (0: the arena's); y: its columns beyond each side
 };
-layout(std430, set = 2, binding = 0) readonly buffer States { State st[]; };
-layout(std430, set = 2, binding = 1) readonly buffer Texels { uint tx[]; };
+// the pictures of the passes into textures (docs/design.md section 78: a stage's reflection in
+// its water), drawn before this pass
+layout(set = 2, binding = 0) uniform sampler2D t_pass0;
+layout(set = 2, binding = 1) uniform sampler2D t_pass1;
+layout(set = 2, binding = 2) uniform sampler2D t_pass2;
+layout(set = 2, binding = 3) uniform sampler2D t_pass3;
+layout(std430, set = 2, binding = 4) readonly buffer States { State st[]; };
+layout(std430, set = 2, binding = 5) readonly buffer Texels { uint tx[]; };
 
 layout(set = 3, binding = 0) uniform FU {
     vec4 p0;            // render scale, alpha reference, fog density, list (0 opaque, 1 punch-through, 2 translucent)
-    uvec4 p1;           // fog on, fog colour (table), fog colour (vertex), 0
+    uvec4 p1;           // fog on, fog color (table), fog color (vertex), 0
     uvec4 fog[33];      // the fog table, 129 steps of 0..255
 } fu;
 
@@ -37,8 +43,31 @@ int tex_at(int t, int size, bool clampit, bool flip)
     return t & (size - 1);
 }
 
+// which target picture the texture is (0: none), and how far past each side its u may go
+uint pass_k;
+int pass_ox;
+
+// u: as tex_at, but where a target picture has columns beyond the texture's sides (the wide screen)
+// a clamped coordinate may go that far
+int tex_at_u(int t, int size, bool clampit, bool flip)
+{
+    if (pass_k != 0u && clampit)
+        return clamp(t, -pass_ox, size - 1 + pass_ox);
+    return tex_at(t, size, clampit, flip);
+}
+
 vec4 texel(uint at, int w, int x, int y)
 {
+    if (pass_k != 0u) {
+        // a pixel of the pass, as texture memory would hold it and the texture's decoder give it
+        // back (view.c: target_store's 5, 6 and 5 bits, texel16's widening), opaque
+        ivec2 p = ivec2(x + pass_ox, y);
+        vec3 f = pass_k == 1u ? texelFetch(t_pass0, p, 0).rgb : pass_k == 2u ? texelFetch(t_pass1, p, 0).rgb
+               : pass_k == 3u ? texelFetch(t_pass2, p, 0).rgb : texelFetch(t_pass3, p, 0).rgb;
+        ivec3 q = ivec3(f * 255.0 + 0.5);
+        q = ivec3(q.r >> 3, q.g >> 2, q.b >> 3);
+        return vec4(float(q.r << 3 | q.r >> 2), float(q.g << 2 | q.g >> 4), float(q.b << 3 | q.b >> 2), 255.0);
+    }
     uint c = tx[at + uint(y * w + x)];
     return vec4(float(c >> 16 & 255u), float(c >> 8 & 255u), float(c & 255u), float(c >> 24));
 }
@@ -87,6 +116,8 @@ void main()
     bool bump = textured && (s.tcw >> 27 & 7u) == 4u;
     bool has_ofs = (s.pcw >> 2 & 1u) != 0u && textured;
     vec4 ofs = clamp(floor(v_ofs), 0.0, 255.0);
+    pass_k = s.pad.x;
+    pass_ox = int(s.pad.y);
     if (textured) {
         int tw0 = int(s.tex_w), th0 = int(s.tex_h);
         bool clamp_u = (tsp >> 16 & 1u) != 0u, clamp_v = (tsp >> 15 & 1u) != 0u;
@@ -111,17 +142,17 @@ void main()
             float fu_ = v_uv.x * float(tw) + 16383.5, fv = v_uv.y * float(th) + 16383.5;
             int ix = int(fu_), iy = int(fv);
             float wx = floor((fu_ - float(ix)) * 256.0) / 256.0, wy = floor((fv - float(iy)) * 256.0) / 256.0;
-            int x0 = tex_at(ix - 16384, tw, clamp_u, flip_u), x1 = tex_at(ix - 16383, tw, clamp_u, flip_u);
+            int x0 = tex_at_u(ix - 16384, tw, clamp_u, flip_u), x1 = tex_at_u(ix - 16383, tw, clamp_u, flip_u);
             int y0 = tex_at(iy - 16384, th, clamp_v, flip_v), y1 = tex_at(iy - 16383, th, clamp_v, flip_v);
             vec4 top = mix(texel(at, tw, x0, y0), texel(at, tw, x1, y0), wx);
             vec4 bot = mix(texel(at, tw, x0, y1), texel(at, tw, x1, y1), wx);
             t = floor(mix(top, bot, wy));
         } else {
             int ix = int(v_uv.x * float(tw) + 16384.0) - 16384, iy = int(v_uv.y * float(th) + 16384.0) - 16384;
-            t = texel(at, tw, tex_at(ix, tw, clamp_u, flip_u), tex_at(iy, th, clamp_v, flip_v));
+            t = texel(at, tw, tex_at_u(ix, tw, clamp_u, flip_u), tex_at(iy, th, clamp_v, flip_v));
         }
         if (bump) {
-            // the texel is two angles, the offset colour the light: K1 + K2 sin S + K3 cos S cos (R - Q)
+            // the texel is two angles, the offset color the light: K1 + K2 sin S + K3 cos S cos (R - Q)
             float s_ang = t.g * (PI / 2.0 / 256.0), r_ang = t.b * (2.0 * PI / 256.0);
             float k1 = ofs.a / 255.0, k2 = ofs.r / 255.0, k3 = ofs.g / 255.0, q = ofs.b * (2.0 * PI / 256.0);
             float v = clamp(floor((k1 + k2 * sin(s_ang) + k3 * cos(s_ang) * cos(r_ang - q)) * 255.0), 0.0, 255.0);

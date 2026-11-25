@@ -429,6 +429,67 @@ unsigned game_machine_audio(short *dst, unsigned max)
 }
 
 static int region;      /* game_machine_region's country: game_machine_init clears cfg */
+static u32 clock_start; /* game_machine_clock's seconds; 0: the machine's own fixed date */
+
+void game_machine_clock(unsigned seconds)
+{
+    clock_start = seconds;
+}
+
+unsigned game_machine_clock_seconds(int year, int month, int day, int hour, int minute, int second)
+{
+    static const int before[12] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+    if (year < 1950 || year > 2085 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59 || second < 0 || second > 60)
+        return 0;
+    /* every fourth year is a leap year from 1950 to 2085 (2000 was one) */
+    u32 days = (u32)(year - 1950) * 365 + (u32)((year - 1949) / 4) + (u32)before[month - 1] + (u32)(day - 1);
+    if (year % 4 == 0 && month > 2)
+        days++;
+    return days * 86400u + (u32)hour * 3600 + (u32)minute * 60 + (u32)second;
+}
+
+void game_machine_clock_get(int date[6])
+{
+    u32 t = hw.rtc_base, days = t / 86400, rest = t % 86400;
+    int year = 1950, month = 0;
+    for (;; year++) {
+        u32 len = year % 4 == 0 ? 366 : 365;
+        if (days < len)
+            break;
+        days -= len;
+    }
+    for (;; month++) {
+        static const u32 len[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        u32 n = len[month] + (month == 1 && year % 4 == 0);
+        if (days < n)
+            break;
+        days -= n;
+    }
+    date[0] = year;
+    date[1] = month + 1;
+    date[2] = (int)days + 1;
+    date[3] = (int)(rest / 3600);
+    date[4] = (int)(rest / 60 % 60);
+    date[5] = (int)(rest % 60);
+}
+
+int game_machine_match(int *stage, int chara[2])
+{
+    static int was;
+    char name[160];
+    int now = rt_native_program() == PROGRAM_MAIN &&
+              !strcmp(game_mode_name(game_mode_main(), game_mode_sub(), name, sizeof name), "GAME MODE.GAME_LOAD");
+    int first = now && !was;
+    was = now;
+    u32 s = global_addr("match_stage"), p = global_addr("player_chara");
+    if (!first || !s || !p)
+        return 0;
+    *stage = (int)g_r32(s);
+    chara[0] = (int)g_r32(p);
+    chara[1] = (int)g_r32(p + 4);
+    return 1;
+}
 
 int game_machine_init(const char *image, const char *dimm, const char *dimm_key, int sound_chip, game_frame_fn fn)
 {
@@ -472,6 +533,8 @@ int game_machine_init(const char *image, const char *dimm, const char *dimm_key,
         return 1;
     machine_init();
     hw_init(&cpu);
+    if (clock_start)
+        hw.rtc_base = clock_start;      /* the board's clock at cycle 0 (section 77); the boot reads it from there */
     if (dimm_mem ? hw_cart_init_memory(dimm_mem, dimm_size) : hw_cart_init(dimm))
         return 1;
     sh4_reset(&cpu, IMAGE_BASE);

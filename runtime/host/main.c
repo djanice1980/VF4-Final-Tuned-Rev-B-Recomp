@@ -70,6 +70,12 @@
  *                     (docs/design.md section 48)
  *   --resume FILE     for tests: the run goes on from FILE's snapshot (made by this build), after
  *                     the user's files are in
+ *   --cpu-passes      for tests: with the GPU renderer, the passes into textures the game makes (a
+ *                     stage's reflection in its water) are drawn by the machine's thread into
+ *                     texture memory, as before docs/design.md section 78, not on the GPU
+ *   --clock WHEN      for tests: what the board's clock shows as the machine starts, in place of
+ *                     this PC's date and time (docs/design.md section 77): "fixed" (2004-11-10
+ *                     07:18:24, with which every run is the same run) or YYYY-MM-DDThh:mm:ss
  *   --rollback N      for tests: once the game has booted, the machine keeps its last N frames for
  *                     going back to (docs/design.md section 55); nothing goes back by itself
  *   --synctest N[,P]  for tests: rollback, and every P vertical blanks (default 120) the machine
@@ -222,6 +228,13 @@ static int net_first;                   /* a blank backup with the network wante
 static SDL_AtomicInt frame_now;         /* the machine's vertical blank */
 static SDL_AtomicInt program_now;       /* 1 while the test program runs */
 
+/* The board's clock (docs/design.md section 77): this PC's date and time as the game starts, so
+ * that what the game takes from the date is not the same every run (which opponents come in
+ * which order, on which stages; a stage's clock). In a two-PC game both machines have the
+ * host's. clock_start 0: the machine's own fixed date (--clock fixed, and the artwork's run) */
+static const char *clock_arg;           /* --clock */
+static unsigned clock_start;            /* seconds from 1950-01-01, as the board counts them */
+static const char *clock_whose = "the fixed date";
 /* a two-PC game (session.h): what both machines start from, and this PC's
  * player. Its card is written only as the fingerprints of both PCs agree
  * (own_card_*): the card as it was at the newest check vertical blank both
@@ -868,6 +881,7 @@ static int session_start_up(void)
         sess_mine.network = cfg_.network;
         sess_mine.cards = cfg_.cards;
         sess_mine.delay = session_delay;
+        sess_mine.clock = clock_start;
         unsigned char *b = backup_read();
         sess_mine.backup = b != NULL;
         if (b)
@@ -887,8 +901,11 @@ static int session_start_up(void)
     start_cfg.region = sess.region;
     start_cfg.network = sess.network;
     start_cfg.cards = sess.cards;
-    if (!host)
+    if (!host) {
         backup_ok = 0;          /* the host's cabinet: this PC's backup.bin is not written */
+        clock_whose = sess.clock ? "the host's" : "the fixed date, as the host has it";
+    }
+    clock_start = sess.clock;
     logf_("two-PC game: this PC is player %d; the host's cabinet%s: coins %s, region %s, network %s, card units %s, "
           "%s; input delay %d", sess.side + 1, late_join ? " as the session began (a game going on)" : "",
           sess.coins == COINS_ARCADE ? "arcade" : "free play", settings_region_text[sess.region],
@@ -1039,6 +1056,8 @@ static Uint64 show_at(Uint64 start)
 static void gpu_frame(const struct view_gpu_frame *f)
 {
     gpu_render_submit_at(f, show_at(frame_due));
+    if (f->target)
+        return;         /* a pass into a texture (section 78): the frame it is for comes next, and is the one timed */
     handed_ns = SDL_GetTicksNS();
     if (sync_log)
         fprintf(sync_log, "M %u %llu\n", f->frame, (unsigned long long)handed_ns);
@@ -1269,6 +1288,12 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
         Uint64 t0 = SDL_GetTicksNS();
         unsigned long long h = game_machine_hash();
         logf_("state: vertical blank %u: %016llx (%.2f ms)", frame, h, (SDL_GetTicksNS() - t0) / 1e6);
+    }
+    {
+        int stage, chara[2];
+        if (game_machine_match(&stage, chara))
+            logf_("match: stage %d; player 1's character %d, player 2's %d (the game's own numbers), loading at "
+                  "vertical blank %u", stage, chara[0], chara[1], frame);
     }
     if (snap_path && frame == snap_at)
         game_machine_snapshot_ask();
@@ -1575,6 +1600,7 @@ static int SDLCALL machine_main(void *arg)
     }
     game_machine_cards(in_session ? sess.cards : cfg_.cards);
     game_machine_region(in_session ? sess.region : cfg_.region);
+    game_machine_clock(clock_start);
     int made = !game_machine_init(image_path, dimm_path, dimm_key, in_session || !silent, on_frame);
     if (made) {
         if (in_session) {
@@ -1586,6 +1612,12 @@ static int SDLCALL machine_main(void *arg)
         }
         if (resume_path && resume_file())
             made = 0;
+    }
+    if (made) {
+        int d[6];
+        game_machine_clock_get(d);
+        logf_("clock: the board's clock started at %04d-%02d-%02d %02d:%02d:%02d (%s)", d[0], d[1], d[2], d[3], d[4],
+              d[5], resume_path ? "the snapshot's" : clock_whose);
     }
     if (!made) {
         SDL_SetAtomicInt(&machine_state, 2);
@@ -3425,6 +3457,17 @@ int main(int argc, char **argv)
             snap_path = argv[++i];
         }
         else if (!strcmp(a, "--resume") && v) resume_path = argv[++i];
+        else if (!strcmp(a, "--cpu-passes")) gpu_render_passes(0);
+        else if (!strcmp(a, "--clock") && v) {
+            int y, mo, d, h, mi, sec;
+            clock_arg = argv[++i];
+            if (strcmp(clock_arg, "fixed") &&
+                (SDL_sscanf(clock_arg, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &sec) != 6 ||
+                 !(clock_start = game_machine_clock_seconds(y, mo, d, h, mi, sec)))) {
+                fprintf(stderr, "vf4ft: --clock: fixed, or YYYY-MM-DDThh:mm:ss (1950 to 2085)\n");
+                return 2;
+            }
+        }
         else if (!strcmp(a, "--rollback") && v) {
             int n = atoi(argv[++i]);
             if (n < 1 || n > 60) { fprintf(stderr, "vf4ft: --rollback: 1 to 60\n"); return 2; }
@@ -3652,6 +3695,22 @@ int main(int argc, char **argv)
           settings_occlusion_name[cfg_.occlusion], settings_raytracing_name[cfg_.raytracing],
           settings_rayquality_name[cfg_.rayquality]);
     logf_("settings: gpu %s, display %s", cfg_.gpu[0] ? cfg_.gpu : "auto", cfg_.display[0] ? cfg_.display : "auto");
+    /* the board's clock (section 77): this PC's, but for --clock and the artwork's run (art.h:
+     * its scenes are found by their vertical blanks, in the run the fixed date gives) */
+    if (clock_arg) {
+        if (clock_start)
+            clock_whose = "--clock";
+    } else if (!art_dir) {
+        SDL_Time now;
+        SDL_DateTime dt;
+        if (SDL_GetCurrentTime(&now) && SDL_TimeToDateTime(now, &dt, true))
+            clock_start = game_machine_clock_seconds(dt.year, dt.month, dt.day, dt.hour, dt.minute,
+                                                     dt.second > 59 ? 59 : dt.second);
+        if (clock_start)
+            clock_whose = "this PC's date and time";
+        else
+            logf_("clock: this PC's date and time could not be read: the fixed date instead");
+    }
     if (in_session)
         logf_("settings: a two-PC game: the stage's far objects are drawn for a 21:9 picture on both PCs");
     session_rollback(cfg_.latency);
@@ -4464,6 +4523,11 @@ int main(int argc, char **argv)
         if (use_gpu || gf)
             logf_("GPU renderer: %u frames drawn, at most %u triangles; %u frames had translucent volumes (not drawn)",
                   gf, gt, gv);
+        unsigned gp, gs;
+        gpu_render_pass_stats(&gp, &gs);
+        if (gp)
+            logf_("GPU renderer: %u passes into textures drawn (a stage's reflection); %u frames used one not drawn "
+                  "for them", gp, gs);
         unsigned rf;
         double rms, rfirst;
         gpu_render_rt_stats(&rf, &rms, &rfirst);

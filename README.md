@@ -573,6 +573,9 @@ a slow chip. For a PC whose
 processor cannot keep the game at full speed, the same tab has Lighting:
 GPU (the graphics chip works out the lights) and Frame skip: Every other
 frame (the game keeps its full speed and 30 pictures a second are drawn).
+With the GPU renderer the graphics chip also draws the reflection a stage
+with water has, which the processor drew before
+([design.md s78](docs/design.md#78-a-stages-reflection-drawn-by-the-graphics-chip-2026-11-25)).
 Picture, window size,
 scaling, fullscreen, display, renderer, GPU, internal resolution and volume
 change at once (the launcher's window follows Renderer and GPU too). A GPU
@@ -599,6 +602,14 @@ it. Changes are saved to
 the launcher's: each player's controller, buttons and keys can be changed
 here too, so the launcher is not needed for them
 ([design.md s72](docs/design.md#72-the-controls-changed-in-the-games-menu-too-2026-11-24)).
+
+**The cabinet's clock** is your PC's: the game starts with your date and
+time, as a cabinet runs on its battery clock (in a two-PC game both PCs
+have the host's). The game uses the date: in a one-player game the order
+of the opponents, and so of their stages, goes by the day of the month.
+The log (`vf4ft.log`) says what the clock started at, and names the stage
+and the two characters of each match by the game's own numbers
+([design.md s77](docs/design.md#77-the-boards-clock-is-the-pcs-and-the-log-names-each-matchs-stage-2026-11-25)).
 
 **Cards** keep a player's character, rank, record, items and colors, as a
 cabinet's card did, and a card holds its player to its character: the

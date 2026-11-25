@@ -45,6 +45,13 @@
  * fills the picture in from them (rt_fill.frag: each pixel from the traced pixels around it that
  * lie about as deep), and the pass that goes on first puts the picture as it was back where
  * stencil bit 3 is not set.
+ *
+ * A pass into a texture (section 78: a stage's reflection in its water) comes from the machine
+ * before the frame that uses it, and is kept for it (pend). It is drawn first, by steps 1 to 4
+ * at one pixel a pixel, into a target picture of its own (t_pass), with buffers of its own; the
+ * frame's states that name that picture take their texels from it (scene.frag). With ray tracing
+ * wanted the machine's thread draws such passes itself, into texture memory, as it did before:
+ * the ray tracing's device has the texel arena and not these pictures.
  */
 #include "gpu_render.h"
 #include "view.h"
@@ -77,13 +84,35 @@ typedef struct packet {
     size_t rt_s_cap;
     Uint64 pts;         /* when it is to be shown, by the game's clock (0: as it comes) */
     size_t up_end;      /* the texel uploads up to here are this frame's and those before it */
+    struct held *pass;  /* the passes into textures made for it (section 78), in their order: VIEW_GPU_TARGETS */
+    int npass;
 } packet;
+
+/* a pass into a texture as handed over, in memory of its own */
+typedef struct held {
+    view_gpu_frame f;
+    view_gpu_vertex *v;
+    size_t v_cap;
+    view_gpu_state *st;
+    size_t st_cap;
+    view_gpu_draw *d;
+    size_t d_cap;
+    float *vol;
+    size_t vol_cap;
+    view_gpu_volume *vols;
+    size_t vols_cap;
+    float *lit, *lights;
+    size_t lit_cap, lights_cap;
+} held;
 
 /* made once and kept: the machine's thread may hand a frame over while the
  * window's thread stops the renderer or starts it again (docs/design.md
  * section 53) */
 static SDL_Mutex *lock;
 static packet pk[4];
+static held pk_pass[4][VIEW_GPU_TARGETS];
+static held pend[VIEW_GPU_TARGETS];     /* the passes into textures since the last frame, for the next one */
+static int npend;
 static int pk_wait[2], pk_nwait;        /* the packets waiting to be drawn, oldest first (2 at most) */
 static int pk_reading = -1;             /* the one the window draws */
 static unsigned stat_submitted, stat_replaced;  /* frames from the machine; those replaced before they were drawn */
@@ -118,6 +147,39 @@ void gpu_render_submit(const view_gpu_frame *f)
     gpu_render_submit_at(f, 0);
 }
 
+/* a pass into a texture into memory of its own (the lock is held) */
+static int hold(held *h, const view_gpu_frame *f)
+{
+    if (GROW(h->v, h->v_cap, f->nv) || GROW(h->st, h->st_cap, f->nst) || GROW(h->d, h->d_cap, f->ndraws) ||
+        GROW(h->vol, h->vol_cap, (size_t)f->nvol_xyz * 3) || GROW(h->vols, h->vols_cap, f->nvols) ||
+        GROW(h->lit, h->lit_cap, (size_t)f->nlit + 1) || GROW(h->lights, h->lights_cap, (size_t)f->nlights + 1))
+        return -1;
+    h->f = *f;
+    SDL_memcpy(h->v, f->v, (size_t)f->nv * sizeof *h->v);
+    SDL_memcpy(h->st, f->st, (size_t)f->nst * sizeof *h->st);
+    SDL_memcpy(h->d, f->draws, (size_t)f->ndraws * sizeof *h->d);
+    SDL_memcpy(h->vol, f->vol_xyz, (size_t)f->nvol_xyz * 3 * sizeof(float));
+    SDL_memcpy(h->vols, f->vols, (size_t)f->nvols * sizeof *h->vols);
+    if (f->nlit)
+        SDL_memcpy(h->lit, f->lit, (size_t)f->nlit * sizeof(float));
+    if (f->nlights)
+        SDL_memcpy(h->lights, f->lights, (size_t)f->nlights * sizeof(float));
+    h->f.v = h->v;
+    h->f.st = h->st;
+    h->f.draws = h->d;
+    h->f.vol_xyz = h->vol;
+    h->f.vols = h->vols;
+    h->f.lit = h->lit;
+    h->f.lights = h->lights;
+    h->f.rt_tris = NULL;
+    h->f.rt_strips = NULL;
+    h->f.nrt_tris = h->f.nrt_strips = 0;
+    h->f.dirty = NULL;
+    h->f.ndirty = 0;
+    h->f.arena = NULL;
+    return 0;
+}
+
 void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
 {
     SDL_LockMutex(lock);
@@ -142,6 +204,23 @@ void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
         up[up_n++] = n;
         SDL_memcpy(up + up_n, f->arena + at, (size_t)n * 4);
         up_n += n;
+    }
+    if (f->target) {
+        /* a pass into a texture (section 78): kept for the frame that comes next and uses it. One
+         * for the same picture that no frame came for goes; the order they came in stays */
+        int k = 0;
+        while (k < npend && pend[k].f.target != f->target)
+            k++;
+        if (k < npend) {
+            held old = pend[k];
+            for (int i = k; i + 1 < npend; i++)
+                pend[i] = pend[i + 1];
+            pend[--npend] = old;
+        }
+        if (npend < VIEW_GPU_TARGETS && !hold(&pend[npend], f))
+            npend++;
+        SDL_UnlockMutex(lock);
+        return;
     }
     stat_submitted++;
     int w = 0;
@@ -183,6 +262,14 @@ void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
     p->f.arena = NULL;
     p->pts = pts;
     p->up_end = up_n;
+    p->pass = pk_pass[w];
+    for (int i = 0; i < npend; i++) {
+        held t = p->pass[i];
+        p->pass[i] = pend[i];
+        pend[i] = t;
+    }
+    p->npass = npend;
+    npend = 0;
     if (pk_nwait == 2) {        /* no room: the oldest waiting is never drawn */
         stat_replaced++;
         pk_wait[0] = pk_wait[1];
@@ -249,6 +336,18 @@ static Uint32 xfer_rt_size;
 static unsigned stat_rt_frames;
 static double stat_rt_ms, stat_rt_first_ms;
 static int rt_first;
+/* passes into textures (section 78): asked for (gpu_render_passes: on, but for a test); each
+ * target picture with its depth buffer, as last made; a texture to bind where there is none; the
+ * buffers a pass's triangles and states go through, apart from the frame's */
+static int pass_want = 1;
+static SDL_GPUTexture *t_pass[VIEW_GPU_TARGETS], *t_pass_ds[VIEW_GPU_TARGETS], *t_none;
+static Uint32 t_pass_w[VIEW_GPU_TARGETS], t_pass_h[VIEW_GPU_TARGETS];
+static SDL_GPUBuffer *bp_vert, *bp_state, *bp_vol, *bp_lit, *bp_lights;
+static Uint32 bp_vert_size, bp_state_size, bp_vol_size, bp_lit_size, bp_lights_size;
+static SDL_GPUTransferBuffer *xfer_p;
+static Uint32 xfer_p_size;
+static unsigned stat_passes, stat_pass_stale;
+static void passes_follow(void);
 static SDL_GPUShader *sh_ao_f, *sh_ao_blur_f, *sh_ao_apply_f;
 static SDL_GPUGraphicsPipeline *pl_ao, *pl_ao_blur, *pl_ao_apply;
 static SDL_GPUTexture *t_ao, *t_ao_smooth;
@@ -424,6 +523,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     up_n = 0;
     up_all = 1;
     pk_nwait = 0;
+    npend = 0;
     SDL_UnlockMutex(lock);
     if (!(SDL_GetGPUShaderFormats(gpu) & SDL_GPU_SHADERFORMAT_SPIRV))
         return SDL_SetError("the GPU device takes no SPIR-V (it is not Vulkan)"), -1;
@@ -431,7 +531,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
                                              SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
                     ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
     sh_scene_v = shader(spv_scene_vert, sizeof spv_scene_vert, SDL_GPU_SHADERSTAGE_VERTEX, 2, 1, 0);
-    sh_scene_f = shader(spv_scene_frag, sizeof spv_scene_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1, 0);
+    sh_scene_f = shader(spv_scene_frag, sizeof spv_scene_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1, VIEW_GPU_TARGETS);
     sh_vol_v = shader(spv_volume_vert, sizeof spv_volume_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
     sh_rect_v = shader(spv_rect_vert, sizeof spv_rect_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
     sh_bg_f = shader(spv_background_frag, sizeof spv_background_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 0);
@@ -577,6 +677,19 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     b_tex = SDL_CreateGPUBuffer(gpu, &bi);
     if (!b_tex)
         return -1;
+    /* the scene's shader reads four target pictures (section 78): this one stands where there is none */
+    SDL_GPUTextureCreateInfo ni;
+    SDL_zero(ni);
+    ni.type = SDL_GPU_TEXTURETYPE_2D;
+    ni.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ni.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ni.width = ni.height = 1;
+    ni.layer_count_or_depth = 1;
+    ni.num_levels = 1;
+    t_none = SDL_CreateGPUTexture(gpu, &ni);
+    if (!t_none || !smp_texel)
+        return -1;
+    passes_follow();
     return 0;
 }
 
@@ -671,6 +784,19 @@ void gpu_render_raytracing(const rt_backend *backend, int quality)
     rt_want = backend;
     rt_failed = 0;
     view_host_rt(backend != NULL);
+    passes_follow();
+}
+
+void gpu_render_passes(int on)
+{
+    pass_want = on;
+    passes_follow();
+}
+
+void gpu_render_pass_stats(unsigned *passes, unsigned *stale)
+{
+    *passes = stat_passes;
+    *stale = stat_pass_stale;
 }
 
 void gpu_render_rt_stats(unsigned *frames, double *ms, double *first_ms)
@@ -720,6 +846,278 @@ static void rect(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, float x0, flo
     rect_u u = { { x0, y0, x1, y1 }, { (float)f->w, (float)f->h, 0, 0 } };
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
     SDL_DrawGPUPrimitives(rp, 6, 1, 0, 0);
+}
+
+/* ---- a scene's lists, for a frame and for a pass into a texture ---- */
+
+typedef struct scene_fu {
+    float p0[4];
+    Uint32 p1[4];
+    Uint32 fog[132];
+} scene_fu;
+
+typedef struct scene_bufs {
+    SDL_GPUBuffer *vert, *state, *vol, *lit, *lights;
+    SDL_GPUTextureSamplerBinding pass[VIEW_GPU_TARGETS];    /* the target pictures its states may name */
+    float scale;                        /* the target's pixels a pixel of the scene */
+} scene_bufs;
+
+static void scene_fu_set(scene_fu *fu, const view_gpu_frame *f, float scale_)
+{
+    SDL_zerop(fu);
+    fu->p0[0] = scale_;
+    fu->p0[1] = (float)f->alpha_ref;
+    fu->p0[2] = f->fog_density;
+    fu->p1[0] = (Uint32)f->fog_on;
+    fu->p1[1] = f->fog_col;
+    fu->p1[2] = f->fog_col_vert;
+    SDL_memcpy(fu->fog, f->fog_tab, sizeof f->fog_tab);
+}
+
+/* 1. the background plane */
+static void scene_background(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, const view_gpu_frame *f, float scale_)
+{
+    SDL_BindGPUGraphicsPipeline(rp, pl_bg);
+    float bg[16] = { f->bg_c0[0], f->bg_c0[1], f->bg_c0[2], scale_, f->bg_ga[0], f->bg_ga[1], f->bg_ga[2], f->bg_x0,
+                     f->bg_gb[0], f->bg_gb[1], f->bg_gb[2], f->bg_y0, (float)(f->fog_col >> 16 & 255),
+                     (float)(f->fog_col >> 8 & 255), (float)(f->fog_col & 255), (float)f->bg_fog };
+    SDL_PushGPUFragmentUniformData(cmd, 0, bg, sizeof bg);
+    rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+}
+
+/* 2. the opaque and punch-through lists (phase 0), or 4. the translucent list (phase 1) */
+static void scene_lists(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, const view_gpu_frame *f, int phase,
+                        const scene_bufs *b, scene_fu *fu, const float vu[4])
+{
+    SDL_GPUBuffer *storage[2] = { b->state, b_tex };
+    SDL_GPUBuffer *vstorage[2] = { b->lit, b->lights };     /* the vertex shader's: lighting on the GPU */
+    SDL_GPUBufferBinding vbind = { b->vert, 0 };
+    int list_pushed = -1;
+    SDL_GPUGraphicsPipeline *bound = NULL;
+    for (Uint32 i = 0; i < f->ndraws; i++) {
+        const view_gpu_draw *d = &f->draws[i];
+        if ((d->list == 2) != phase)
+            continue;
+        SDL_GPUGraphicsPipeline *pl = scene_pipeline(d);
+        if (!pl)
+            continue;
+        if (pl != bound) {
+            SDL_BindGPUGraphicsPipeline(rp, pl);
+            SDL_BindGPUVertexBuffers(rp, 0, &vbind, 1);
+            SDL_BindGPUFragmentSamplers(rp, 0, b->pass, VIEW_GPU_TARGETS);
+            SDL_BindGPUFragmentStorageBuffers(rp, 0, storage, 2);
+            SDL_BindGPUVertexStorageBuffers(rp, 0, vstorage, 2);
+            SDL_PushGPUVertexUniformData(cmd, 0, vu, 4 * sizeof(float));
+            bound = pl;
+        }
+        if ((int)d->list != list_pushed) {
+            fu->p0[3] = (float)d->list;
+            SDL_PushGPUFragmentUniformData(cmd, 0, fu, sizeof *fu);
+            list_pushed = (int)d->list;
+        }
+        if (d->list != 2)
+            SDL_SetGPUStencilReference(rp, (Uint8)((d->shadow ? 1 : 0) | (d->solid ? 8 : 0)));
+        SDL_DrawGPUPrimitives(rp, d->count, 1, d->first, 0);
+    }
+}
+
+/* 3. the opaque list's volumes, then the shadow */
+static void scene_shadows(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, const view_gpu_frame *f, const scene_bufs *b,
+                          const float vu[4])
+{
+    SDL_GPUBufferBinding volbind = { b->vol, 0 };
+    float zero[4] = { 0, 0, 0, 0 };
+    for (Uint32 n = 0; n < f->nvols; n++) {
+        const view_gpu_volume *v = &f->vols[n];
+        if (!v->count)
+            continue;
+        SDL_BindGPUGraphicsPipeline(rp, pl_vol);
+        SDL_BindGPUVertexBuffers(rp, 0, &volbind, 1);
+        SDL_PushGPUVertexUniformData(cmd, 0, vu, 4 * sizeof(float));
+        SDL_PushGPUFragmentUniformData(cmd, 0, zero, sizeof zero);
+        SDL_DrawGPUPrimitives(rp, v->count, 1, v->first, 0);
+        SDL_BindGPUGraphicsPipeline(rp, pl_resolve);
+        SDL_SetGPUStencilReference(rp, v->kind == 1 ? 4 : 0);
+        float x0 = v->x0 < 0 ? 0 : v->x0, y0 = v->y0 < 0 ? 0 : v->y0;
+        float x1 = v->x1 + 1 > (float)f->w ? (float)f->w : v->x1 + 1, y1 = v->y1 + 1 > (float)f->h ? (float)f->h : v->y1 + 1;
+        if (x1 > x0 && y1 > y0)
+            rect(cmd, rp, x0, y0, x1, y1, f);
+    }
+    SDL_BindGPUGraphicsPipeline(rp, pl_shadow);
+    SDL_SetGPUStencilReference(rp, 5);
+    float s = (float)f->shadow_scale / 256.0f, col[4] = { s, s, s, 1 };
+    SDL_PushGPUFragmentUniformData(cmd, 0, col, sizeof col);
+    rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+}
+
+/* ---- passes into textures (section 78) ---- */
+
+/* the machine's thread hands them over when they are wanted, the device can, and no ray tracing
+ * is wanted (its device has the arena's texels, not these pictures) */
+static void passes_follow(void)
+{
+    view_host_gpu_passes(gpu && t_none && pass_want && !rt_want);
+}
+
+/* A state names a target picture: it is there, at the size the state's texture says? If not (the
+ * pass never came: a frame of the machine's that was never drawn, a renderer just started), the
+ * state is drawn without a texture this once. states: the copy that goes to the GPU. drawn: bit k
+ * set: picture k was drawn for this frame. Returns how many states took a picture not drawn for it */
+static unsigned pass_states(view_gpu_state *states, Uint32 n, unsigned drawn, int self)
+{
+    unsigned stale = 0;
+    for (Uint32 i = 0; i < n; i++) {
+        view_gpu_state *s = &states[i];
+        if (!s->target)
+            continue;
+        Uint32 k = s->target - 1;
+        if (k >= VIEW_GPU_TARGETS || (int)k == self || !t_pass[k] || t_pass_w[k] != s->tex_w + 2 * s->target_ox ||
+            t_pass_h[k] != s->tex_h) {
+            s->target = s->target_ox = 0;
+            s->tex_w = 0;
+            stale++;
+        } else if (!(drawn >> k & 1)) {
+            stale++;
+        }
+    }
+    return stale;
+}
+
+static void scene_pass_pictures(scene_bufs *b, int self)
+{
+    for (int k = 0; k < VIEW_GPU_TARGETS; k++) {
+        b->pass[k].texture = t_pass[k] && k != self ? t_pass[k] : t_none;
+        b->pass[k].sampler = smp_texel;
+    }
+}
+
+/* the target picture a pass into a texture is drawn into, made (again) when the pass's size is
+ * another. Returns its bit, or 0: none */
+static unsigned pass_picture(const view_gpu_frame *f)
+{
+    int k = f->target - 1;
+    if (k < 0 || k >= VIEW_GPU_TARGETS || f->w < 1 || f->h < 1 || f->w > 4096 || f->h > 4096)
+        return 0;
+    if (!t_pass[k] || t_pass_w[k] != (Uint32)f->w || t_pass_h[k] != (Uint32)f->h) {
+        if (t_pass[k])
+            SDL_ReleaseGPUTexture(gpu, t_pass[k]);
+        if (t_pass_ds[k])
+            SDL_ReleaseGPUTexture(gpu, t_pass_ds[k]);
+        SDL_GPUTextureCreateInfo ti;
+        SDL_zero(ti);
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = (Uint32)f->w;
+        ti.height = (Uint32)f->h;
+        ti.layer_count_or_depth = 1;
+        ti.num_levels = 1;
+        t_pass[k] = SDL_CreateGPUTexture(gpu, &ti);
+        ti.format = ds_format;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        t_pass_ds[k] = SDL_CreateGPUTexture(gpu, &ti);
+        t_pass_w[k] = (Uint32)f->w;
+        t_pass_h[k] = (Uint32)f->h;
+        if (!t_pass[k] || !t_pass_ds[k]) {
+            if (t_pass[k])
+                SDL_ReleaseGPUTexture(gpu, t_pass[k]);
+            if (t_pass_ds[k])
+                SDL_ReleaseGPUTexture(gpu, t_pass_ds[k]);
+            t_pass[k] = t_pass_ds[k] = NULL;
+            t_pass_w[k] = t_pass_h[k] = 0;
+            return 0;
+        }
+    }
+    return 1u << k;
+}
+
+/* one pass into a texture: into its target picture, at one pixel a pixel. drawn: the pictures
+ * drawn for this frame before it. Returns its picture's bit, or 0 */
+static unsigned draw_pass(SDL_GPUCommandBuffer *cmd, const held *h, unsigned drawn)
+{
+    const view_gpu_frame *f = &h->f;
+    int k = f->target - 1;
+    if (!pass_picture(f))
+        return 0;
+    Uint32 vb = f->nv * (Uint32)sizeof(view_gpu_vertex), sb = f->nst * (Uint32)sizeof(view_gpu_state);
+    Uint32 volb = f->nvol_xyz * 3 * (Uint32)sizeof(float);
+    Uint32 litb = f->nlit * (Uint32)sizeof(float), lsb = f->nlights * (Uint32)sizeof(float);
+    Uint32 need = vb + sb + volb + litb + lsb + 256;
+    if (need > xfer_p_size) {
+        if (xfer_p)
+            SDL_ReleaseGPUTransferBuffer(gpu, xfer_p);
+        xfer_p_size = 1u << 20;
+        while (xfer_p_size < need)
+            xfer_p_size *= 2;
+        SDL_GPUTransferBufferCreateInfo ti;
+        SDL_zero(ti);
+        ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        ti.size = xfer_p_size;
+        xfer_p = SDL_CreateGPUTransferBuffer(gpu, &ti);
+        if (!xfer_p)
+            xfer_p_size = 0;
+    }
+    Uint8 *m = xfer_p ? SDL_MapGPUTransferBuffer(gpu, xfer_p, true) : NULL;
+    if (!m || buffer_room(&bp_vert, &bp_vert_size, vb + 16, SDL_GPU_BUFFERUSAGE_VERTEX) ||
+        buffer_room(&bp_state, &bp_state_size, sb + 64, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ) ||
+        buffer_room(&bp_vol, &bp_vol_size, volb + 16, SDL_GPU_BUFFERUSAGE_VERTEX) ||
+        buffer_room(&bp_lit, &bp_lit_size, litb + 64, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ) ||
+        buffer_room(&bp_lights, &bp_lights_size, lsb + 64, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ)) {
+        if (m)
+            SDL_UnmapGPUTransferBuffer(gpu, xfer_p);
+        return 0;
+    }
+    Uint32 o_s = vb, o_vol = o_s + sb, o_lit = o_vol + volb, o_ls = o_lit + litb;
+    SDL_memcpy(m, f->v, vb);
+    SDL_memcpy(m + o_s, f->st, sb);
+    pass_states((view_gpu_state *)(void *)(m + o_s), f->nst, drawn, k);
+    SDL_memcpy(m + o_vol, f->vol_xyz, volb);
+    if (litb)
+        SDL_memcpy(m + o_lit, f->lit, litb);
+    if (lsb)
+        SDL_memcpy(m + o_ls, f->lights, lsb);
+    SDL_UnmapGPUTransferBuffer(gpu, xfer_p);
+    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+    const struct { SDL_GPUBuffer *b; Uint32 at, n; } parts[5] = {
+        { bp_vert, 0, vb }, { bp_state, o_s, sb }, { bp_vol, o_vol, volb }, { bp_lit, o_lit, litb }, { bp_lights, o_ls, lsb } };
+    for (int i = 0; i < 5; i++)
+        if (parts[i].n) {
+            SDL_GPUTransferBufferLocation src = { xfer_p, parts[i].at };
+            SDL_GPUBufferRegion dst = { parts[i].b, 0, parts[i].n };
+            SDL_UploadToGPUBuffer(cp, &src, &dst, true);
+        }
+    SDL_EndGPUCopyPass(cp);
+
+    SDL_GPUColorTargetInfo ct;
+    SDL_zero(ct);
+    ct.texture = t_pass[k];
+    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.clear_color = (SDL_FColor){ 0, 0, 0, 1 };
+    SDL_GPUDepthStencilTargetInfo dt;
+    SDL_zero(dt);
+    dt.texture = t_pass_ds[k];
+    dt.clear_depth = 0;
+    dt.load_op = SDL_GPU_LOADOP_CLEAR;
+    dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
+    dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    dt.clear_stencil = 0;
+    SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+    float zs = f->zmax > 0 ? 1.0f / (f->zmax * 1.0001f) : 1.0f;
+    float vu[4] = { (float)f->w, (float)f->h, zs, 0 };
+    scene_bufs b = { bp_vert, bp_state, bp_vol, bp_lit, bp_lights, { { NULL, NULL } }, 1.0f };
+    scene_pass_pictures(&b, k);
+    scene_fu fu;
+    scene_fu_set(&fu, f, 1.0f);
+    scene_background(cmd, rp, f, 1.0f);
+    scene_lists(cmd, rp, f, 0, &b, &fu, vu);
+    if (f->nvols && f->shadow_scale < 256)
+        scene_shadows(cmd, rp, f, &b, vu);
+    scene_lists(cmd, rp, f, 1, &b, &fu, vu);
+    SDL_EndGPURenderPass(rp);
+    stat_passes++;
+    return 1u << k;
 }
 
 static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
@@ -787,6 +1185,13 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     Uint32 o_v = (Uint32)up_bytes, o_s = o_v + vb, o_vol = o_s + sb, o_lit = o_vol + volb, o_ls = o_lit + litb;
     SDL_memcpy(m + o_v, f->v, vb);
     SDL_memcpy(m + o_s, f->st, sb);
+    /* the target pictures this frame's passes into textures are drawn into below (section 78): made
+     * here, where the frame's states that name one are checked against them */
+    unsigned pass_bits = 0;
+    for (int i = 0; i < pkt->npass; i++)
+        pass_bits |= pass_picture(&pkt->pass[i].f);
+    if (pass_states((view_gpu_state *)(void *)(m + o_s), f->nst, pass_bits, -1))
+        stat_pass_stale++;
     SDL_memcpy(m + o_vol, f->vol_xyz, volb);
     if (litb)
         SDL_memcpy(m + o_lit, f->lit, litb);
@@ -829,6 +1234,11 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
         SDL_UploadToGPUBuffer(cp, &src, &dst, true);
     }
     SDL_EndGPUCopyPass(cp);
+
+    /* the passes into textures made for this frame (section 78), before anything of the frame's is drawn */
+    unsigned pass_done = 0;
+    for (int i = 0; i < pkt->npass; i++)
+        pass_done |= draw_pass(cmd, &pkt->pass[i], pass_done);
 
     /* ambient occlusion: asked for, the device can, and the frame has a 3D scene whose projection is known */
     int ao = ao_want && ao_can && f->proj[0] != 0 && f->proj[2] != 0;
@@ -930,87 +1340,19 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     float vu[4] = { (float)f->w, (float)f->h, zs, 0 };
 
     /* 1. the background plane */
-    SDL_BindGPUGraphicsPipeline(rp, pl_bg);
-    float bg[16] = { f->bg_c0[0], f->bg_c0[1], f->bg_c0[2], (float)scale, f->bg_ga[0], f->bg_ga[1], f->bg_ga[2], f->bg_x0,
-                     f->bg_gb[0], f->bg_gb[1], f->bg_gb[2], f->bg_y0, (float)(f->fog_col >> 16 & 255),
-                     (float)(f->fog_col >> 8 & 255), (float)(f->fog_col & 255), (float)f->bg_fog };
-    SDL_PushGPUFragmentUniformData(cmd, 0, bg, sizeof bg);
-    rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+    scene_background(cmd, rp, f, (float)scale);
 
-    /* the scene's uniforms */
-    struct {
-        float p0[4];
-        Uint32 p1[4];
-        Uint32 fog[132];
-    } fu;
-    SDL_zero(fu);
-    fu.p0[0] = (float)scale;
-    fu.p0[1] = (float)f->alpha_ref;
-    fu.p0[2] = f->fog_density;
-    fu.p1[0] = (Uint32)f->fog_on;
-    fu.p1[1] = f->fog_col;
-    fu.p1[2] = f->fog_col_vert;
-    SDL_memcpy(fu.fog, f->fog_tab, sizeof f->fog_tab);
-    SDL_GPUBuffer *storage[2] = { b_state, b_tex };
-    SDL_GPUBuffer *vstorage[2] = { b_lit, b_lights };   /* the vertex shader's: lighting on the GPU */
-    SDL_GPUBufferBinding vbind = { b_vert, 0 };
-    int list_pushed = -1;
-    SDL_GPUGraphicsPipeline *bound = NULL;
+    /* the scene's uniforms, its buffers, and the target pictures its states may name */
+    scene_fu fu;
+    scene_fu_set(&fu, f, (float)scale);
+    scene_bufs sb_ = { b_vert, b_state, b_vol, b_lit, b_lights, { { NULL, NULL } }, (float)scale };
+    scene_pass_pictures(&sb_, -1);
 
     /* 2. opaque and punch-through; 4. translucent (after the volumes) */
     for (int phase = 0; phase < 2; phase++) {
-        for (Uint32 i = 0; i < f->ndraws; i++) {
-            const view_gpu_draw *d = &f->draws[i];
-            if ((d->list == 2) != phase)
-                continue;
-            SDL_GPUGraphicsPipeline *pl = scene_pipeline(d);
-            if (!pl)
-                continue;
-            if (pl != bound) {
-                SDL_BindGPUGraphicsPipeline(rp, pl);
-                SDL_BindGPUVertexBuffers(rp, 0, &vbind, 1);
-                SDL_BindGPUFragmentStorageBuffers(rp, 0, storage, 2);
-                SDL_BindGPUVertexStorageBuffers(rp, 0, vstorage, 2);
-                SDL_PushGPUVertexUniformData(cmd, 0, vu, sizeof vu);
-                bound = pl;
-            }
-            if ((int)d->list != list_pushed) {
-                fu.p0[3] = (float)d->list;
-                SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof fu);
-                list_pushed = (int)d->list;
-            }
-            if (d->list != 2)
-                SDL_SetGPUStencilReference(rp, (Uint8)((d->shadow ? 1 : 0) | (d->solid ? 8 : 0)));
-            SDL_DrawGPUPrimitives(rp, d->count, 1, d->first, 0);
-        }
-        if (phase == 0 && f->nvols && f->shadow_scale < 256 && !rt) {
-            /* 3. the opaque list's volumes, then the shadow */
-            SDL_GPUBufferBinding volbind = { b_vol, 0 };
-            float zero[4] = { 0, 0, 0, 0 };
-            for (Uint32 n = 0; n < f->nvols; n++) {
-                const view_gpu_volume *v = &f->vols[n];
-                if (!v->count)
-                    continue;
-                SDL_BindGPUGraphicsPipeline(rp, pl_vol);
-                SDL_BindGPUVertexBuffers(rp, 0, &volbind, 1);
-                SDL_PushGPUVertexUniformData(cmd, 0, vu, sizeof vu);
-                SDL_PushGPUFragmentUniformData(cmd, 0, zero, sizeof zero);
-                SDL_DrawGPUPrimitives(rp, v->count, 1, v->first, 0);
-                SDL_BindGPUGraphicsPipeline(rp, pl_resolve);
-                SDL_SetGPUStencilReference(rp, v->kind == 1 ? 4 : 0);
-                float x0 = v->x0 < 0 ? 0 : v->x0, y0 = v->y0 < 0 ? 0 : v->y0;
-                float x1 = v->x1 + 1 > (float)f->w ? (float)f->w : v->x1 + 1, y1 = v->y1 + 1 > (float)f->h ? (float)f->h : v->y1 + 1;
-                if (x1 > x0 && y1 > y0)
-                    rect(cmd, rp, x0, y0, x1, y1, f);
-            }
-            SDL_BindGPUGraphicsPipeline(rp, pl_shadow);
-            SDL_SetGPUStencilReference(rp, 5);
-            float s = (float)f->shadow_scale / 256.0f, col[4] = { s, s, s, 1 };
-            SDL_PushGPUFragmentUniformData(cmd, 0, col, sizeof col);
-            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
-            bound = NULL;
-            list_pushed = -1;
-        }
+        scene_lists(cmd, rp, f, phase, &sb_, &fu, vu);
+        if (phase == 0 && f->nvols && f->shadow_scale < 256 && !rt)
+            scene_shadows(cmd, rp, f, &sb_, vu);        /* 3. the opaque list's volumes, then the shadow */
         if (phase == 0 && rt) {
             /* The traced light (section 74), where the ambient occlusion would go in: into the
              * second color target the picture as it is, then, where bit 3 is set, the picture
@@ -1053,8 +1395,6 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
                 SDL_BindGPUFragmentSamplers(rp, 0, five, 3);
                 rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
             }
-            bound = NULL;
-            list_pushed = -1;
         }
         if (phase == 0 && ao) {
             /* The ambient occlusion (section 73), between the solid lists and the translucent one.
@@ -1092,8 +1432,6 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
             SDL_GPUTextureSamplerBinding smooth = { t_ao_smooth, smp_texel };
             SDL_BindGPUFragmentSamplers(rp, 0, &smooth, 1);
             rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
-            bound = NULL;
-            list_pushed = -1;
         }
     }
     SDL_EndGPURenderPass(rp);
@@ -1185,6 +1523,29 @@ void gpu_render_quit(void)
         SDL_ReleaseGPUTexture(gpu, t_ao_smooth);
     if (smp_texel)
         SDL_ReleaseGPUSampler(gpu, smp_texel);
+    /* the passes into textures: the machine's thread draws them itself until a renderer is there again */
+    view_host_gpu_passes(0);
+    for (int k = 0; k < VIEW_GPU_TARGETS; k++) {
+        if (t_pass[k])
+            SDL_ReleaseGPUTexture(gpu, t_pass[k]);
+        if (t_pass_ds[k])
+            SDL_ReleaseGPUTexture(gpu, t_pass_ds[k]);
+        t_pass[k] = t_pass_ds[k] = NULL;
+        t_pass_w[k] = t_pass_h[k] = 0;
+    }
+    if (t_none)
+        SDL_ReleaseGPUTexture(gpu, t_none);
+    t_none = NULL;
+    SDL_GPUBuffer *pbs[] = { bp_vert, bp_state, bp_vol, bp_lit, bp_lights };
+    for (int i = 0; i < 5; i++)
+        if (pbs[i])
+            SDL_ReleaseGPUBuffer(gpu, pbs[i]);
+    bp_vert = bp_state = bp_vol = bp_lit = bp_lights = NULL;
+    bp_vert_size = bp_state_size = bp_vol_size = bp_lit_size = bp_lights_size = 0;
+    if (xfer_p)
+        SDL_ReleaseGPUTransferBuffer(gpu, xfer_p);
+    xfer_p = NULL;
+    xfer_p_size = 0;
     pl_ao = pl_ao_blur = pl_ao_apply = NULL;
     sh_ao_f = sh_ao_blur_f = sh_ao_apply_f = NULL;
     t_ao = t_ao_smooth = NULL;

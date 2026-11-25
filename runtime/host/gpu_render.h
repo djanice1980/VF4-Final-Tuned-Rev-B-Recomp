@@ -56,6 +56,16 @@ void gpu_render_raytracing(const rt_backend *backend, int quality);
  * it holds work done once (a driver may compile shaders of its own then) */
 void gpu_render_rt_stats(unsigned *frames, double *ms, double *first_ms);
 
+/* on the window's thread, at any time (before gpu_render_init too): the passes into textures the
+ * game makes (docs/design.md section 78: a stage's reflection in its water) are drawn here, on the
+ * GPU (on, the default), or by the machine's thread into texture memory as they were before (off:
+ * for a test). They are the machine's thread's whatever this says while ray tracing is wanted. */
+void gpu_render_passes(int on);
+
+/* passes into textures drawn here, and the frames with a state that took a target picture not
+ * drawn for that frame (an older one's, or none), for the log */
+void gpu_render_pass_stats(unsigned *passes, unsigned *stale);
+
 /* any thread: the frames the machine handed over, and those of them never
  * drawn (a newer one came first) */
 void gpu_render_counts(unsigned *submitted, unsigned *replaced);

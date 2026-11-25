@@ -2979,7 +2979,9 @@ joining PC's own backup is not touched.
 
 **The same machine everywhere: FSCA.** The machine was already
 deterministic (section 16: the clock is fixed at `hw.rtc_base`, the sound
-chip runs a fixed budget a sample), and compiled arithmetic is IEEE on
+chip runs a fixed budget a sample; since section 77 the game window's
+clock starts at the PC's date and time, and a two-PC game's at the host's
+on both PCs), and compiled arithmetic is IEEE on
 every PC (`-msse2 -ffp-contract=off`, no `-march`). One instruction asked
 the host: FSCA computed its sine and cosine with the C library's `sin` and
 `cos` (`op_fsca`, and the interpreter's `fsca`). Two PCs with different
@@ -6305,7 +6307,8 @@ is not drawn are not taken, so its reading, transform and hand-over are
 all saved. A pass into a texture is drawn throughout, as in a re-run frame
 (section 56): its picture goes into the machine's texture memory. So the
 machine is the same whatever the setting says, and each PC of a two-PC
-game chooses for itself.
+game chooses for itself. (Section 78 changed this: a pass now goes as the
+screen it is made for, and is not drawn for a frame that is left out.)
 
 **Checked** (the development PC):
 
@@ -7069,3 +7072,274 @@ picture in motion, watched. Still to come: motion from frame to frame, the
 game's own shadow light, a list of materials, the renderer owning the
 whole frame so that DLSS and FSR can work, FSR's ray regeneration on the
 DirectX side.
+
+## 77. The board's clock is the PC's, and the log names each match's stage (2026-11-25)
+
+**Why** (issue 3 again). The laptop's owner tried Frame skip (section 71):
+"works for a match and then everything goes back to slow motion", with
+pops in the sound. His log: Frame skip was on throughout (half of the
+game's frames drawn in both matches); in the first match the machine's
+thread took 15.3 to 15.6 ms a frame and was never behind, in the second
+about 21.8 ms; the sound's queue was filled in the first and empty in the
+second, so the pops go with the slow motion. (The count of "times behind"
+in the log's machine line runs on from the start; it is not a window's.)
+
+The log did not say which stages those were. Worked out: a one-player
+game takes its opponents, each with a stage, from a table of fifteen
+pairs, starting at the day of the month (`cpu_opponent_pick` in the game's
+code: the pair at (round + day) modulo 15). The machine's clock was a
+fixed date, 2004-11-10 (section 16: so that runs repeat). So on every PC
+and every day a one-player game began on stage 17 and went on to stages 21
+and 20, two of the three stages that cost most (section 78), and the
+log's "at most 41,782 triangles" fits stage 17. His log of the day before
+has the same step at the second match (about 20 ms, then 25 and more),
+which was not followed up then.
+
+A cabinet has a clock with a battery, set by its operator. A PC has one
+too. The maintainer asked for it to be used, and for the log to say which
+stage a match is on.
+
+**What is done.**
+
+- *The clock.* `game_machine_clock` (before `game_machine_init`) gives
+  what the board's clock shows as the machine starts, in its own count,
+  seconds from 1950-01-01 00:00:00; it goes into `hw.rtc_base` after
+  `hw_init`, from where the boot and the clock chip's registers have it,
+  and it runs on with the machine as it always did. The game window gives
+  it this PC's local date and time (SDL's `SDL_GetCurrentTime` and
+  `SDL_TimeToDateTime`). Nothing in `runtime/machine` changed: the fixed
+  date is still what the machine has by itself, and what the headless
+  program runs with.
+- *A two-PC game* has the host's on both PCs: both machines must be the
+  same from the first instruction. It is one more field of the session's
+  start (`session_start.clock`), four bytes in WELCOME and in LATE (both
+  PCs run the same build, section 50, so the packets could grow).
+- *A snapshot* (`--resume`) has its own: the clock is part of the machine.
+- *For tests:* `--clock fixed` gives the fixed date, with which every run
+  from boot is the same run, and `--clock YYYY-MM-DDThh:mm:ss` any date
+  from 1950 to 2085. The artwork's run (`--art`) keeps the fixed date: its
+  scenes are found by their vertical blanks.
+- *The log* says it: "clock: the board's clock started at 2026-11-25
+  09:23:57 (this PC's date and time)", or the host's, `--clock`, the fixed
+  date, the snapshot's.
+- *Each match.* When the game's mode becomes GAME MODE.GAME_LOAD the log
+  has "match: stage 21; player 1's character 14, player 2's 10 (the
+  game's own numbers), loading at vertical blank 4148"
+  (`game_machine_match` reads the game's `match_stage` and
+  `player_chara`). Numbers, not names: the game's tables of names are not
+  in this repository.
+
+The game's own date code (`clock_to_calendar`, its library's) takes the
+count as unsigned, so a date after January 2038 is no trouble to it; every
+fourth year is a leap year to it, which holds to 2099.
+
+**Checked** (the development PC; the windowed games in a headless
+desktop, from boot, as fast as they go, player 1 alone starting a game and
+taking the first character):
+
+| the clock | the log's first match |
+|---|---|
+| this PC's, 2026-11-25 | stage 17, against character 14 (25 and 10 are the same place among fifteen: today gives the old order) |
+| `--clock fixed` | stage 17, against character 14 |
+| `--clock 2026-11-26T12:00:00` | stage 21, against character 10 |
+| `--clock 2026-12-03T08:00:00` | stage 5, against character 4 |
+| `--clock 2026-11-19T23:59:50` | stage 4, against character 11: the 20th's, the day having turned during the boot |
+
+Each is the pair the game's table has at that day.
+
+- `--clock fixed`: the machine's fingerprints every 500 vertical blanks to
+  6,000, twelve of them, are those of release 0.5.22's game; two runs gave
+  the same.
+- The Windows game under Proton: the clock line had the PC's local time
+  (09:23:57, between two readings of `date` at 09:23:40 and 09:24:01), and
+  the fixed date with `--clock fixed`.
+- A two-PC game, the Linux game hosting and the Windows game joining under
+  Wine, twice: both logs have the same clock (the host's log "this PC's
+  date and time", the other's "the host's"), 154 fingerprints agreed, and
+  both name the same stages for the two matches: 21 and then 20 in the
+  first game, 21 and then 17 in the second, fourteen minutes later by the
+  clock (a run from boot is not the same run every time any more).
+
+**Known.**
+
+- A run from boot is no longer the same run every time. A test that needs
+  that passes `--clock fixed`; a run from a snapshot is as it was. The
+  checks from boot of earlier sections had the fixed date without asking.
+- As fast as it goes, the game's clock runs ahead of the PC's (it counts
+  the machine's cycles); at the game's own pace the two keep step.
+- When the game starts again within a run (test mode's EXIT) the BIOS's
+  word of the clock is the machine's start's, not the restart's, as before.
+- What else the game does with the date was read in its code, not looked
+  at: a stage has a clock whose hands it sets by the time
+  (`hbr_clock_update`), and its network code compares times of day.
+
+**Not covered.** Windows itself; a PC joining a game going on (LATE's
+field is written and read, not run); a PC whose date SDL cannot read (the
+fixed date then, and the log says so).
+
+## 78. A stage's reflection drawn by the graphics chip (2026-11-25)
+
+**Why.** With section 77's finding the question was what stages 21 and 20
+cost. Measured first, on release 0.5.22's way of drawing (the development
+build of that morning): every one of the 24 stages, the windowed game from
+a snapshot as the stage's intro begins (the fighters stand), held to two
+cores and their second threads, the laptop's settings (GPU renderer at 1 x,
+16:9, Lighting GPU), as fast as it goes; the machine's thread, ms a frame,
+Frame skip off and on:
+
+| stage | off | half | | stage | off | half |
+|---|---|---|---|---|---|---|
+| 17 | 3.79 | 2.38 | | 2 | 3.14 | 2.30 |
+| **21** | **5.29** | **4.46** | | 3 | 2.89 | 2.23 |
+| **20** | **5.34** | **4.10** | | 23 | 2.89 | 1.88 |
+| **19** | **6.09** | **4.88** | | 0 | 2.79 | 2.00 |
+| 22 | 4.24 | 2.72 | | 1 | 2.66 | 1.88 |
+| 4 | 3.68 | 2.40 | | 11 | 2.42 | 1.65 |
+| 16 | 3.50 | 2.17 | | 8 | 2.16 | 1.57 |
+| 5 | 3.45 | 2.28 | | 6, 7, 9, 10, 12 to 14 | 1.7 to 1.9 | 1.4 |
+
+(Stages 15 and 18, which the one-player game never visits, took 2.96 and
+3.23 ms, and Frame skip took nothing off 15.) Stages 19, 20 and 21 cost
+about twice what a stage of their triangle count does, and Frame skip took
+16 to 23 % off them against 28 to 38 % off the others.
+
+Those three have water. The game draws the scene a second time each frame,
+mirrored, into a texture (512 x 256, sixteen bits a pixel), and puts that
+texture on the water: 30,000 triangles on stages 19 and 21, as many as the
+screen's own. A pass into a texture was drawn by `view.c`'s rasterizer on
+the processor whatever drew the screen (section 20's GPU renderer left it
+there), with the processor's lights whatever Lighting said (section 67),
+and Frame skip did not skip it (section 71). On a two-core laptop that is
+most of the stage's cost; the graphics chip, by the laptop's logs, has
+time to spare.
+
+**What is done.** With the GPU renderer, the graphics chip draws such a
+pass, and nothing of it goes through the processor's rasterizer or into
+texture memory.
+
+- *The view* (`view.c`). `view_host_gpu_passes` (on: the renderer's wish).
+  A pass into a texture of the one kind the game makes (5, 6 and 5 bits a
+  pixel, its rows as long as it is wide) leaves `scene_draw` as a pass to
+  the screen does (`gpu_export`), with `view_gpu_frame.target` saying which
+  of the host's four target pictures it is for (`gpu_tg`: the place in
+  texture memory each stands for, and its size). Lighting GPU lights it
+  like the screen. `target_store` is not called: texture memory keeps what
+  it had.
+- *Who uses it.* A state of a later pass whose texture is exactly that
+  place (the same address and size, 5-6-5, not twiddled, one level, no
+  codebook) is marked (`view_gpu_state.target`), and its texture does not
+  go to the texel arena. A texture that reads the place any other way
+  sends the place back to the processor's rasterizer for the rest of the
+  run, with a line in the log (none was seen). Once the game writes a
+  texture of its own over the place (texture memory's checksum there is no
+  longer what it was as the pass was drawn), the picture is not what that
+  memory holds, and the state takes texture memory's texels again.
+- *The renderer* (`gpu_render.c`). The pass comes from the machine's
+  thread just before the frame that uses it and is kept for it (`pend`,
+  then the frame's `packet`): the two are drawn together or not at all. It
+  is drawn first, by the same steps as a frame (background, the opaque and
+  punch-through lists, the volumes' shadows, the translucent list: the
+  frame's code for them is now three functions both use), at one pixel a
+  pixel, into a target picture of its own with its own depth buffer and
+  its own vertex and state buffers. The scene's fragment shader has four
+  more inputs, the pictures; where a state names one, a texel is that
+  picture's pixel, cut to 5, 6 and 5 bits and widened again as texture
+  memory and the texture's decoder would have done (`target_store`,
+  `texel16`), so the water takes the same colors as before.
+- *The wide screen.* Section 65 draws such a pass wider and kept a second
+  texture twice as wide for the screen. Here the target picture is simply
+  the wider one, the state says how many columns lie beyond each side
+  (`target_ox`), and a clamped texture coordinate may run that far past
+  the texture's edge.
+- *Frame skip and frames run again.* The game sends a screen's lists, then
+  those of the pass that screen uses, renders the pass and then the
+  screen. So in the game window a pass's lists are now taken when its
+  screen's are (`lists_begin`): not for a frame Frame skip leaves out, nor
+  for a frame run again. That holds for the processor's passes too (the
+  software renderer, and ray tracing below), which sections 56 and 71 drew
+  for every frame.
+- *Texture memory.* The game never reads it (section 55); the machine's
+  fingerprint is main RAM and the registers. With the GPU renderer the
+  reflection is no longer in it, so texture memory is not the same on
+  every PC of a two-PC game any more, and sections 56 and 71's "the
+  machine is the same" now means what the game can see of it.
+- *Ray tracing wanted:* the machine's thread draws the passes as before.
+  The ray tracing's device has the texel arena, not these pictures.
+- *For tests:* `--cpu-passes` draws them the old way with the GPU renderer.
+- *The log* at the end: "GPU renderer: 3068 passes into textures drawn (a
+  stage's reflection); 0 frames used one not drawn for them".
+
+**Checked** (the development PC; the windowed games from stage snapshots
+in a headless desktop; internal resolution 1 x and 4:3 unless said; the
+picture shown at a vertical blank):
+
+- The cost, the machine's thread in ms a frame, as in the table above
+  (another batch: such numbers move by a tenth between batches):
+
+  | stage | the processor's pass (`--cpu-passes`): off, Frame skip | the graphics chip's: off, Frame skip |
+  |---|---|---|
+  | 21 | 6.04, 3.25 | 2.98, 1.94 |
+  | 20 | 5.10, 3.38 | 3.14, 2.23 |
+  | 19 | 6.20, 3.88 | 3.57, 2.56 |
+  | 17 | 3.92, 2.79 | 3.84, 2.80 |
+  | 3 | 3.19, 2.24 | 3.12, 2.17 |
+
+  With Frame skip a water stage now costs less than stage 17, on which the
+  laptop held full speed. (The processor's pass with Frame skip is cheaper
+  than the first table's too: half of the passes are no longer drawn.)
+- At the game's own pace on the Radeon 8060S, 16:9 at 2 x, stage 19: 5.78
+  ms a frame with the processor's pass, 4.40 and 4.51 with the graphics
+  chip's; after the first ten seconds every frame drawn was shown, either
+  way.
+- The pictures, the graphics chip's pass against the processor's. Where
+  the water is in view (stages 19 and 20 in the fight, 18, and the
+  Shrine's intro, whose camera goes over the pond): 4,000 to 34,000 of
+  307,200 pixels differ, by 0.01 to 0.2 steps of 255 on average; they lie
+  in the water. Looked at enlarged three times on stage 19 (the water under
+  the floor's grid) and on the Shrine at 21:9 (the bridge's reflection; the
+  far right, which only the wide pass holds): the same things in the same
+  places. In the Shrine's fight, where the pond is out of view, no pixel
+  differs.
+- 16:9 and 21:9, stage 19: 33,000 and 60,000 pixels differ, 0.14 to 0.22
+  steps on average.
+- Nothing else changed: three stages without a pass at 2 x, two pictures
+  each, are release 0.5.22's to the pixel, and stage 19 with
+  `--cpu-passes` is too.
+- Frame skip, stage 19: the pictures of the frames that are drawn are the
+  same to the pixel as without Frame skip, with either pass; the log's
+  "used one not drawn for them" stayed 0 in every run. The software
+  renderer with Frame skip, stage 19, four vertical blanks: release
+  0.5.22's pictures to the pixel (the pass goes with its screen).
+- The machine is the same: its fingerprints every 250 vertical blanks to
+  9,000 on stages 19 and 21 are the same ten with the graphics chip's
+  pass, the processor's, Frame skip, and the software renderer. The two
+  two-PC games of section 77 were on stages 21 and 20 and on 21 and 17,
+  the host with the graphics chip's pass and the other PC with Frame skip
+  as well: 154 fingerprints agreed in each, and neither log had a frame
+  that used a pass not drawn for it.
+- Frames run again (`--synctest 8`, stage 19): every replay the same, and
+  the pictures the same to the pixel as without.
+- Lighting GPU with the graphics chip's pass, stage 19: the same to the
+  pixel as Lighting CPU.
+- Ray tracing on, stage 19: no pass drawn by the renderer, and the picture
+  the same to the pixel as with `--cpu-passes`.
+- The Windows game under Proton, stage 19: its picture with the graphics
+  chip's pass is the Linux game's to the pixel, and with the processor's
+  too.
+- Both development builds compile with no warning.
+
+**Known.**
+
+- The reflection is drawn at the size the game asks for, 512 x 256,
+  whatever the internal resolution: as before.
+- Its pixels differ a little from the processor's rasterizer's where two
+  triangles of the mirrored scene meet, as the numbers above say.
+- The scene's fragment shader grew (four inputs, a branch a texel). On the
+  two GPUs here it did not show; an Intel chip was not here to try.
+
+**Not covered.** The laptop itself and Intel graphics; Windows itself; a
+Steam Deck; the picture in motion, watched; ray tracing switched on or off
+in the menu on a water stage (the passes change hands then: reasoned,
+not run); a renderer started again on another GPU on a water stage; stage
+15's two passes (no state used them in the frames looked at); a PC joining
+a game going on; the builder's own build (no new source file).
