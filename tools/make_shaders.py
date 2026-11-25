@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Compiles the GPU renderer's shaders (runtime/host/shaders/*.vert, *.frag)
+"""Compiles the GPU renderer's shaders (runtime/host/shaders/*.vert, *.frag, and
+the ray tracing's *.comp)
 to SPIR-V and writes runtime/host/gpu_shaders.h, the bytes as C arrays.
 
 The header is committed, so building the game needs no shader compiler;
@@ -23,14 +24,16 @@ def main():
     glslc = shutil.which("glslc")
     if not glslc:
         sys.exit("glslc not found (Arch: sudo pacman -S shaderc)")
-    names = sorted(n for n in os.listdir(SRC) if n.endswith((".vert", ".frag")))
+    names = sorted(n for n in os.listdir(SRC) if n.endswith((".vert", ".frag", ".comp")))
     out = ["/* The GPU renderer's shaders as SPIR-V: written by tools/make_shaders.py from",
            " * runtime/host/shaders/. Do not edit; change the shader and run the tool. */",
            "#ifndef VF4FT_GPU_SHADERS_H", "#define VF4FT_GPU_SHADERS_H", ""]
     with tempfile.TemporaryDirectory() as tmp:
         for n in names:
             spv = os.path.join(tmp, n + ".spv")
-            subprocess.run([glslc, "-O", "--target-env=vulkan1.0", "-o", spv, os.path.join(SRC, n)], check=True)
+            # a compute shader is the ray tracing own (ray queries: Vulkan 1.2); the others are SDL_GPU's
+            env = "vulkan1.2" if n.endswith(".comp") else "vulkan1.0"
+            subprocess.run([glslc, "-O", "--target-env=" + env, "-o", spv, os.path.join(SRC, n)], check=True)
             data = open(spv, "rb").read()
             ident = "spv_" + n.replace(".", "_")
             out.append("static const unsigned char %s[%d] = {" % (ident, len(data)))

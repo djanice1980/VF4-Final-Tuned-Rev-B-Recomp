@@ -100,6 +100,13 @@ const option_info options[OPT_COUNT] = {
                         "renderer works it out of the picture's own depth; it needs a little more of the graphics "
                         "chip. The scores, bars and other flat parts are not touched. A change applies at once. "
                         "Software has none.", 0 },
+    [OPT_RAYTRACING] = { "Ray tracing",
+                         "Off: the picture's light as the game works it out. Vulkan: the graphics chip traces rays "
+                         "through the scene for it: the fighters' shadows get soft edges that sharpen at the feet, "
+                         "the fighters shade themselves and each other, things take light and shade from what is "
+                         "around them, and glass mirrors the scene. It needs a graphics chip with ray tracing, and "
+                         "a fast one: the game's log says if it could not start. A change applies at once. Ambient "
+                         "occlusion is not used with it. Software has none.", 0 },
     [OPT_LIGHTING] = { "Lighting",
                        "Which chip works out the lights with the GPU renderer. CPU: the processor, as always. "
                        "GPU: the graphics chip, which takes that work off the processor: try it if the game "
@@ -308,6 +315,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_strlcpy(buf, oc[s->occlusion], n);
         break;
     }
+    case OPT_RAYTRACING: {
+        static const char *const rt[RAYTRACINGS] = { "Off", "Vulkan" };
+        SDL_strlcpy(buf, rt[s->raytracing], n);
+        break;
+    }
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -391,6 +403,7 @@ void option_change(settings *s, int o, int d)
     case OPT_LIGHTING: s->lighting = wrap(s->lighting, d, LIGHTINGS); break;
     case OPT_SKIP: s->skip = wrap(s->skip, d, SKIPS); break;
     case OPT_OCCLUSION: s->occlusion = wrap(s->occlusion, d, OCCLUSIONS); break;
+    case OPT_RAYTRACING: s->raytracing = wrap(s->raytracing, d, RAYTRACINGS); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;

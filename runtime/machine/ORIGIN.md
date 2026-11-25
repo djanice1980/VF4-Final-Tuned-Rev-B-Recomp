@@ -202,6 +202,13 @@ What the recomp changed:
   (`view_gpu_draw.solid`), and hands over the first strip's projection
   (`view_gpu_frame.proj`). The host's GPU path alone reads them; nothing
   drawn here changes.
+- The scene for ray tracing (2026-11-24, docs/design.md section 74).
+  `view.h`, `view.c`: `view_host_rt`; with it on, `gpu_export` also hands
+  over every strip's triangles as `strip_job` would walk them, without the
+  near plane, the culling and the screen's edges (`rt_export`:
+  `view_gpu_frame.rt_tris`, `.rt_strips`, `.rt_near`), and the light sets
+  whatever lights the vertices. Off (the default, and always without the
+  host's GPU path) nothing is done and nothing behaves differently.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

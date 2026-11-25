@@ -1,0 +1,78 @@
+/* Ray traced light (docs/design.md section 74). The GPU renderer draws the game's picture as
+ * ever; with ray tracing on, a second device of the same GPU traces the frame's scene (handed
+ * over by runtime/machine/view.c, view_host_rt) and gives back two pictures the renderer puts
+ * into its own after the solid lists: the light's ratio and the glass's reflections.
+ *
+ * rt_scene.c packs a frame's scene as the tracing shader reads it, whatever the API; a backend
+ * (rt_vk.c: Vulkan) owns the device, the acceleration structures and the shader. */
+#ifndef VF4FT_RT_H
+#define VF4FT_RT_H
+
+#include <SDL3/SDL.h>
+
+struct view_gpu_frame;
+
+/* a triangle as the shader has it (its Tri): corners and normals in the game's view space */
+typedef struct rt_tri {
+    float p0[4], p1[4], p2[4], n0[4], n1[4], n2[4];
+    float uv01[4], uv2[2];
+    Uint32 strip;               /* its view_rt_strip */
+    Uint32 flags;               /* RT_TRI_* */
+    Uint32 col[4];              /* its corners' own colours (0: the material's) */
+} rt_tri;
+#define RT_TRI_BLEND 3u         /* 0 opaque, 1 by its alpha (the translucent list), 2 punch-through */
+#define RT_TRI_BAKED 4u         /* colours of its own, or a material that takes no lights */
+#define RT_TRI_FIGHTER 8u       /* lit, and not marked to take the game's shadows */
+#define RT_TRI_ONE_SIDED 16u
+#define RT_TRI_BACK 32u         /* one-sided: its front is the other way */
+
+/* the shader's constants (its P) */
+typedef struct rt_consts {
+    float proj[4];              /* sx, cx, sy, cy */
+    float misc[4];              /* near z, picture pixels a game pixel, alpha reference, the game's shadow scale (of 1) */
+    float shadow_dir[4];        /* the way the game's shadow light travels; w 1: known */
+    Sint32 size[4];             /* picture w, h; ambient rays; shadow rays a light */
+    Sint32 base[4];             /* the first triangle of each group */
+    float dist[4];              /* ambient rays' reach, shadow rays' reach, the sun's radius, a bulb's radius */
+    float tune[4];              /* eps, baked surfaces' share of the occlusion, the most a pixel is brightened, the glass's gain */
+    Sint32 opt[4];              /* reflection rays, bounce on, point lights' shadows on, seed */
+    float tune2[4];             /* the glass's roughness */
+    Sint32 counts[4];           /* texels */
+} rt_consts;
+
+/* The triangles in four groups, each an acceleration structure of its own: 0 the fighters' solid
+ * ones, 1 the fighters' by-alpha ones, 2 the stage's solid ones, 3 the stage's by-alpha ones. A
+ * group's instance carries its number, and mask 1 (fighters) or 2 (stage). */
+typedef struct rt_scene {
+    Uint32 ntri, count[4], base[4];
+    rt_consts consts;
+} rt_scene;
+
+/* how many rays a pixel (what a frame can afford is the GPU's matter) */
+typedef struct rt_quality {
+    int ambient, shadow, reflection;
+} rt_quality;
+
+/* first: the frame's triangles sorted into the groups (s->ntri, count, base); the triangles
+ * rt_scene_fill will write are counted here, so the caller can make room */
+void rt_scene_count(const struct view_gpu_frame *f, rt_scene *s);
+/* then: the triangles (s->ntri of them) and their corners (9 floats each) in group order, and the
+ * constants for a picture w x h pixels (texels: the arena's size) */
+void rt_scene_fill(const struct view_gpu_frame *f, rt_scene *s, rt_tri *tris, float *pos, int w, int h, Uint32 texels,
+                   const rt_quality *q);
+
+typedef struct rt_backend {
+    const char *name;
+    /* a device on the GPU of that name with ray queries; 0, or -1 with the reason as SDL's error */
+    int (*start)(const char *gpu_name);
+    void (*stop)(void);
+    /* texels of the arena that changed (view.c's, as the GPU renderer uploads them) */
+    void (*texels)(Uint32 at, Uint32 n, const Uint32 *data);
+    /* traces the frame for a picture w x h; the results, w * h words each (rt_light.comp's two
+     * outputs), stay good until the next call. 0, or -1 */
+    int (*trace)(const struct view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl);
+} rt_backend;
+
+extern const rt_backend rt_vulkan;      /* rt_vk.c */
+
+#endif

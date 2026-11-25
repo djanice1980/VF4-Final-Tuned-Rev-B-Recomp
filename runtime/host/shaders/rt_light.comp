@@ -1,0 +1,478 @@
+#version 460
+#extension GL_EXT_ray_query : require
+// The traced light of a frame (docs/design.md section 74), a pixel a thread, by the GPU's own ray
+// tracing (ray queries through the frame's acceleration structures). For the surface the eye's
+// ray meets first among the solid lists' triangles, two things go out: the light's ratio (the
+// game's sum of its lights with each light's share cut by what rays towards it meet, and the
+// ambient part gathered from what is around, over the game's own sum), and what a pane of glass
+// before it mirrors. The ratio is then smoothed (rt_filter.comp, which is why the eye ray's
+// length goes out too), and the GPU renderer multiplies and adds the two into its picture
+// (rt_apply.frag). Everything is in the game's view space, the eye at the origin.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+struct Tri {
+    vec4 p0, p1, p2, n0, n1, n2;
+    vec4 uv01;
+    vec2 uv2;
+    uint job;
+    uint flags;         // bits 0-1: 0 opaque, 1 by its alpha, 2 punch-through; 4 baked; 8 a fighter's;
+                        // 16 one-sided; 32 its front is the other way
+    uvec4 col;
+};
+struct Job { vec4 base; vec4 spec; uint ls, st, flags, pad; };
+struct State { uint pcw, isp, tsp, tcw, tex_at, tex_w, tex_h, tex_levels; ivec4 clip; uvec4 pad; };
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+layout(std140, set = 0, binding = 1) uniform P {
+    vec4 proj;          // sx, cx, sy, cy
+    vec4 misc;          // near z, picture pixels a game pixel, alpha reference, the game's shadow scale (of 1)
+    vec4 shadow_dir;    // the way the game's shadow light travels; w 1: known
+    ivec4 size;         // picture w, h; ambient rays; shadow rays a light
+    ivec4 base;         // the first triangle of each instance
+    vec4 dist;          // ambient rays' reach, shadow rays' reach, the sun's radius, a bulb's radius
+    vec4 tune;          // eps, baked surfaces' share of the occlusion, the most a pixel is brightened, the glass's gain
+    ivec4 opt;          // reflection rays, bounce on, point lights' shadows on, seed
+    vec4 tune2;         // the glass's roughness, 0, 0, 0
+    ivec4 counts;       // texels
+} p;
+layout(std430, set = 0, binding = 2) readonly buffer Tris { Tri tri[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Jobs { Job job[]; };
+layout(std430, set = 0, binding = 4) readonly buffer States { State st[]; };
+layout(std430, set = 0, binding = 5) readonly buffer Lights { float lf[]; };
+layout(std430, set = 0, binding = 6) readonly buffer Arena { uint tx[]; };
+layout(std430, set = 0, binding = 7) writeonly buffer LightOut { uint lightpix[]; };  // the ratio / 4: 10 bits each of red, green, blue
+layout(std430, set = 0, binding = 8) writeonly buffer ReflOut { uint reflpix[]; };    // the mirrored colour times its share; the share
+layout(std430, set = 0, binding = 9) writeonly buffer DepthOut { float depthpix[]; }; // how far the eye's ray went; 0: it met nothing
+
+const uint ALL = 3u, FIGHTERS = 1u;
+
+uint rng;
+float rnd()
+{
+    rng = rng * 747796405u + 2891336453u;
+    uint w = ((rng >> ((rng >> 28u) + 4u)) ^ rng) * 277803737u;
+    w = (w >> 22u) ^ w;
+    return float(w >> 8) * (1.0 / 16777216.0);
+}
+
+vec3 safe_norm(vec3 v)
+{
+    float l = length(v);
+    return l > 0.0 ? v / l : v;
+}
+
+void basis(vec3 n, out vec3 a, out vec3 b)
+{
+    vec3 h = abs(n.x) < 0.5 ? vec3(1, 0, 0) : vec3(0, 1, 0);
+    a = normalize(cross(n, h));
+    b = cross(n, a);
+}
+
+vec3 cos_dir(vec3 n)
+{
+    float u1 = rnd(), u2 = rnd() * 6.2831853;
+    float rr = sqrt(u1), z = sqrt(1.0 - u1);
+    vec3 a, b;
+    basis(n, a, b);
+    return normalize(a * (rr * cos(u2)) + b * (rr * sin(u2)) + n * z);
+}
+
+vec3 disk_jitter(vec3 d, float radius)
+{
+    float u1 = sqrt(rnd()) * radius, u2 = rnd() * 6.2831853;
+    vec3 a, b;
+    basis(d, a, b);
+    return normalize(d + a * (u1 * cos(u2)) + b * (u1 * sin(u2)));
+}
+
+int wrapc(int t, int size, bool clampit, bool flip)
+{
+    if (clampit)
+        return clamp(t, 0, size - 1);
+    if (flip && (t & size) != 0)
+        return ~t & (size - 1);
+    return t & (size - 1);
+}
+
+uint texel(uint s, vec2 uv)
+{
+    int tw = int(st[s].tex_w), th = int(st[s].tex_h);
+    if (!(abs(uv.x) < 1e4)) uv.x = 0.0;
+    if (!(abs(uv.y) < 1e4)) uv.y = 0.0;
+    uint tsp = st[s].tsp;
+    int ix = wrapc(int(floor(uv.x * float(tw))), tw, (tsp >> 16 & 1u) != 0u, (tsp >> 18 & 1u) != 0u);
+    int iy = wrapc(int(floor(uv.y * float(th))), th, (tsp >> 15 & 1u) != 0u, (tsp >> 17 & 1u) != 0u);
+    uint at = st[s].tex_at + uint(iy * tw + ix);
+    return at < uint(p.counts.x) ? tx[at] : 0xffffffffu;
+}
+
+vec3 normal_at(uint ti, vec2 b)
+{
+    return safe_norm(tri[ti].n0.xyz * (1.0 - b.x - b.y) + tri[ti].n1.xyz * b.x + tri[ti].n2.xyz * b.y);
+}
+
+vec3 face_normal(uint ti)
+{
+    return safe_norm(cross(tri[ti].p1.xyz - tri[ti].p0.xyz, tri[ti].p2.xyz - tri[ti].p0.xyz));
+}
+
+struct Light { vec3 col; int flags; vec3 dir; float ka; vec3 pos; float kb; float ck, cb; int dmode, route; };
+
+Light light_at(uint ls, int k)
+{
+    uint o = ls * 244u + 4u + uint(k) * 16u;
+    Light l;
+    l.col = vec3(lf[o], lf[o + 1u], lf[o + 2u]);
+    l.flags = int(lf[o + 3u]);
+    l.dir = vec3(lf[o + 4u], lf[o + 5u], lf[o + 6u]);
+    l.ka = lf[o + 7u];
+    l.pos = vec3(lf[o + 8u], lf[o + 9u], lf[o + 10u]);
+    l.kb = lf[o + 11u];
+    l.ck = lf[o + 12u];
+    l.cb = lf[o + 13u];
+    l.dmode = int(lf[o + 14u]);
+    l.route = int(lf[o + 15u]);
+    return l;
+}
+
+vec3 ambient_of(uint ls)
+{
+    uint o = ls * 244u;
+    return vec3(lf[o], lf[o + 1u], lf[o + 2u]);
+}
+
+// the direction to a light and its fall with distance; false: no light from it
+bool light_dir(Light l, vec3 P, out vec3 t, out float at, out float dist)
+{
+    at = 1.0;
+    dist = 0.0;
+    if ((l.flags & 2) != 0) {
+        vec3 d = l.pos - P;
+        dist = length(d);
+        if (dist <= 0.0)
+            return false;
+        t = d / dist;
+        at = clamp((l.flags & 4) != 0 ? l.ka * dist + l.kb : l.ka / dist + l.kb, 0.0, 1.0);
+    } else
+        t = -l.dir;
+    return true;
+}
+
+float alpha_light(uint ls, vec3 P, vec3 N)
+{
+    float la = 0.0;
+    for (int k = 0; k < 15; k++) {
+        Light l = light_at(ls, k);
+        if ((l.flags & 1) == 0 || (l.route & 6) != 4)
+            continue;
+        vec3 t;
+        float at, dist;
+        if (!light_dir(l, P, t, at, dist))
+            continue;
+        float amt = l.col.x * at;
+        if ((l.flags & 2) != 0 && l.ck != 0.0) {
+            float cs = -dot(t, l.dir);
+            amt *= clamp(l.ck > 0.0 ? l.ck * cs + l.cb : l.ck * (1.0 - cs) + l.cb, 0.0, 1.0);
+        }
+        if (l.dmode != 3 && (l.route & 1) == 0)
+            amt *= max(dot(N, t), 0.0);
+        la += (l.route & 8) != 0 ? -amt : amt;
+    }
+    return la;
+}
+
+// a point of a triangle: its colour before the lights (0..1) and its alpha (0..255)
+void surface(uint ti, vec2 b, vec3 P, out vec3 rgb, out float alpha)
+{
+    uint ji = tri[ti].job;
+    uint s = job[ji].st;
+    float w = 1.0 - b.x - b.y;
+    vec3 c;
+    float a;
+    uvec4 col = tri[ti].col;
+    if ((col.x | col.y | col.z) != 0u) {
+        vec4 c0 = vec4(float(col.x >> 16 & 255u), float(col.x >> 8 & 255u), float(col.x & 255u), float(col.x >> 24));
+        vec4 c1 = vec4(float(col.y >> 16 & 255u), float(col.y >> 8 & 255u), float(col.y & 255u), float(col.y >> 24));
+        vec4 c2 = vec4(float(col.z >> 16 & 255u), float(col.z >> 8 & 255u), float(col.z & 255u), float(col.z >> 24));
+        vec4 cc = c0 * w + c1 * b.x + c2 * b.y;
+        c = cc.rgb;
+        a = cc.a;
+    } else {
+        c = job[ji].base.rgb;
+        a = job[ji].base.a;
+        if ((job[ji].flags & 1u) == 0u)
+            a = clamp(a + alpha_light(job[ji].ls, P, normal_at(ti, b)) * 255.0, 0.0, 255.0);
+    }
+    uint tsp = st[s].tsp;
+    float ia = (tsp >> 20 & 1u) != 0u ? a : 255.0;
+    if (st[s].tex_w != 0u) {
+        vec2 uv = tri[ti].uv01.xy * w + tri[ti].uv01.zw * b.x + tri[ti].uv2 * b.y;
+        uint t = texel(s, uv);
+        vec3 tc = vec3(float(t >> 16 & 255u), float(t >> 8 & 255u), float(t & 255u));
+        float ta = (tsp >> 19 & 1u) != 0u ? 255.0 : float(t >> 24);
+        uint shade = tsp >> 6 & 3u;
+        if ((shade & 1u) != 0u) {
+            c = tc * c / 255.0;
+            ia = shade == 1u ? ta : ta * ia / 255.0;
+        } else if (shade == 0u) {
+            c = tc;
+            ia = ta;
+        } else {
+            float k = ta / 255.0;
+            c = tc * k + c * (1.0 - k);
+        }
+    }
+    rgb = c / 255.0;
+    alpha = ia;
+}
+
+float opacity(uint ti, vec2 b, vec3 P)
+{
+    uint blend = tri[ti].flags & 3u;
+    if (blend == 0u)
+        return 1.0;
+    vec3 c;
+    float a;
+    surface(ti, b, P, c, a);
+    if (blend == 2u)
+        return a >= p.misc.z ? 1.0 : 0.0;
+    return a / 255.0;
+}
+
+#define tri_of(rq, committed) (uint(p.base[rayQueryGetIntersectionInstanceCustomIndexEXT(rq, committed)]) + \
+                               uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, committed)))
+
+struct Hit { bool ok; float t; vec2 b; uint tri; };
+
+// the nearest thing a ray meets that is at least half opaque. mode 1: the eye's ray (the solid lists
+// only, and a one-sided triangle seen from behind is not there); 2: only glass (a translucent pane of the stage with a
+// highlight of its own, mostly clear)
+Hit closest(vec3 o, vec3 d, float tmin, float tmax, int mode, uint mask)
+{
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, mode != 0 ? gl_RayFlagsNoOpaqueEXT : gl_RayFlagsNoneEXT, mask, o, tmin, d, tmax);
+    while (rayQueryProceedEXT(rq)) {
+        if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT)
+            continue;
+        uint ti = tri_of(rq, false);
+        vec2 b = rayQueryGetIntersectionBarycentricsEXT(rq, false);
+        float t = rayQueryGetIntersectionTEXT(rq, false);
+        uint fl = tri[ti].flags;
+        if (mode == 1 && (fl & 3u) == 1u)
+            continue;       // the translucent list is drawn over the picture afterwards
+        if (mode != 0 && (fl & 16u) != 0u) {
+            float front = (fl & 32u) != 0u ? -1.0 : 1.0;
+            if (dot(face_normal(ti), d) * front >= 0.0)
+                continue;
+        }
+        if (mode == 2) {
+            uint ji = tri[ti].job;
+            if ((fl & 3u) != 1u || (fl & 12u) != 0u || (job[ji].flags & 0x80u) == 0u || !(job[ji].spec.w > 0.0) ||
+                !(job[ji].spec.x + job[ji].spec.y + job[ji].spec.z > 0.0) || opacity(ti, b, o + d * t) >= 0.5)
+                continue;
+        } else if ((fl & 3u) != 0u && opacity(ti, b, o + d * t) < 0.5)
+            continue;
+        rayQueryConfirmIntersectionEXT(rq);
+    }
+    Hit h;
+    h.ok = rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+    h.t = tmax;
+    h.b = vec2(0);
+    h.tri = 0u;
+    if (h.ok) {
+        h.t = rayQueryGetIntersectionTEXT(rq, true);
+        h.b = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        h.tri = tri_of(rq, true);
+    }
+    return h;
+}
+
+// how much light gets along a ray past the fighters: 1 nothing in the way, 0 something opaque
+float transmit(vec3 o, vec3 d, float tmin, float tmax)
+{
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, FIGHTERS, o, tmin, d, tmax);
+    float T = 1.0;
+    while (rayQueryProceedEXT(rq)) {
+        if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT)
+            continue;
+        uint ti = tri_of(rq, false);
+        T *= 1.0 - opacity(ti, rayQueryGetIntersectionBarycentricsEXT(rq, false), o + d * rayQueryGetIntersectionTEXT(rq, false));
+        if (T < 0.01)
+            rayQueryConfirmIntersectionEXT(rq);
+    }
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
+        return 0.0;
+    return T;
+}
+
+float game_shadow(vec3 O)
+{
+    int n = max(p.size.w, 1);
+    float vis = 0.0;
+    for (int i = 0; i < n; i++)
+        vis += transmit(O, disk_jitter(-p.shadow_dir.xyz, p.dist.z), 1e-4, p.dist.y);
+    vis /= float(n);
+    return p.misc.w + (1.0 - p.misc.w) * vis;
+}
+
+// the game's sum for a point with normal N. n > 0: each light's share times what n rays from O find
+vec3 lights_sum(uint ls, vec3 P, vec3 N, vec3 O, int n, vec3 amb)
+{
+    vec3 sum = amb;
+    for (int k = 0; k < 15; k++) {
+        Light l = light_at(ls, k);
+        if ((l.flags & 1) == 0 || (l.route & 6) == 4)
+            continue;
+        vec3 t;
+        float at, dist;
+        if (!light_dir(l, P, t, at, dist))
+            continue;
+        float d = dot(N, t) * at;
+        if (d <= 0.0)
+            continue;
+        float vis = 1.0;
+        bool point = (l.flags & 2) != 0;
+        if (n > 0 && (!point || p.opt.z != 0)) {
+            vis = 0.0;
+            for (int i = 0; i < n; i++) {
+                if (point) {
+                    vec3 target = l.pos + (vec3(rnd(), rnd(), rnd()) - 0.5) * (2.0 * p.dist.w);
+                    vec3 dd = target - O;
+                    float dl = length(dd);
+                    vis += transmit(O, dd / dl, 1e-4, min(dl, p.dist.y));
+                } else
+                    vis += transmit(O, disk_jitter(t, p.dist.z), 1e-4, p.dist.y);
+            }
+            vis /= float(n);
+        }
+        sum += l.col * (d * vis);
+    }
+    return sum;
+}
+
+// where rays from a point of a triangle start: on the smooth surface its vertex normals describe, then off it
+vec3 ray_origin(uint ti, vec2 b, vec3 P, vec3 nf)
+{
+    float w = 1.0 - b.x - b.y;
+    vec3 n0 = tri[ti].n0.xyz, n1 = tri[ti].n1.xyz, n2 = tri[ti].n2.xyz;
+    if (dot(n0, nf) > 0.0 && dot(n1, nf) > 0.0 && dot(n2, nf) > 0.0) {
+        float d0 = min(dot(P - tri[ti].p0.xyz, n0), 0.0), d1 = min(dot(P - tri[ti].p1.xyz, n1), 0.0),
+              d2 = min(dot(P - tri[ti].p2.xyz, n2), 0.0);
+        P -= n0 * (w * d0) + n1 * (b.x * d1) + n2 * (b.y * d2);
+    }
+    return P + nf * p.tune.x;
+}
+
+// what a surface point sends back along a ray that met it: its colour times the game's sum for it
+vec3 radiance(Hit h, vec3 o, vec3 d)
+{
+    vec3 P = o + d * h.t, c;
+    float a;
+    surface(h.tri, h.b, P, c, a);
+    if ((tri[h.tri].flags & 4u) != 0u)
+        return c;
+    vec3 N = normal_at(h.tri, h.b), ng = face_normal(h.tri);
+    vec3 nf = dot(ng, d) < 0.0 ? ng : -ng;
+    vec3 O = ray_origin(h.tri, h.b, P, nf);
+    uint ls = job[tri[h.tri].job].ls;
+    return c * min(lights_sum(ls, P, N, O, 1, ambient_of(ls)), vec3(1.0));
+}
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= p.size.x || px.y >= p.size.y)
+        return;
+    uint at = uint(px.y * p.size.x + px.x);
+    rng = (at * 9781u + uint(p.opt.w) * 6271u) | 1u;
+    rnd();
+    vec2 g = (vec2(px) + 0.5) / p.misc.y;
+    vec3 d = normalize(vec3(-(g.x - p.proj.y) / p.proj.x, (g.y - p.proj.w) / p.proj.z, -1.0));
+    vec3 o0 = vec3(0.0);
+    float tnear = p.misc.x > 0.0 ? p.misc.x / -d.z : 0.05;
+    vec3 ratio = vec3(1.0), T = vec3(0.0);   // T: the traced sum, for the ratio
+    Hit h = closest(o0, d, tnear, 1e9, 1, ALL);
+    if (h.ok) {
+        uint ti = h.tri, ji = tri[ti].job, s = job[ji].st, ls = job[ji].ls;
+        uint fl = tri[ti].flags;
+        vec3 P = o0 + d * h.t, N = normal_at(ti, h.b), ng = face_normal(ti);
+        vec3 nf = dot(ng, d) < 0.0 ? ng : -ng;
+        vec3 O = ray_origin(ti, h.b, P, nf);
+        vec3 Nh = dot(N, nf) > 0.0 ? N : nf;
+        vec3 la = ambient_of(ls), amb = vec3(0.0);
+        float open = 0.0;
+        bool baked = (fl & 4u) != 0u;
+        int nao = p.size.z;
+        for (int i = 0; i < nao; i++) {
+            vec3 rd = cos_dir(Nh);
+            Hit q = closest(O, rd, 1e-4, p.dist.x, 0, ALL);
+            if (q.ok) {
+                float f = q.t / p.dist.x;
+                float w = f < 0.5 ? 1.0 : 1.0 - (f - 0.5) * 2.0;
+                w = w * w * (3.0 - 2.0 * w);
+                vec3 L = p.opt.y != 0 ? radiance(q, O, rd) : vec3(0.0);
+                amb += w * L + (1.0 - w) * la;
+                open += (tri[q.tri].flags & 8u) != 0u || !baked ? 1.0 - w : 1.0;
+            } else {
+                amb += la;
+                open += 1.0;
+            }
+        }
+        if (nao > 0) {
+            amb /= float(nao);
+            open /= float(nao);
+        } else {
+            amb = la;
+            open = 1.0;
+        }
+        bool takes = (st[s].pcw >> 7 & 1u) != 0u && p.shadow_dir.w != 0.0;
+        if (!baked) {
+            float gs = takes ? game_shadow(O) : 1.0;
+            vec3 G = lights_sum(ls, P, N, O, 0, la);
+            T = lights_sum(ls, P, N, O, takes ? 0 : p.size.w, amb) * gs;
+            ratio = T / max(G, vec3(1.0 / 255.0));
+            ratio = min(ratio, vec3((fl & 3u) != 0u ? 1.0 : p.tune.z));
+            T = min(G, vec3(1.0)) * ratio;
+        } else {
+            float f = 1.0;
+            if (takes)
+                f = game_shadow(O) * (1.0 - p.tune.y * (1.0 - open));
+            ratio = vec3(f);
+            T = vec3(f);
+        }
+    }
+    // glass in front of that: what a mirror there would show, by the glass's share at this angle
+    vec3 rf = vec3(0.0);
+    float F = 0.0;
+    if (p.opt.x > 0) {
+        Hit gl = closest(o0, d, tnear, h.ok ? h.t : 1e9, 2, ALL);
+        if (gl.ok) {
+            vec3 Pg = o0 + d * gl.t, ng = face_normal(gl.tri);
+            vec3 nfg = dot(ng, d) < 0.0 ? ng : -ng;
+            vec3 Ng = normal_at(gl.tri, gl.b);
+            if (dot(Ng, nfg) <= 0.9)
+                Ng = nfg;
+            if (nfg.y >= 0.9) {         // this test's hand-marking: the panes that lie in the floor
+                float cs = max(-dot(d, Ng), 0.0);
+                F = min((0.04 + 0.96 * pow(1.0 - cs, 5.0)) * p.tune.w, 1.0);
+                vec3 Og = Pg + nfg * p.tune.x;
+                for (int i = 0; i < p.opt.x; i++) {
+                    vec3 nn = disk_jitter(Ng, p.opt.x > 1 ? p.tune2.x : 0.0);
+                    vec3 R = normalize(d - nn * (2.0 * dot(d, nn)));
+                    if (dot(R, nfg) > 0.0) {
+                        Hit q = closest(Og, R, 1e-4, 1e9, 0, ALL);
+                        if (q.ok)
+                            rf += radiance(q, Og, R) / float(p.opt.x);
+                    }
+                }
+            }
+        }
+    }
+    depthpix[at] = h.ok ? h.t : 0.0;
+    uvec3 l = uvec3(clamp(ratio * 0.25, 0.0, 1.0) * 1023.0 + 0.5);
+    lightpix[at] = l.x | l.y << 10 | l.z << 20 | 0xc0000000u;
+    uvec3 c = uvec3(clamp(rf * F, 0.0, 1.0) * 255.0 + 0.5);
+    reflpix[at] = c.x | c.y << 8 | c.z << 16 | uint(clamp(F, 0.0, 1.0) * 255.0 + 0.5) << 24;
+}

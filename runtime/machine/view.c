@@ -3322,6 +3322,111 @@ static void gpu_tri(const scene *sc, const dtri *d, u32 list, float *zmax, u32 s
     }
 }
 
+/* recomp (ray tracing, docs/design.md section 74): the scene as the strips made it, for the host to
+ * trace rays through: every strip's triangles with their vertices through the vertex matrix and
+ * their normals through the normal matrix, none of them left out by the near plane, the culling
+ * or the screen's edges (strip_job's own walk of a strip, without those). */
+static int rt_on;
+
+void view_host_rt(int on)
+{
+    __atomic_store_n(&rt_on, on != 0, __ATOMIC_RELAXED);
+}
+
+static void rt_export(const scene *sc, view_gpu_frame *f)
+{
+    static view_rt_tri *tris;
+    static view_rt_strip *strips;
+    static u32 tris_cap, strips_cap;
+    u32 nt = 0;
+    GROW(strips, strips_cap, sc->jobs_n + 1);
+    for (u32 ji = 0; ji < sc->jobs_n; ji++) {
+        const sjob *j = &sc->jobs[ji];
+        const xform *xf = &sc->xf[j->xf];
+        const u8 *p = sc->vcopy + j->voff;
+        u32 format = j->format;
+        int size = j->size;
+        int has_uv = format >> 3 & 1, has_col = format >> 6 & 1, bumped = format >> 8 & 1;
+        int uv_at = 16 + (format & 4 ? 16 : 0), col_at = uv_at + (has_uv ? 8 : 0);
+        const float *m = xf->m, *nm = xf->n;
+        view_rt_strip *s = &strips[ji];
+        s->base[0] = (float)(j->base >> 16 & 255); s->base[1] = (float)(j->base >> 8 & 255);
+        s->base[2] = (float)(j->base & 255); s->base[3] = (float)(j->base >> 24);
+        s->spec[0] = (float)(j->offset >> 16 & 255); s->spec[1] = (float)(j->offset >> 8 & 255);
+        s->spec[2] = (float)(j->offset & 255); s->spec[3] = (float)j->spec;
+        s->lights = j->ls;
+        s->state = j->st;
+        s->flags = (j->unlit ? VIEW_RT_UNLIT : 0) | (j->env ? VIEW_RT_ENV : 0) | (bumped ? VIEW_RT_BUMPED : 0) | (u32)j->k << 4 |
+                   (j->use_ofs ? VIEW_RT_OFFSET : 0) | (j->keep ? VIEW_RT_ONE_SIDED : 0) | (j->keep < 0 ? VIEW_RT_BACK : 0);
+        s->pad = 0;
+        GROW(tris, tris_cap, nt + j->count);
+        int odd = 0, have = 0;
+        view_rt_vertex first, before, prev;
+        memset(&first, 0, sizeof first);
+        before = prev = first;
+        for (u32 i = 0; i < j->count; i++, p += size) {
+            u32 ctl = *(const u32 *)p;
+            const float *fp = (const float *)(p + 4);
+            view_rt_vertex v;
+            v.p[0] = fp[0] * m[0] + fp[1] * m[3] + fp[2] * m[6] + m[9];
+            v.p[1] = fp[0] * m[1] + fp[1] * m[4] + fp[2] * m[7] + m[10];
+            v.p[2] = fp[0] * m[2] + fp[1] * m[5] + fp[2] * m[8] + m[11];
+            v.uv[0] = has_uv ? *(const float *)(p + uv_at) : 0;
+            v.uv[1] = has_uv ? *(const float *)(p + uv_at + 4) : 0;
+            v.col = has_col && !bumped ? *(const u32 *)(p + col_at) : 0;
+            v.ofs = v.col ? *(const u32 *)(p + col_at + 4) : 0;
+            float nx = (float)(s8)ctl, ny = (float)(s8)(ctl >> 8), nzz = (float)(s8)(ctl >> 16);
+            float gx = nx * nm[0] + ny * nm[1] + nzz * nm[2];
+            float gy = nx * nm[3] + ny * nm[4] + nzz * nm[5];
+            float gz = nx * nm[6] + ny * nm[7] + nzz * nm[8];
+            float len = sqrtf(gx * gx + gy * gy + gz * gz);
+            if (len > 0) {
+                gx /= len; gy /= len; gz /= len;
+            }
+            v.n[0] = gx; v.n[1] = gy; v.n[2] = gz;
+            /* the strip's own order (strip_job): a strip's triangles turn alternately, and the
+             * odd ones are handed over turned back, so that one strip turns one way */
+            int code = ctl >> 29 & 3;
+            if (have == 0) {
+                first = prev = v;
+                have = 1;
+            } else if (have == 1) {
+                before = prev;
+                prev = v;
+                have = 2;
+            } else {
+                if (code == 3)
+                    odd = 0;
+                else if (code == 1)
+                    odd ^= 1;
+                if (code) {
+                    view_rt_tri *t = &tris[nt++];
+                    t->strip = ji;
+                    t->v[0] = code == 2 ? first : before;
+                    t->v[1] = prev;
+                    t->v[2] = v;
+                    if (code != 2 && odd) {
+                        view_rt_vertex w = t->v[0];
+                        t->v[0] = t->v[1];
+                        t->v[1] = w;
+                    }
+                }
+                if (code == 3)
+                    first = before;
+                before = prev;
+                prev = v;
+            }
+            if (ctl >> 31)
+                have = 0;
+        }
+    }
+    f->rt_tris = tris;
+    f->nrt_tris = nt;
+    f->rt_strips = strips;
+    f->nrt_strips = sc->jobs_n;
+    f->rt_near = sc->jobs_n ? sc->xf[sc->jobs[0].xf].near_z : 0;
+}
+
 static void gpu_export(scene *sc)
 {
     view_gpu_frame f;
@@ -3443,7 +3548,8 @@ static void gpu_export(scene *sc)
     f.vols = gpu_vols;
     f.nvols = sc->vols_n[0];
     f.translucent_volumes = sc->vols_n[1];
-    if (sc->gl_on) {                    /* recomp (section 67): the strip records and the light sets */
+    int rt = __atomic_load_n(&rt_on, __ATOMIC_RELAXED);     /* recomp (section 74) */
+    if (sc->gl_on || rt) {              /* recomp (section 67): the strip records and the light sets */
         static float *sets;
         static u32 sets_cap;
         u32 n = 0;
@@ -3460,11 +3566,15 @@ static void gpu_export(scene *sc)
                 sets[n++] = l->ck; sets[n++] = l->cb; sets[n++] = (float)l->dmode; sets[n++] = (float)l->route;
             }
         }
-        f.lit = sc->gl_rec;
-        f.nlit = sc->jobs_n * VIEW_GPU_LIT_FLOATS;
+        if (sc->gl_on) {
+            f.lit = sc->gl_rec;
+            f.nlit = sc->jobs_n * VIEW_GPU_LIT_FLOATS;
+        }
         f.lights = sets;
         f.nlights = n;
     }
+    if (rt)
+        rt_export(sc, &f);
     f.arena = gpu_arena;
     f.arena_texels = gpu_arena_top;
     f.dirty = gpu_dirty;

@@ -6550,3 +6550,147 @@ screen, by eye: only still pictures were looked at. Intel graphics, a
 Steam Deck, Windows itself. The occlusion darkens the whole color of a
 pixel, the lights' direct part too, as SSAO does; its radius and strength
 are fixed (`AO_RADIUS`, `AO_STRENGTH`), not settings.
+
+## 74. Ray traced light, step 1: Vulkan (2026-11-24)
+
+**Why.** The maintainer asked for a path tracing setting, with reflective
+glass, water and metal, and decided on two renderers for it: one on Vulkan
+and one on DirectX 12, each with what its API offers (DLSS and FSR on
+both, FSR's ray regeneration on DirectX only). This section is the first
+step of the Vulkan one: the traced light inside the game, without any
+vendor's upscaler or denoiser yet.
+
+**What was found first** (prototypes outside the game, not in the
+repository):
+
+- `view.c` has all a tracer needs: every strip's vertices through the
+  vertex matrix, its normals, its material, its light set, about 50,000
+  triangles in a fight frame.
+- The game's lights are not physical. The stage is lit by lights its own
+  ceiling would block, the fighters by a set of their own, and the game
+  draws its shadows apart, as volumes, with a direction that is in no
+  light set. Tracing every light against everything made the picture dark.
+  What kept the game's look: only the fighters cast traced shadows; the
+  stage takes the game's own shadow, at the game's own darkness, by rays;
+  a surface with its light painted in takes only what the fighters do to
+  it.
+- SDL's GPU layer has no ray tracing and does not hand its Vulkan device
+  out, so ray tracing needs a device of its own.
+- The GPU's ray tracing is fast enough: the tracing shader with one ray
+  for each thing a pixel took 1 ms at 1280 x 960 on an RTX 5070 Ti and
+  6 ms on a Radeon 8060S; the frame's acceleration structures 1.5 and
+  1.1 ms. The same through DirectX 12 under Proton gave the same picture
+  at about the same speed.
+
+**What is done.** A setting, Ray tracing (settings.txt `raytracing = off |
+vulkan`, the Picture tab of the game's menu and of the launcher's
+Settings; off by default), for the GPU renderer. A change applies at once.
+
+- The scene (`view.c`, `view_host_rt`). With it on, a frame handed to the
+  GPU path also carries every strip's triangles as `strip_job` walks them,
+  but none left out by the near plane, the culling or the screen's edges
+  (`rt_export`: positions, normals, texture coordinates, colors of their
+  own; a record a strip with its material, light set and state), and the
+  light sets. That is about 1 ms more on the machine's thread a frame.
+- Packing (`rt_scene.c`, no graphics API in it). The triangles go into
+  four groups: the fighters' solid ones and by-alpha ones, the stage's
+  solid ones and by-alpha ones. A fighter's triangle is one that is lit
+  and not marked to take the game's shadows. The way the game's shadows
+  fall is estimated from the game's shadow volumes (the fighters' outlines
+  on the floor drawn out upright: the edges give the upright, the corners
+  the ground plan) and the fighters' box. The game's own shadow light,
+  read from its code, is to replace that estimate.
+- The device (`rt_vk.c`). A Vulkan device of the ray tracing's own on the
+  GPU the renderer draws with, with `VK_KHR_acceleration_structure` and
+  `VK_KHR_ray_query`. Each frame, in one command buffer: the scene's
+  buffers and the texels that changed are copied in, an acceleration
+  structure is built for each group and one over them (the scene is in
+  view space, nothing of it stands still), the tracing shader runs over
+  the picture, a filter runs over its results, and they are copied where
+  the processor reads them. The call waits for it. Vulkan's functions
+  come through SDL's loader; its declarations are Khronos's headers in
+  `runtime/vulkan` (the pinned Windows compiler has none).
+- The tracing shader (`rt_light.comp`). For each pixel the eye's ray
+  finds the first surface of the solid lists. For it: the game's own sum
+  of its lights; and the same sum with each light's share cut by what
+  rays towards it meet (fighters only, 4 rays a light, a little apart for
+  a soft edge), the ambient part gathered by 4 rays over the surface (a
+  free way brings the ambient color, a thing near by what it sends back,
+  fading with distance over 3 of the scene's units), and for the stage
+  the game's shadow light. Out goes the ratio of the two sums. A pane of
+  glass before the surface (a translucent polygon of the stage with a
+  highlight of its own, mostly clear, lying in the floor) mirrors the
+  scene by 2 rays, weighed by its angle to the eye. The rays are the same
+  every frame, so what stands still does not flicker.
+- The filter (`rt_filter.comp`): each pixel's ratio is the weighted mean
+  of its neighbours' within 3 pixels whose surface is about as far from
+  the eye; the reflections the same within 1.
+- Into the picture (`gpu_render.c`, `rt_apply.frag`). The renderer leaves
+  the game's shadow volumes out, and after the solid lists the two
+  results come in as textures; a pass into a second color target copies
+  the picture and, where stencil bit 3 says the 3D scene is (section 73),
+  writes color x ratio x (1 - the glass's share) + the mirrored color.
+  The translucent list is drawn on top of that as ever, and the 2D layer
+  is not touched. Ambient occlusion from the depth buffer is left out
+  while ray tracing draws (the rays bring their own).
+- The ray tracing's device starts with the first frame after the setting
+  is turned on; it then needs the whole texel arena once, which the next
+  frame brings. A GPU or driver without the two extensions: the log says
+  so, and the picture is drawn as without.
+
+Found on the way: a GPU's staging memory is of the kind that suits
+writing; reading back from it (the first version did, to find the
+fighters' box, and read its results from such memory too) took 125 ms a
+frame. Nothing is read from it now, and the results come back through
+cached memory: 10 ms.
+
+**Checked** (the development PC; the windowed games from stage snapshots
+in a headless desktop, the picture shown at a vertical blank in a fight,
+internal resolution 1280 x 960 unless said, on an RTX 5070 Ti in an
+external enclosure):
+
+- Off: the picture is the same to the pixel as before the change.
+- On, four stages: the fighters' shadows fall the way the game's do, with
+  soft edges; the fighters shade themselves; the glass panes of one stage
+  mirror the scaffold behind. A band inside a health bar: no pixel
+  differs. The time to trace a frame and bring it back: 9.6 to 12.3 ms.
+- A wide picture (16:9): drawn; its middle differs from the 4:3 picture
+  by 0.65 steps of 255 on average (the rays' pattern falls on other
+  pixels). 11.6 ms.
+- Internal resolution 640 x 480: 6.5 ms. 1920 x 1440: 17.4 ms, more than
+  a frame's 16.7.
+- The software renderer: the same picture with the setting on as off.
+- The Radeon 8060S (Mesa's RADV): the same picture as the NVIDIA card's
+  but for 0.01 steps on average; 20.9 ms a frame, too slow for full speed.
+- The game's menu, at the game's own pace: the row set to Vulkan during a
+  fight; the file has `raytracing = vulkan`, and the picture 200 vertical
+  blanks later is the same to the pixel as with the setting on from the
+  start. (As fast as the machine goes, the run was over before the device
+  had started: that first test showed no change, and was the test's
+  fault.)
+- The launcher's row, Linux and the Windows launcher under Wine: both save
+  `raytracing = vulkan`.
+- The Windows game under Wine: the same ray traced picture to the pixel
+  as the Linux game.
+- Both builds compile (Linux, Windows) with no warning.
+
+**Known.**
+
+- It costs about 10 ms of the window's thread a frame on a fast card, most
+  of it bringing the scene to the second device and the results back
+  through the processor's memory; on the Radeon it is too slow at these
+  ray counts. The counts (4 ambient, 4 a light, 2 mirrored) are fixed.
+- Translucent polygons (a scaffold, hair) are drawn after the traced
+  light, with the game's own light and no shadow on them; they do cast
+  shadows by their alpha.
+- Glass is found by a rule made for one stage (and only panes lying in
+  the floor of a level camera); water and metal mirror nothing yet.
+- The shadows' direction is an estimate.
+- The picture in motion was not looked at; the same rays every frame keep
+  a still picture still, and a moving one may crawl.
+
+**Not covered.** Windows itself, Proton (plain Wine only), a Steam Deck,
+Intel graphics, a two-PC game, frame skip with it, the game at its own
+pace for long. The steps to come: motion from frame to frame, the game's
+own shadow light, a list of materials, the renderer owning the whole
+frame so that DLSS and FSR can work, and the DirectX 12 renderer.

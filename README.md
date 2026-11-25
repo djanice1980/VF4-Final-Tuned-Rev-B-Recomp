@@ -560,7 +560,10 @@ leaves a tenth of the screen free); Internal resolution is the size the GPU rend
 the picture is scaled to the window or the screen. Ambient occlusion: SSAO
 makes corners, folds and the places where things meet (a foot on the
 floor) a little darker, which the cabinet's picture does not have; it is
-off by default. For a PC whose
+off by default. Ray tracing: Vulkan has the graphics chip trace rays for
+the picture's light: the fighters' shadows get soft edges, the fighters
+shade themselves and each other, and glass mirrors the scene. It needs a
+graphics chip with ray tracing, and a fast one; it is off by default. For a PC whose
 processor cannot keep the game at full speed, the same tab has Lighting:
 GPU (the graphics chip works out the lights) and Frame skip: Every other
 frame (the game keeps its full speed and 30 pictures a second are drawn).
@@ -668,6 +671,9 @@ with only a gamepad, the menu's Operator test menu does the same.
   things meet a little, worked out of the picture's depth by the GPU
   renderer; default off:
   [design.md s73](docs/design.md#73-ambient-occlusion-out-of-the-depth-buffer-ssao-as-an-option-2026-11-24)),
+  `raytracing` (off | vulkan: vulkan traces the light of the GPU
+  renderer's picture with the GPU's ray tracing; default off:
+  [design.md s74](docs/design.md#74-ray-traced-light-step-1-vulkan-2026-11-24)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad1.*` and `pad2.*` for each player's gamepad (a

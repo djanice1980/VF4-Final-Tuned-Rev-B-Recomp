@@ -8,6 +8,8 @@
 
 #include <SDL3/SDL.h>
 
+#include "rt.h"
+
 struct view_gpu_frame;
 
 /* after the device is made; scale 1..4. 0, or -1 with a message in the SDL error */
@@ -40,6 +42,15 @@ SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h
  * (the default), a frame is drawn as ever. A device that cannot draws as
  * with it off. */
 void gpu_render_occlusion(int on);
+
+/* on the window's thread, at any time (before gpu_render_init too; it stays over a start again):
+ * ray traced light (docs/design.md section 74) by this backend (rt.h), or NULL for none, the
+ * default. The backend is started on the renderer's GPU with the next frame; one that cannot
+ * start (no ray tracing on the GPU) is said in the log, and the picture is drawn as without. */
+void gpu_render_raytracing(const rt_backend *backend);
+
+/* frames drawn with traced light, and the mean time one took to trace and bring back, ms */
+void gpu_render_rt_stats(unsigned *frames, double *ms);
 
 /* any thread: the frames the machine handed over, and those of them never
  * drawn (a newer one came first) */

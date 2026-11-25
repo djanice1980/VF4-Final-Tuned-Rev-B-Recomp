@@ -31,10 +31,18 @@
  * says the 3D scene is (the opaque and punch-through lists write that bit
  * for a model's strips, and clear it for what the game sends straight to
  * the chips: its 2D layer keeps its colours).
+ *
+ * With ray tracing on (gpu_render_raytracing, section 74) step 3 is left out, and after step 2
+ * the frame's scene is traced on a device of the ray tracing's own (rt.h): its two pictures,
+ * the light's ratio and the glass's reflections, come back through the processor's memory, and
+ * a pass into a second colour target copies the picture and, where stencil bit 3 is set, puts
+ * them in (colour * ratio * (1 - share) + mirrored colour). Step 4 goes on there. Ambient
+ * occlusion out of the depth buffer is left out then: the rays bring their own.
  */
 #include "gpu_render.h"
 #include "view.h"
 #include "gpu_shaders.h"
+#include "rt.h"
 
 #include <string.h>
 
@@ -56,6 +64,10 @@ typedef struct packet {
     size_t vols_cap;
     float *lit, *lights;    /* lighting on the GPU: the strip records and the light sets */
     size_t lit_cap, lights_cap;
+    view_rt_tri *rt_t;      /* ray tracing: the scene's triangles and strips */
+    size_t rt_t_cap;
+    view_rt_strip *rt_s;
+    size_t rt_s_cap;
     Uint64 pts;         /* when it is to be shown, by the game's clock (0: as it comes) */
     size_t up_end;      /* the texel uploads up to here are this frame's and those before it */
 } packet;
@@ -74,6 +86,8 @@ static size_t up_n, up_cap;
 /* the renderer has just started (again): the next frame sends the whole
  * arena, as the device's copy of it is new and empty */
 static int up_all;
+/* the uploads waiting begin with the whole arena (a device of the ray tracing's own waits for that) */
+static int up_whole;
 static unsigned stat_frames, stat_max_tris, stat_tvol_frames;
 
 static int grow(void **p, size_t *cap, size_t need, size_t elem)
@@ -111,6 +125,7 @@ void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
             up_n += f->arena_texels;
         }
         up_all = 0;
+        up_whole = 1;
     }
     for (Uint32 i = 0; i < f->ndirty; i++) {
         Uint32 at = f->dirty[i].at, n = f->dirty[i].n;
@@ -128,7 +143,8 @@ void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
     packet *p = &pk[w];
     if (GROW(p->v, p->v_cap, f->nv) || GROW(p->st, p->st_cap, f->nst) || GROW(p->d, p->d_cap, f->ndraws) ||
         GROW(p->vol, p->vol_cap, (size_t)f->nvol_xyz * 3) || GROW(p->vols, p->vols_cap, f->nvols) ||
-        GROW(p->lit, p->lit_cap, (size_t)f->nlit + 1) || GROW(p->lights, p->lights_cap, (size_t)f->nlights + 1)) {
+        GROW(p->lit, p->lit_cap, (size_t)f->nlit + 1) || GROW(p->lights, p->lights_cap, (size_t)f->nlights + 1) ||
+        GROW(p->rt_t, p->rt_t_cap, (size_t)f->nrt_tris + 1) || GROW(p->rt_s, p->rt_s_cap, (size_t)f->nrt_strips + 1)) {
         SDL_UnlockMutex(lock);
         return;
     }
@@ -142,6 +158,12 @@ void gpu_render_submit_at(const view_gpu_frame *f, Uint64 pts)
         SDL_memcpy(p->lit, f->lit, (size_t)f->nlit * sizeof(float));
     if (f->nlights)
         SDL_memcpy(p->lights, f->lights, (size_t)f->nlights * sizeof(float));
+    if (f->nrt_tris) {
+        SDL_memcpy(p->rt_t, f->rt_tris, (size_t)f->nrt_tris * sizeof *p->rt_t);
+        SDL_memcpy(p->rt_s, f->rt_strips, (size_t)f->nrt_strips * sizeof *p->rt_s);
+    }
+    p->f.rt_tris = p->rt_t;
+    p->f.rt_strips = p->rt_s;
     p->f.lit = p->lit;
     p->f.lights = p->lights;
     p->f.v = p->v;
@@ -195,6 +217,18 @@ static int have_picture;
 /* ambient occlusion (section 73): asked for (the window's thread sets it and draws); what this
  * device can do; the targets as they were last made */
 static int ao_want, ao_can, t_ao_made;
+/* ray tracing (section 74): the backend asked for (NULL: off) and how many rays; the one started;
+ * its arena is whole (it traces only then); the targets as they were last made */
+static const rt_backend *rt_want, *rt_run;
+static rt_quality rt_rays = { 4, 4, 2 };
+static int rt_whole, rt_failed, t_rt_made;
+static SDL_GPUShader *sh_copy_f, *sh_rt_apply_f;
+static SDL_GPUGraphicsPipeline *pl_copy, *pl_rt_apply;
+static SDL_GPUTexture *t_color2, *t_light, *t_refl, *t_final;
+static SDL_GPUTransferBuffer *xfer_rt;
+static Uint32 xfer_rt_size;
+static unsigned stat_rt_frames;
+static double stat_rt_ms;
 static SDL_GPUShader *sh_ao_f, *sh_ao_blur_f, *sh_ao_apply_f;
 static SDL_GPUGraphicsPipeline *pl_ao, *pl_ao_blur, *pl_ao_apply;
 static SDL_GPUTexture *t_ao, *t_ao_smooth;
@@ -474,6 +508,32 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
             ao_can = 0;
         }
     }
+    /* ray tracing's two passes over the picture: the copy into the second colour target, and the
+     * traced light where bit 3 is set (they need the sampler too) */
+    if (!smp_texel) {
+        SDL_GPUSamplerCreateInfo si;
+        SDL_zero(si);
+        si.min_filter = si.mag_filter = SDL_GPU_FILTER_NEAREST;
+        si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        smp_texel = SDL_CreateGPUSampler(gpu, &si);
+    }
+    sh_copy_f = shader(spv_copy_frag, sizeof spv_copy_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 1);
+    sh_rt_apply_f = shader(spv_rt_apply_frag, sizeof spv_rt_apply_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 3);
+    if (sh_copy_f && sh_rt_apply_f && smp_texel) {
+        SDL_zero(p);
+        p.vs = sh_rect_v;
+        p.fs = sh_copy_f;
+        pl_copy = pipeline(&p);
+        p.fs = sh_rt_apply_f;
+        p.stencil = 1;
+        p.st_op = SDL_GPU_COMPAREOP_EQUAL;
+        p.st_pass = SDL_GPU_STENCILOP_KEEP;
+        p.st_depth_fail = SDL_GPU_STENCILOP_KEEP;
+        p.st_cmask = 8;
+        p.st_wmask = 0;
+        pl_rt_apply = pipeline(&p);
+    }
     SDL_GPUBufferCreateInfo bi;
     SDL_zero(bi);
     bi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
@@ -503,10 +563,17 @@ static int buffer_room(SDL_GPUBuffer **b, Uint32 *size, Uint32 need, SDL_GPUBuff
 }
 
 /* ao: the depth buffer is one a shader can read, and the occlusion's two targets are there */
-static int targets(Uint32 w, Uint32 h, int ao)
+static int targets(Uint32 w, Uint32 h, int ao, int rt)
 {
-    if (t_color && w == t_w && h == t_h && ao == t_ao_made)
+    if (t_color && w == t_w && h == t_h && ao == t_ao_made && rt == t_rt_made)
         return 0;
+    SDL_GPUTexture **more[] = { &t_color2, &t_light, &t_refl };
+    for (int i = 0; i < 3; i++) {
+        if (*more[i])
+            SDL_ReleaseGPUTexture(gpu, *more[i]);
+        *more[i] = NULL;
+    }
+    t_final = NULL;
     if (t_color)
         SDL_ReleaseGPUTexture(gpu, t_color);
     if (t_ds)
@@ -535,10 +602,61 @@ static int targets(Uint32 w, Uint32 h, int ao)
         t_ao = SDL_CreateGPUTexture(gpu, &ti);
         t_ao_smooth = SDL_CreateGPUTexture(gpu, &ti);
     }
+    if (rt) {
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        t_color2 = SDL_CreateGPUTexture(gpu, &ti);
+        ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        t_refl = SDL_CreateGPUTexture(gpu, &ti);
+        ti.format = SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM;
+        t_light = SDL_CreateGPUTexture(gpu, &ti);
+    }
     t_w = w;
     t_h = h;
     t_ao_made = ao;
-    return t_color && t_ds && (!ao || (t_ao && t_ao_smooth)) ? 0 : -1;
+    t_rt_made = rt;
+    return t_color && t_ds && (!ao || (t_ao && t_ao_smooth)) && (!rt || (t_color2 && t_light && t_refl)) ? 0 : -1;
+}
+
+void gpu_render_raytracing(const rt_backend *backend)
+{
+    if (backend == rt_want)
+        return;
+    rt_want = backend;
+    rt_failed = 0;
+    view_host_rt(backend != NULL);
+}
+
+void gpu_render_rt_stats(unsigned *frames, double *ms)
+{
+    *frames = stat_rt_frames;
+    *ms = stat_rt_frames ? stat_rt_ms / stat_rt_frames : 0;
+}
+
+/* the ray tracing's device follows the wish: started on the renderer's GPU, stopped when it is no
+ * longer wanted. Started, it first waits for the whole texel arena (asked for here). */
+static void rt_follow(void)
+{
+    if (rt_run && rt_run != rt_want) {
+        rt_run->stop();
+        rt_run = NULL;
+    }
+    if (!rt_want || rt_run || rt_failed)
+        return;
+    const char *name = SDL_GetStringProperty(SDL_GetGPUDeviceProperties(gpu), SDL_PROP_GPU_DEVICE_NAME_STRING, NULL);
+    if (!pl_copy || !pl_rt_apply || !SDL_GPUTextureSupportsFormat(gpu, ds_format, SDL_GPU_TEXTURETYPE_2D,
+                                                                  SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET) ||
+        rt_want->start(name)) {
+        SDL_Log("gpu_render: no ray tracing (%s): %s", rt_want->name, SDL_GetError());
+        rt_failed = 1;
+        return;
+    }
+    SDL_Log("gpu_render: ray tracing (%s) on %s", rt_want->name, name ? name : "the GPU");
+    rt_run = rt_want;
+    rt_whole = 0;
+    SDL_LockMutex(lock);
+    up_all = 1;
+    SDL_UnlockMutex(lock);
 }
 
 void gpu_render_occlusion(int on)
@@ -559,6 +677,7 @@ static void rect(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, float x0, flo
 static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
 {
     const view_gpu_frame *f = &pkt->f;
+    rt_follow();
     /* everything to the GPU: the texels that changed up to this frame (those of frames still
      * waiting stay for their turn), the triangles, the states, the volumes */
     SDL_LockMutex(lock);
@@ -604,6 +723,13 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
         regs[nregs++] = up[i];
         regs[nregs++] = up[i + 1];
         regs[nregs++] = (Uint32)((i + 2) * 4);
+        if (rt_run)
+            rt_run->texels(up[i], up[i + 1], up + i + 2);
+    }
+    if (up_take && up_whole) {
+        up_whole = 0;
+        if (rt_run)
+            rt_whole = 1;
     }
     SDL_memmove(up, up + up_take, (up_n - up_take) * 4);
     up_n -= up_take;
@@ -658,8 +784,55 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
 
     /* ambient occlusion: asked for, the device can, and the frame has a 3D scene whose projection is known */
     int ao = ao_want && ao_can && f->proj[0] != 0 && f->proj[2] != 0;
-    if (targets((Uint32)f->w * (Uint32)scale, (Uint32)f->h * (Uint32)scale, ao_want && ao_can))
+    Uint32 tw = (Uint32)f->w * (Uint32)scale, th = (Uint32)f->h * (Uint32)scale;
+    if (targets(tw, th, ao_want && ao_can, rt_run != NULL))
         return;
+    /* ray tracing: the frame's scene traced now, on its own device, and its two pictures uploaded */
+    int rt = 0;
+    if (rt_run && rt_whole && f->nrt_tris && f->proj[0] != 0 && f->proj[2] != 0) {
+        const Uint32 *light = NULL, *refl = NULL;
+        Uint64 t0 = SDL_GetTicksNS();
+        Uint32 bytes = tw * th * 4;
+        if (xfer_rt_size < 2 * bytes) {
+            if (xfer_rt)
+                SDL_ReleaseGPUTransferBuffer(gpu, xfer_rt);
+            SDL_GPUTransferBufferCreateInfo xi;
+            SDL_zero(xi);
+            xi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            xi.size = 2 * bytes;
+            xfer_rt = SDL_CreateGPUTransferBuffer(gpu, &xi);
+            xfer_rt_size = xfer_rt ? 2 * bytes : 0;
+        }
+        Uint8 *xm = xfer_rt ? SDL_MapGPUTransferBuffer(gpu, xfer_rt, true) : NULL;
+        if (xm && rt_run->trace(f, (int)tw, (int)th, &rt_rays, &light, &refl) == 0) {
+            SDL_memcpy(xm, light, bytes);
+            SDL_memcpy(xm + bytes, refl, bytes);
+            rt = 1;
+        } else if (xm && !rt_failed) {
+            SDL_Log("gpu_render: ray tracing stopped: %s", SDL_GetError());
+            rt_failed = 1;      /* the wish stays; this run draws without */
+        }
+        if (xm)
+            SDL_UnmapGPUTransferBuffer(gpu, xfer_rt);
+        if (rt) {
+            SDL_GPUCopyPass *rcp = SDL_BeginGPUCopyPass(cmd);
+            SDL_GPUTextureTransferInfo src = { xfer_rt, 0, tw, th };
+            SDL_GPUTextureRegion dst = { t_light, 0, 0, 0, 0, 0, tw, th, 1 };
+            SDL_UploadToGPUTexture(rcp, &src, &dst, true);
+            src.offset = bytes;
+            dst.texture = t_refl;
+            SDL_UploadToGPUTexture(rcp, &src, &dst, true);
+            SDL_EndGPUCopyPass(rcp);
+            stat_rt_frames++;
+            stat_rt_ms += (double)(SDL_GetTicksNS() - t0) / 1e6;
+        }
+    }
+    if (rt_failed && rt_run) {
+        rt_run->stop();
+        rt_run = NULL;
+    }
+    if (rt)
+        ao = 0;
     SDL_GPUColorTargetInfo ct;
     SDL_zero(ct);
     ct.texture = t_color;
@@ -671,9 +844,9 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     dt.texture = t_ds;
     dt.clear_depth = 0;
     dt.load_op = SDL_GPU_LOADOP_CLEAR;
-    dt.store_op = ao ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
+    dt.store_op = ao || rt ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
     dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
-    dt.stencil_store_op = ao ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
+    dt.stencil_store_op = ao || rt ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
     dt.clear_stencil = 0;
     SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
     float zs = f->zmax > 0 ? 1.0f / (f->zmax * 1.0001f) : 1.0f;
@@ -733,7 +906,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
                 SDL_SetGPUStencilReference(rp, (Uint8)((d->shadow ? 1 : 0) | (d->solid ? 8 : 0)));
             SDL_DrawGPUPrimitives(rp, d->count, 1, d->first, 0);
         }
-        if (phase == 0 && f->nvols && f->shadow_scale < 256) {
+        if (phase == 0 && f->nvols && f->shadow_scale < 256 && !rt) {
             /* 3. the opaque list's volumes, then the shadow */
             SDL_GPUBufferBinding volbind = { b_vol, 0 };
             float zero[4] = { 0, 0, 0, 0 };
@@ -757,6 +930,29 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
             SDL_SetGPUStencilReference(rp, 5);
             float s = (float)f->shadow_scale / 256.0f, col[4] = { s, s, s, 1 };
             SDL_PushGPUFragmentUniformData(cmd, 0, col, sizeof col);
+            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            bound = NULL;
+            list_pushed = -1;
+        }
+        if (phase == 0 && rt) {
+            /* The traced light (section 74), where the ambient occlusion would go in: into the
+             * second colour target the picture as it is, then, where bit 3 is set, the picture
+             * times the light's ratio with the reflections; the translucent list goes on there. */
+            SDL_EndGPURenderPass(rp);
+            ct.texture = t_color2;
+            ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
+            dt.load_op = SDL_GPU_LOADOP_LOAD;
+            dt.stencil_load_op = SDL_GPU_LOADOP_LOAD;
+            dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+            rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+            SDL_GPUTextureSamplerBinding three[3] = { { t_color, smp_texel }, { t_light, smp_texel }, { t_refl, smp_texel } };
+            SDL_BindGPUGraphicsPipeline(rp, pl_copy);
+            SDL_BindGPUFragmentSamplers(rp, 0, three, 1);
+            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            SDL_BindGPUGraphicsPipeline(rp, pl_rt_apply);
+            SDL_SetGPUStencilReference(rp, 8);
+            SDL_BindGPUFragmentSamplers(rp, 0, three, 3);
             rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
             bound = NULL;
             list_pushed = -1;
@@ -802,6 +998,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
         }
     }
     SDL_EndGPURenderPass(rp);
+    t_final = rt ? t_color2 : t_color;
     have_picture = 1;
     last_frame = f->frame;
     stat_frames++;
@@ -835,7 +1032,7 @@ SDL_GPUTexture *gpu_render_frame(SDL_GPUCommandBuffer *cmd, Uint32 *w, Uint32 *h
     *w = t_w;
     *h = t_h;
     *frame = last_frame;
-    return have_picture ? t_color : NULL;
+    return have_picture ? t_final : NULL;
 }
 
 void gpu_render_counts(unsigned *submitted, unsigned *replaced)
@@ -863,13 +1060,13 @@ void gpu_render_quit(void)
                 for (int d = 0; d < 64; d++)
                     if (pl_scene[a][b][c][d])
                         SDL_ReleaseGPUGraphicsPipeline(gpu, pl_scene[a][b][c][d]);
-    SDL_GPUGraphicsPipeline *pls[] = { pl_bg, pl_vol, pl_resolve, pl_shadow, pl_ao, pl_ao_blur, pl_ao_apply };
-    for (int i = 0; i < 7; i++)
+    SDL_GPUGraphicsPipeline *pls[] = { pl_bg, pl_vol, pl_resolve, pl_shadow, pl_ao, pl_ao_blur, pl_ao_apply, pl_copy, pl_rt_apply };
+    for (int i = 0; i < 9; i++)
         if (pls[i])
             SDL_ReleaseGPUGraphicsPipeline(gpu, pls[i]);
     SDL_GPUShader *shs[] = { sh_scene_v, sh_scene_f, sh_vol_v, sh_rect_v, sh_bg_f, sh_const_f, sh_ao_f, sh_ao_blur_f,
-                             sh_ao_apply_f };
-    for (int i = 0; i < 9; i++)
+                             sh_ao_apply_f, sh_copy_f, sh_rt_apply_f };
+    for (int i = 0; i < 11; i++)
         if (shs[i])
             SDL_ReleaseGPUShader(gpu, shs[i]);
     SDL_GPUBuffer *bs[] = { b_tex, b_vert, b_state, b_vol, b_lit, b_lights };
@@ -893,6 +1090,22 @@ void gpu_render_quit(void)
     t_ao = t_ao_smooth = NULL;
     smp_texel = NULL;
     ao_can = t_ao_made = 0;
+    /* the ray tracing's device goes with the renderer's (the wish stays: the next start takes it up) */
+    if (rt_run)
+        rt_run->stop();
+    rt_run = NULL;
+    rt_failed = rt_whole = t_rt_made = 0;
+    SDL_GPUTexture *more[] = { t_color2, t_light, t_refl };
+    for (int i = 0; i < 3; i++)
+        if (more[i])
+            SDL_ReleaseGPUTexture(gpu, more[i]);
+    t_color2 = t_light = t_refl = t_final = NULL;
+    if (xfer_rt)
+        SDL_ReleaseGPUTransferBuffer(gpu, xfer_rt);
+    xfer_rt = NULL;
+    xfer_rt_size = 0;
+    pl_copy = pl_rt_apply = NULL;
+    sh_copy_f = sh_rt_apply_f = NULL;
     /* all of it gone, for a start again on this device or another (the
      * lock, the frames handed over and the counts stay) */
     SDL_zeroa(pl_scene);

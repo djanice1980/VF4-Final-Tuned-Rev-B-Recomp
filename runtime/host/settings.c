@@ -31,6 +31,7 @@ const char *const settings_pacing_name[PACINGS] = { "game", "screen", "off" };
 const char *const settings_lighting_name[LIGHTINGS] = { "cpu", "gpu" };
 const char *const settings_skip_name[SKIPS] = { "off", "half" };
 const char *const settings_occlusion_name[OCCLUSIONS] = { "off", "ssao" };
+const char *const settings_raytracing_name[RAYTRACINGS] = { "off", "vulkan" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -188,6 +189,7 @@ void settings_defaults(settings *s)
     s->lighting = LIGHTING_CPU;
     s->skip = SKIP_OFF;
     s->occlusion = OCCLUSION_OFF;
+    s->raytracing = RAYTRACING_OFF;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -539,6 +541,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "occlusion")) {
                 if ((ok = choice(v, settings_occlusion_name, OCCLUSIONS, &x)))
                     s->occlusion = x;
+            } else if (!strcmp(name, "raytracing")) {
+                if ((ok = choice(v, settings_raytracing_name, RAYTRACINGS, &x)))
+                    s->raytracing = x;
             } else if (!strcmp(name, "pacing")) {
                 if ((ok = choice(v, settings_pacing_name, PACINGS, &x)))
                     s->pacing = x;
@@ -667,6 +672,10 @@ int settings_save(const settings *s, const char *path)
         "                       # (ambient occlusion, worked out of the picture's depth by the GPU renderer;\n"
         "                       # the cabinet's picture has none, and the software renderer draws none)\n",
         settings_occlusion_name[s->occlusion]);
+    PUT("raytracing = %s       # off | vulkan: vulkan traces the light of the GPU renderer's picture with the\n"
+        "                       # GPU's ray tracing: soft shadows, light and shade from what is around,\n"
+        "                       # reflections in glass. It needs a GPU with ray tracing, and a fast one\n",
+        settings_raytracing_name[s->raytracing]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

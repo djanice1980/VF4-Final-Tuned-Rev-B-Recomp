@@ -99,6 +99,31 @@ typedef struct view_gpu_volume {
 typedef struct view_gpu_range {
     u32 at, n;                          /* texels of the arena to upload */
 } view_gpu_range;
+/* recomp (ray tracing, docs/design.md section 74): with view_host_rt on, a frame also carries the
+ * scene as the models' strips made it: every triangle, before the near plane, the culling and the
+ * screen's edges took any away, with what the lights need. A position is in the vertex matrix's
+ * space (the eye at the origin; the game's view space has x and z turned round against it), a
+ * normal in the game's view space, as the lights are. */
+typedef struct view_rt_vertex {
+    float p[3], n[3], uv[2];
+    u32 col, ofs;                       /* colours of its own, 0xAARRGGBB (col 0: none, the material's) */
+} view_rt_vertex;
+typedef struct view_rt_tri {
+    u32 strip;                          /* which view_rt_strip */
+    view_rt_vertex v[3];
+} view_rt_tri;
+#define VIEW_RT_UNLIT 0x001u            /* the material takes no lights */
+#define VIEW_RT_ENV 0x002u              /* its texture coordinates come from the normals */
+#define VIEW_RT_BUMPED 0x008u
+#define VIEW_RT_LIST(flags) ((flags) >> 4 & 3u)     /* 0 opaque, 1 punch-through, 2 translucent */
+#define VIEW_RT_OFFSET 0x080u           /* its polygons take the offset (specular) colour */
+#define VIEW_RT_ONE_SIDED 0x100u        /* only the triangles that turn one way on the screen are drawn */
+#define VIEW_RT_BACK 0x800u             /* one-sided: the way that is kept is the other one */
+typedef struct view_rt_strip {
+    float base[4], spec[4];             /* the material: base colour (r, g, b, a: 0..255), specular colour and power */
+    u32 lights, state;                  /* its light set and its view_gpu_state */
+    u32 flags, pad;                     /* VIEW_RT_* */
+} view_rt_strip;
 typedef struct view_gpu_frame {
     unsigned frame;                     /* the vertical blank */
     int w, h;                           /* the target, pixels */
@@ -129,6 +154,13 @@ typedef struct view_gpu_frame {
     u32 nlit;                           /* floats */
     const float *lights;
     u32 nlights;                        /* floats */
+    /* ray tracing (section 74): the scene's triangles and strips, and the near plane's distance;
+     * with them the light sets above are there whatever lights the vertices */
+    const view_rt_tri *rt_tris;
+    u32 nrt_tris;
+    const view_rt_strip *rt_strips;
+    u32 nrt_strips;
+    float rt_near;
     /* the texel arena (0xAARRGGBB): the ranges that changed since the last frame; reset: drop everything */
     const u32 *arena;
     u32 arena_texels;
@@ -142,6 +174,9 @@ void view_host_gpu(void (*submit)(const view_gpu_frame *f));
 /* recomp (section 67): the GPU path's lights are worked out by the host's vertex shader (on) or
  * here as ever (off, the default). Any thread; the next pass to the screen takes it */
 void view_host_gpu_lighting(int on);
+/* recomp (section 74): the GPU path's frames carry the scene for ray tracing (on) or not (off, the
+ * default). Any thread; the next pass to the screen takes it */
+void view_host_rt(int on);
 
 /* called from hw_gfx.c, only while view_on is set */
 void view_list_segment(sh4 *c, u32 addr, u32 len);       /* a display list segment the ELAN is told to run */

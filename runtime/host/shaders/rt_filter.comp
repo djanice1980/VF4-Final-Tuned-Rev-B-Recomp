@@ -1,0 +1,58 @@
+#version 450
+// The traced light's ratio smoothed (docs/design.md section 74): a few rays a pixel leave grain,
+// most of all in a shadow's soft edge. Each pixel takes the mean of its neighbours' ratios, the
+// nearer ones counting more, among those whose surface is about as far from the eye as its own:
+// the edge of a thing keeps its side. The reflections are smoothed the same way over a smaller
+// neighbourhood: enough for the speckle a ray or two a pixel leave, and a mirror's picture stays
+// a picture.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(std140, set = 0, binding = 0) uniform P {
+    vec4 proj, misc, shadow_dir;
+    ivec4 size;         // picture w, h
+} p;
+layout(std430, set = 0, binding = 1) readonly buffer LightIn { uint light_in[]; };    // the ratio / 4, 10 bits a channel
+layout(std430, set = 0, binding = 2) readonly buffer Depth { float depth[]; };        // how far along the eye's ray; 0: nothing
+layout(std430, set = 0, binding = 3) writeonly buffer LightOut { uint light_out[]; };
+layout(std430, set = 0, binding = 4) readonly buffer ReflIn { uint refl_in[]; };      // the mirrored colour times its share; the share
+layout(std430, set = 0, binding = 5) writeonly buffer ReflOut { uint refl_out[]; };
+
+const int R = 3, RR = 1;        // the ratio's neighbourhood, the reflection's
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= p.size.x || px.y >= p.size.y)
+        return;
+    int at = px.y * p.size.x + px.x;
+    float zc = depth[at];
+    if (!(zc > 0.0)) {
+        light_out[at] = light_in[at];
+        refl_out[at] = refl_in[at];
+        return;
+    }
+    vec3 sum = vec3(0.0);
+    vec4 rsum = vec4(0.0);
+    float n = 0.0, rn = 0.0;
+    for (int y = -R; y <= R; y++)
+        for (int x = -R; x <= R; x++) {
+            ivec2 q = clamp(px + ivec2(x, y), ivec2(0), p.size.xy - 1);
+            int qa = q.y * p.size.x + q.x;
+            float z = depth[qa];
+            if (!(z > 0.0) || abs(z - zc) > 0.04 * zc + 0.01)
+                continue;
+            float w = 1.0 / (1.0 + 0.35 * float(x * x + y * y));
+            uint l = light_in[qa];
+            sum += w * vec3(float(l & 1023u), float(l >> 10 & 1023u), float(l >> 20 & 1023u));
+            n += w;
+            if (abs(x) <= RR && abs(y) <= RR) {
+                uint r = refl_in[qa];
+                rsum += w * vec4(float(r & 255u), float(r >> 8 & 255u), float(r >> 16 & 255u), float(r >> 24));
+                rn += w;
+            }
+        }
+    uvec3 c = uvec3(sum / n + 0.5);
+    light_out[at] = c.x | c.y << 10 | c.z << 20 | 0xc0000000u;
+    uvec4 rc = uvec4(rsum / rn + 0.5);
+    refl_out[at] = rc.x | rc.y << 8 | rc.z << 16 | rc.w << 24;
+}
