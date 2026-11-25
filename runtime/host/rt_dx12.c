@@ -47,7 +47,7 @@ static struct { Uint32 at, n; } *dirty;
 static size_t dirty_n, dirty_cap;
 static dbuf consts;                     /* the shaders' constants, mapped */
 static dbuf raw_light, raw_refl, raw_depth;     /* the two results before the filter, and the eye rays' lengths */
-static dbuf out_gpu[2], out_back[2];    /* the two results, and where the processor reads them */
+static dbuf out_gpu[2], out_back[3];    /* the two results, and where the processor reads them (and the eye rays' lengths) */
 static dbuf as_store[5], as_scratch[5]; /* the acceleration structures (4 groups and the top), and the builds' memory */
 /* The buffers a frame's command list took out of the common state by a barrier, and the state
  * each is in: the list's end puts them back (settle), so that every list finds every buffer in
@@ -119,7 +119,7 @@ static void rt_dx_stop(void)
     nmoved = 0;
     if (dev) {
         dbuf *all[] = { &arena_stage, &arena_gpu, &consts, &raw_light, &raw_refl, &raw_depth, &out_gpu[0], &out_gpu[1],
-                        &out_back[0], &out_back[1] };
+                        &out_back[0], &out_back[1], &out_back[2] };
         for (size_t i = 0; i < SDL_arraysize(all); i++)
             dbuf_free(all[i]);
         for (int i = 0; i < B_KINDS; i++) {
@@ -374,7 +374,8 @@ static int build(int i, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPU
     return 0;
 }
 
-static int rt_dx_trace(const view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl)
+static int rt_dx_trace(const view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl,
+                       const float **reach)
 {
     if (!dev)
         return SDL_SetError("ray tracing (DirectX 12): not started"), -1;
@@ -395,7 +396,7 @@ static int rt_dx_trace(const view_gpu_frame *f, int w, int h, const rt_quality *
     for (int i = 0; i < 5; i++)
         if (dbuf_room(uav[i], pixels, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON))
             return -1;
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < (reach ? 3 : 2); i++)
         if (dbuf_room(&out_back[i], pixels, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, 0))
             return -1;
     rt_scene_fill(f, &sc, stage[B_TRI].map, stage[B_POS].map, w, h, VIEW_GPU_ARENA, q);
@@ -485,6 +486,10 @@ static int rt_dx_trace(const view_gpu_frame *f, int w, int h, const rt_quality *
         transition(&out_gpu[i], D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
         ID3D12GraphicsCommandList4_CopyBufferRegion(list, out_back[i].r, 0, out_gpu[i].r, 0, pixels);
     }
+    if (reach) {
+        transition(&raw_depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        ID3D12GraphicsCommandList4_CopyBufferRegion(list, out_back[2].r, 0, raw_depth.r, 0, pixels);
+    }
     settle();
     /* run, and wait */
     HRESULT hr = ID3D12GraphicsCommandList4_Close(list);
@@ -503,6 +508,8 @@ static int rt_dx_trace(const view_gpu_frame *f, int w, int h, const rt_quality *
         return fail("the next command list", hr);
     *light = out_back[0].map;
     *refl = out_back[1].map;
+    if (reach)
+        *reach = out_back[2].map;
     return 0;
 }
 

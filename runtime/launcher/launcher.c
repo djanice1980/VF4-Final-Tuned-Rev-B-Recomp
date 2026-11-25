@@ -1745,11 +1745,11 @@ enum { T_GAME, T_CARDS, T_PICTURE, T_SOUND, T_PAD, T_KEYS, T_COUNT };
 static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
-static const int tab_rows[T_COUNT][14] = {
+static const int tab_rows[T_COUNT][15] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, OPT_LATENCY, -1 },
     [T_CARDS] = { -1 },
     [T_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
-                    OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_LIGHTING, OPT_SKIP, OPT_PACING, -1 },
+                    OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_LIGHTING, OPT_SKIP, OPT_PACING, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEYS] = { -1 },
 };
@@ -3602,8 +3602,8 @@ static void draw_settings(void)
         /* eight rows show under the heads; the rest scroll */
         ctl_draw(&st, &ctl, 40, ry, LW - 80, rh, 33);
     } else {
-        ui_row rows[13];
-        char vals[13][160];
+        ui_row rows[14];
+        char vals[14][160];
         int n = tab_count();
         for (int i = 0; i < n; i++)
             option_row(&st, tab_rows[st_tab][i], &rows[i], vals[i], sizeof vals[i]);
@@ -3612,7 +3612,8 @@ static void draw_settings(void)
         int o = tab_rows[st_tab][st_row];
         const char *note = NULL;
         static char whole[2 * GPU_NAME_MAX + DISPLAY_NAME_MAX + 100];
-        if ((o == OPT_GPU || o == OPT_SCALE || o == OPT_OCCLUSION || o == OPT_RAYTRACING) && st.renderer != RENDERER_GPU)
+        if ((o == OPT_GPU || o == OPT_SCALE || o == OPT_OCCLUSION || o == OPT_RAYTRACING || o == OPT_RAYQUALITY) &&
+            st.renderer != RENDERER_GPU)
             note = "The Software renderer does not use it.";     /* as the game's menu says */
         else if (renderer_note(o, whole, sizeof whole))
             note = whole;           /* what this window draws with now (section 53) */
@@ -3865,6 +3866,11 @@ static void draw_pop(void)
     }
 }
 
+/* --shot: the page is drawn and not presented, so that the picture read back is that frame's.
+ * (Read after a present, it was the picture of one to three frames before, by the swapchain's
+ * length: a --shot-keys picture lagged that many keys behind.) */
+static int draw_unshown;
+
 static void draw(void)
 {
     compositor_busy(1);     /* for the compositor's watch */
@@ -3887,6 +3893,10 @@ static void draw(void)
     case P_EDIT: draw_edit(); break;
     }
     draw_pop();
+    if (draw_unshown) {     /* --shot reads this frame back: after a present the back buffer is an older frame's */
+        compositor_busy(0);
+        return;
+    }
     /* a present that fails leaves the window showing an old page: say so
      * (once, and again when it works again), since nothing else would */
     static int present_failing;
@@ -4391,7 +4401,8 @@ int main(int argc, char **argv)
         if (shot_keys)
             shot_keys_run(shot_keys);
         draw();
-        draw();         /* the second time with the hits of the first (focus rings) */
+        draw_unshown = 1;
+        draw();         /* the second time with the hits of the first (focus rings); read back, not presented */
         SDL_Surface *sf = SDL_RenderReadPixels(ren, NULL);
         int ok = sf && SDL_SaveBMP(sf, shot_file);
         SDL_DestroySurface(sf);

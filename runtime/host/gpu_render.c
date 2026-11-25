@@ -30,14 +30,21 @@
  * with step 4 first multiplies it into the picture where stencil bit 3
  * says the 3D scene is (the opaque and punch-through lists write that bit
  * for a model's strips, and clear it for what the game sends straight to
- * the chips: its 2D layer keeps its colours).
+ * the chips: its 2D layer keeps its colors).
  *
  * With ray tracing on (gpu_render_raytracing, section 74) step 3 is left out, and after step 2
  * the frame's scene is traced on a device of the ray tracing's own (rt.h): its two pictures,
  * the light's ratio and the glass's reflections, come back through the processor's memory, and
- * a pass into a second colour target copies the picture and, where stencil bit 3 is set, puts
- * them in (colour * ratio * (1 - share) + mirrored colour). Step 4 goes on there. Ambient
+ * a pass into a second color target copies the picture and, where stencil bit 3 is set, puts
+ * them in (color * ratio * (1 - share) + mirrored color). Step 4 goes on there. Ambient
  * occlusion out of the depth buffer is left out then: the rays bring their own.
+ *
+ * Ray tracing quality (section 76) says how much is traced: at High every pixel of the picture,
+ * as above. At Medium and Low the traced pictures are half the picture's size each way, and with
+ * them comes how far each traced pixel's eye ray went. A pass that reads the depth buffer then
+ * fills the picture in from them (rt_fill.frag: each pixel from the traced pixels around it that
+ * lie about as deep), and the pass that goes on first puts the picture as it was back where
+ * stencil bit 3 is not set.
  */
 #include "gpu_render.h"
 #include "view.h"
@@ -217,18 +224,31 @@ static int have_picture;
 /* ambient occlusion (section 73): asked for (the window's thread sets it and draws); what this
  * device can do; the targets as they were last made */
 static int ao_want, ao_can, t_ao_made;
-/* ray tracing (section 74): the backend asked for (NULL: off) and how many rays; the one started;
- * its arena is whole (it traces only then); the targets as they were last made */
+/* ray tracing (section 74): the backend asked for (NULL: off); the one started; its arena is
+ * whole (it traces only then); the targets as they were last made (t_rt_made: 0 none, else the
+ * traced picture's divisor) */
 static const rt_backend *rt_want, *rt_run;
-static rt_quality rt_rays = { 4, 4, 2 };
+/* Ray tracing quality (section 76), low to high: rays a traced pixel for the light around,
+ * towards each light and in a mirror; bounced light; the traced picture's size, the renderer's
+ * over that number each way; and how far around the filter smooths, in traced pixels. Low and
+ * Medium trace a quarter of the pixels, and a pass of the renderer's fills the picture in from
+ * them by its own depth (rt_fill.frag). Medium's filter reaches 2 traced pixels, which are 4 of
+ * the picture's: about High's 3, so a shadow's edge is about as soft. */
+static const rt_quality rt_levels[3] = { { 1, 1, 1, 1, 2, 3 }, { 4, 4, 2, 1, 2, 2 }, { 4, 4, 2, 1, 1, 3 } };
+static int rt_level = 1;        /* asked for: Medium, as the setting's default */
+static int rt_said_level = -1, rt_said_w, rt_said_h;    /* what the log last said was traced */
 static int rt_whole, rt_failed, t_rt_made;
-static SDL_GPUShader *sh_copy_f, *sh_rt_apply_f;
-static SDL_GPUGraphicsPipeline *pl_copy, *pl_rt_apply;
-static SDL_GPUTexture *t_color2, *t_light, *t_refl, *t_final;
+static int ds_sampled;          /* the depth buffer can be one a shader reads (ambient occlusion and the fill need it) */
+static SDL_GPUShader *sh_copy_f, *sh_rt_apply_f, *sh_rt_fill_f;
+static SDL_GPUGraphicsPipeline *pl_copy, *pl_rt_apply, *pl_rt_fill, *pl_copy_flat;
+static SDL_GPUTexture *t_color2, *t_light, *t_refl, *t_reach, *t_final;
 static SDL_GPUTransferBuffer *xfer_rt;
 static Uint32 xfer_rt_size;
+/* frames traced and their time, but for the first after each start, which holds one-off work (a
+ * driver may compile its own shaders for the acceleration structures then): that one's time */
 static unsigned stat_rt_frames;
-static double stat_rt_ms;
+static double stat_rt_ms, stat_rt_first_ms;
+static int rt_first;
 static SDL_GPUShader *sh_ao_f, *sh_ao_blur_f, *sh_ao_apply_f;
 static SDL_GPUGraphicsPipeline *pl_ao, *pl_ao_blur, *pl_ao_apply;
 static SDL_GPUTexture *t_ao, *t_ao_smooth;
@@ -257,7 +277,7 @@ static SDL_GPUBlendFactor blend_of(Uint32 f, int src)
     switch (f) {
     case 0: return SDL_GPU_BLENDFACTOR_ZERO;
     case 1: return SDL_GPU_BLENDFACTOR_ONE;
-    case 2: return src ? SDL_GPU_BLENDFACTOR_DST_COLOR : SDL_GPU_BLENDFACTOR_SRC_COLOR;   /* the other's colour */
+    case 2: return src ? SDL_GPU_BLENDFACTOR_DST_COLOR : SDL_GPU_BLENDFACTOR_SRC_COLOR;   /* the other's color */
     case 3: return src ? SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR;
     case 4: return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
     case 5: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
@@ -288,6 +308,7 @@ typedef struct pipe_desc {
     SDL_GPUStencilOp st_pass, st_depth_fail;
     Uint8 st_cmask, st_wmask;
     int occlusion_target;       /* one channel of 8 bits and no depth: the occlusion's own targets */
+    int no_depth;               /* the picture's format and no depth: a pass that reads the depth buffer */
 } pipe_desc;
 
 static SDL_GPUGraphicsPipeline *pipeline(const pipe_desc *p)
@@ -352,7 +373,7 @@ static SDL_GPUGraphicsPipeline *pipeline(const pipe_desc *p)
     }
     ci.target_info.color_target_descriptions = &ct;
     ci.target_info.num_color_targets = 1;
-    if (!p->occlusion_target) {
+    if (!p->occlusion_target && !p->no_depth) {
         ci.target_info.depth_stencil_format = ds_format;
         ci.target_info.has_depth_stencil_target = true;
     }
@@ -448,7 +469,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     p.st_cmask = 2;
     p.st_wmask = 6;
     pl_resolve = pipeline(&p);
-    /* where bits 0 and 2 are set: the colour times the scale */
+    /* where bits 0 and 2 are set: the color times the scale */
     SDL_zero(p);
     p.vs = sh_rect_v;
     p.fs = sh_const_f;
@@ -466,8 +487,9 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
         return -1;
     /* Ambient occlusion: the depth buffer must be one a shader can read, and there must be a
      * target of one channel. A device without them draws as with the setting off. */
-    ao_can = SDL_GPUTextureSupportsFormat(gpu, ds_format, SDL_GPU_TEXTURETYPE_2D,
-                                          SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER) &&
+    ds_sampled = SDL_GPUTextureSupportsFormat(gpu, ds_format, SDL_GPU_TEXTURETYPE_2D,
+                                              SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+    ao_can = ds_sampled &&
              SDL_GPUTextureSupportsFormat(gpu, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTURETYPE_2D,
                                           SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
     if (ao_can) {
@@ -488,7 +510,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
             pl_ao = pipeline(&p);
             p.fs = sh_ao_blur_f;
             pl_ao_blur = pipeline(&p);
-            /* where bit 3 is set: the colour times the occlusion */
+            /* where bit 3 is set: the color times the occlusion */
             SDL_zero(p);
             p.vs = sh_rect_v;
             p.fs = sh_ao_apply_f;
@@ -508,7 +530,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
             ao_can = 0;
         }
     }
-    /* ray tracing's two passes over the picture: the copy into the second colour target, and the
+    /* ray tracing's two passes over the picture: the copy into the second color target, and the
      * traced light where bit 3 is set (they need the sampler too) */
     if (!smp_texel) {
         SDL_GPUSamplerCreateInfo si;
@@ -533,6 +555,20 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
         p.st_cmask = 8;
         p.st_wmask = 0;
         pl_rt_apply = pipeline(&p);
+        /* A traced picture smaller than the renderer's (section 76): a pass without the depth
+         * buffer as its target, which reads it, fills the traced light in over the whole picture;
+         * then the picture as it was comes back where bit 3 is not set (the copy, with the
+         * stencil's reference 0). */
+        p.fs = sh_copy_f;
+        pl_copy_flat = pipeline(&p);
+        sh_rt_fill_f = shader(spv_rt_fill_frag, sizeof spv_rt_fill_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 5);
+        if (sh_rt_fill_f) {
+            SDL_zero(p);
+            p.vs = sh_rect_v;
+            p.fs = sh_rt_fill_f;
+            p.no_depth = 1;
+            pl_rt_fill = pipeline(&p);
+        }
     }
     SDL_GPUBufferCreateInfo bi;
     SDL_zero(bi);
@@ -562,13 +598,15 @@ static int buffer_room(SDL_GPUBuffer **b, Uint32 *size, Uint32 need, SDL_GPUBuff
     return *b ? 0 : -1;
 }
 
-/* ao: the depth buffer is one a shader can read, and the occlusion's two targets are there */
+/* ao: the depth buffer is one a shader can read, and the occlusion's two targets are there. rt: 0,
+ * or the traced picture's divisor: the second color target and the traced pictures' textures
+ * (w / rt x h / rt, rounded up) are there, and past 1 the depth buffer is one a shader can read */
 static int targets(Uint32 w, Uint32 h, int ao, int rt)
 {
     if (t_color && w == t_w && h == t_h && ao == t_ao_made && rt == t_rt_made)
         return 0;
-    SDL_GPUTexture **more[] = { &t_color2, &t_light, &t_refl };
-    for (int i = 0; i < 3; i++) {
+    SDL_GPUTexture **more[] = { &t_color2, &t_light, &t_refl, &t_reach };
+    for (int i = 0; i < 4; i++) {
         if (*more[i])
             SDL_ReleaseGPUTexture(gpu, *more[i]);
         *more[i] = NULL;
@@ -594,7 +632,7 @@ static int targets(Uint32 w, Uint32 h, int ao, int rt)
     ti.num_levels = 1;
     t_color = SDL_CreateGPUTexture(gpu, &ti);
     ti.format = ds_format;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | (ao ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
+    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | (ao || rt > 1 ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
     t_ds = SDL_CreateGPUTexture(gpu, &ti);
     if (ao) {
         ti.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
@@ -607,19 +645,27 @@ static int targets(Uint32 w, Uint32 h, int ao, int rt)
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
         t_color2 = SDL_CreateGPUTexture(gpu, &ti);
         ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = (w + (Uint32)rt - 1) / (Uint32)rt;
+        ti.height = (h + (Uint32)rt - 1) / (Uint32)rt;
         t_refl = SDL_CreateGPUTexture(gpu, &ti);
         ti.format = SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM;
         t_light = SDL_CreateGPUTexture(gpu, &ti);
+        if (rt > 1) {
+            ti.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+            t_reach = SDL_CreateGPUTexture(gpu, &ti);
+        }
     }
     t_w = w;
     t_h = h;
     t_ao_made = ao;
     t_rt_made = rt;
-    return t_color && t_ds && (!ao || (t_ao && t_ao_smooth)) && (!rt || (t_color2 && t_light && t_refl)) ? 0 : -1;
+    return t_color && t_ds && (!ao || (t_ao && t_ao_smooth)) && (!rt || (t_color2 && t_light && t_refl)) && (rt <= 1 || t_reach)
+               ? 0 : -1;
 }
 
-void gpu_render_raytracing(const rt_backend *backend)
+void gpu_render_raytracing(const rt_backend *backend, int quality)
 {
+    rt_level = quality < 0 ? 0 : quality > 2 ? 2 : quality;
     if (backend == rt_want)
         return;
     rt_want = backend;
@@ -627,10 +673,11 @@ void gpu_render_raytracing(const rt_backend *backend)
     view_host_rt(backend != NULL);
 }
 
-void gpu_render_rt_stats(unsigned *frames, double *ms)
+void gpu_render_rt_stats(unsigned *frames, double *ms, double *first_ms)
 {
     *frames = stat_rt_frames;
     *ms = stat_rt_frames ? stat_rt_ms / stat_rt_frames : 0;
+    *first_ms = stat_rt_first_ms;
 }
 
 /* the ray tracing's device follows the wish: started on the renderer's GPU, stopped when it is no
@@ -654,6 +701,7 @@ static void rt_follow(void)
     SDL_Log("gpu_render: ray tracing (%s) started; the picture is drawn on %s", rt_want->name, name ? name : "the GPU");
     rt_run = rt_want;
     rt_whole = 0;
+    rt_first = 1;
     SDL_LockMutex(lock);
     up_all = 1;
     SDL_UnlockMutex(lock);
@@ -785,28 +833,46 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     /* ambient occlusion: asked for, the device can, and the frame has a 3D scene whose projection is known */
     int ao = ao_want && ao_can && f->proj[0] != 0 && f->proj[2] != 0;
     Uint32 tw = (Uint32)f->w * (Uint32)scale, th = (Uint32)f->h * (Uint32)scale;
-    if (targets(tw, th, ao_want && ao_can, rt_run != NULL))
+    /* Ray tracing quality: the traced picture's size. A smaller one needs the depth buffer read
+     * (the fill); a device that cannot traces every pixel, with the level's rays. */
+    const rt_quality *rq = &rt_levels[rt_level];
+    Uint32 rdiv = rt_run ? (Uint32)rq->div : 0;
+    if (rdiv > 1 && !(ds_sampled && pl_rt_fill && pl_copy_flat))
+        rdiv = 1;
+    Uint32 rw = rdiv ? (tw + rdiv - 1) / rdiv : 0, rh = rdiv ? (th + rdiv - 1) / rdiv : 0;
+    if (targets(tw, th, ao_want && ao_can, (int)rdiv))
         return;
-    /* ray tracing: the frame's scene traced now, on its own device, and its two pictures uploaded */
+    /* ray tracing: the frame's scene traced now, on its own device, and its pictures uploaded */
     int rt = 0;
     if (rt_run && rt_whole && f->nrt_tris && f->proj[0] != 0 && f->proj[2] != 0) {
         const Uint32 *light = NULL, *refl = NULL;
+        const float *reach = NULL;
         Uint64 t0 = SDL_GetTicksNS();
-        Uint32 bytes = tw * th * 4;
-        if (xfer_rt_size < 2 * bytes) {
+        Uint32 bytes = rw * rh * 4, parts = rdiv > 1 ? 3 : 2;
+        if (xfer_rt_size < parts * bytes) {
             if (xfer_rt)
                 SDL_ReleaseGPUTransferBuffer(gpu, xfer_rt);
             SDL_GPUTransferBufferCreateInfo xi;
             SDL_zero(xi);
             xi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-            xi.size = 2 * bytes;
+            xi.size = parts * bytes;
             xfer_rt = SDL_CreateGPUTransferBuffer(gpu, &xi);
-            xfer_rt_size = xfer_rt ? 2 * bytes : 0;
+            xfer_rt_size = xfer_rt ? parts * bytes : 0;
         }
         Uint8 *xm = xfer_rt ? SDL_MapGPUTransferBuffer(gpu, xfer_rt, true) : NULL;
-        if (xm && rt_run->trace(f, (int)tw, (int)th, &rt_rays, &light, &refl) == 0) {
+        if (rt_level != rt_said_level || (int)rw != rt_said_w || (int)rh != rt_said_h) {
+            static const char *const names[3] = { "low", "medium", "high" };
+            SDL_Log("gpu_render: ray tracing quality %s: %u x %u traced for a picture %u x %u%s", names[rt_level], rw, rh, tw, th,
+                    rdiv != (Uint32)rq->div ? " (every pixel: this GPU's depth buffer cannot be read for less)" : "");
+            rt_said_level = rt_level;
+            rt_said_w = (int)rw;
+            rt_said_h = (int)rh;
+        }
+        if (xm && rt_run->trace(f, (int)rw, (int)rh, rq, &light, &refl, rdiv > 1 ? &reach : NULL) == 0) {
             SDL_memcpy(xm, light, bytes);
             SDL_memcpy(xm + bytes, refl, bytes);
+            if (reach)
+                SDL_memcpy(xm + 2 * bytes, reach, bytes);
             rt = 1;
         } else if (xm && !rt_failed) {
             SDL_Log("gpu_render: ray tracing stopped: %s", SDL_GetError());
@@ -816,15 +882,26 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
             SDL_UnmapGPUTransferBuffer(gpu, xfer_rt);
         if (rt) {
             SDL_GPUCopyPass *rcp = SDL_BeginGPUCopyPass(cmd);
-            SDL_GPUTextureTransferInfo src = { xfer_rt, 0, tw, th };
-            SDL_GPUTextureRegion dst = { t_light, 0, 0, 0, 0, 0, tw, th, 1 };
+            SDL_GPUTextureTransferInfo src = { xfer_rt, 0, rw, rh };
+            SDL_GPUTextureRegion dst = { t_light, 0, 0, 0, 0, 0, rw, rh, 1 };
             SDL_UploadToGPUTexture(rcp, &src, &dst, true);
             src.offset = bytes;
             dst.texture = t_refl;
             SDL_UploadToGPUTexture(rcp, &src, &dst, true);
+            if (rdiv > 1) {
+                src.offset = 2 * bytes;
+                dst.texture = t_reach;
+                SDL_UploadToGPUTexture(rcp, &src, &dst, true);
+            }
             SDL_EndGPUCopyPass(rcp);
-            stat_rt_frames++;
-            stat_rt_ms += (double)(SDL_GetTicksNS() - t0) / 1e6;
+            double ms = (double)(SDL_GetTicksNS() - t0) / 1e6;
+            if (rt_first) {
+                rt_first = 0;
+                stat_rt_first_ms = ms;
+            } else {
+                stat_rt_frames++;
+                stat_rt_ms += ms;
+            }
         }
     }
     if (rt_failed && rt_run) {
@@ -936,7 +1013,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
         }
         if (phase == 0 && rt) {
             /* The traced light (section 74), where the ambient occlusion would go in: into the
-             * second colour target the picture as it is, then, where bit 3 is set, the picture
+             * second color target the picture as it is, then, where bit 3 is set, the picture
              * times the light's ratio with the reflections; the translucent list goes on there. */
             SDL_EndGPURenderPass(rp);
             ct.texture = t_color2;
@@ -945,15 +1022,37 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
             dt.stencil_load_op = SDL_GPU_LOADOP_LOAD;
             dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
             dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-            rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
-            SDL_GPUTextureSamplerBinding three[3] = { { t_color, smp_texel }, { t_light, smp_texel }, { t_refl, smp_texel } };
-            SDL_BindGPUGraphicsPipeline(rp, pl_copy);
-            SDL_BindGPUFragmentSamplers(rp, 0, three, 1);
-            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
-            SDL_BindGPUGraphicsPipeline(rp, pl_rt_apply);
-            SDL_SetGPUStencilReference(rp, 8);
-            SDL_BindGPUFragmentSamplers(rp, 0, three, 3);
-            rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            SDL_GPUTextureSamplerBinding five[5] = { { t_color, smp_texel }, { t_light, smp_texel }, { t_refl, smp_texel },
+                                                     { t_reach, smp_texel }, { t_ds, smp_texel } };
+            if (rdiv > 1) {
+                /* A traced picture smaller than this one (section 76). The depth buffer is read,
+                 * so it is no target of the first pass: the traced light filled in over the whole
+                 * picture (rt_fill.frag). The pass that goes on then puts the picture as it was
+                 * back where bit 3 is not set. */
+                rp = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+                SDL_BindGPUGraphicsPipeline(rp, pl_rt_fill);
+                SDL_BindGPUFragmentSamplers(rp, 0, five, 5);
+                float fu[8] = { f->proj[0], f->proj[1], f->proj[2], f->proj[3], (float)scale, zs, (float)rw / (float)tw,
+                                (float)rh / (float)th };
+                SDL_PushGPUFragmentUniformData(cmd, 0, fu, sizeof fu);
+                rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+                SDL_EndGPURenderPass(rp);
+                ct.load_op = SDL_GPU_LOADOP_LOAD;
+                rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+                SDL_BindGPUGraphicsPipeline(rp, pl_copy_flat);
+                SDL_SetGPUStencilReference(rp, 0);
+                SDL_BindGPUFragmentSamplers(rp, 0, five, 1);
+                rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            } else {
+                rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+                SDL_BindGPUGraphicsPipeline(rp, pl_copy);
+                SDL_BindGPUFragmentSamplers(rp, 0, five, 1);
+                rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+                SDL_BindGPUGraphicsPipeline(rp, pl_rt_apply);
+                SDL_SetGPUStencilReference(rp, 8);
+                SDL_BindGPUFragmentSamplers(rp, 0, five, 3);
+                rect(cmd, rp, 0, 0, (float)f->w, (float)f->h, f);
+            }
             bound = NULL;
             list_pushed = -1;
         }
@@ -1060,13 +1159,14 @@ void gpu_render_quit(void)
                 for (int d = 0; d < 64; d++)
                     if (pl_scene[a][b][c][d])
                         SDL_ReleaseGPUGraphicsPipeline(gpu, pl_scene[a][b][c][d]);
-    SDL_GPUGraphicsPipeline *pls[] = { pl_bg, pl_vol, pl_resolve, pl_shadow, pl_ao, pl_ao_blur, pl_ao_apply, pl_copy, pl_rt_apply };
-    for (int i = 0; i < 9; i++)
+    SDL_GPUGraphicsPipeline *pls[] = { pl_bg, pl_vol, pl_resolve, pl_shadow, pl_ao, pl_ao_blur, pl_ao_apply, pl_copy, pl_rt_apply,
+                                       pl_rt_fill, pl_copy_flat };
+    for (int i = 0; i < 11; i++)
         if (pls[i])
             SDL_ReleaseGPUGraphicsPipeline(gpu, pls[i]);
     SDL_GPUShader *shs[] = { sh_scene_v, sh_scene_f, sh_vol_v, sh_rect_v, sh_bg_f, sh_const_f, sh_ao_f, sh_ao_blur_f,
-                             sh_ao_apply_f, sh_copy_f, sh_rt_apply_f };
-    for (int i = 0; i < 11; i++)
+                             sh_ao_apply_f, sh_copy_f, sh_rt_apply_f, sh_rt_fill_f };
+    for (int i = 0; i < 12; i++)
         if (shs[i])
             SDL_ReleaseGPUShader(gpu, shs[i]);
     SDL_GPUBuffer *bs[] = { b_tex, b_vert, b_state, b_vol, b_lit, b_lights };
@@ -1094,18 +1194,19 @@ void gpu_render_quit(void)
     if (rt_run)
         rt_run->stop();
     rt_run = NULL;
-    rt_failed = rt_whole = t_rt_made = 0;
-    SDL_GPUTexture *more[] = { t_color2, t_light, t_refl };
-    for (int i = 0; i < 3; i++)
+    rt_failed = rt_whole = t_rt_made = ds_sampled = 0;
+    rt_said_level = -1;
+    SDL_GPUTexture *more[] = { t_color2, t_light, t_refl, t_reach };
+    for (int i = 0; i < 4; i++)
         if (more[i])
             SDL_ReleaseGPUTexture(gpu, more[i]);
-    t_color2 = t_light = t_refl = t_final = NULL;
+    t_color2 = t_light = t_refl = t_reach = t_final = NULL;
     if (xfer_rt)
         SDL_ReleaseGPUTransferBuffer(gpu, xfer_rt);
     xfer_rt = NULL;
     xfer_rt_size = 0;
-    pl_copy = pl_rt_apply = NULL;
-    sh_copy_f = sh_rt_apply_f = NULL;
+    pl_copy = pl_rt_apply = pl_rt_fill = pl_copy_flat = NULL;
+    sh_copy_f = sh_rt_apply_f = sh_rt_fill_f = NULL;
     /* all of it gone, for a start again on this device or another (the
      * lock, the frames handed over and the counts stay) */
     SDL_zeroa(pl_scene);

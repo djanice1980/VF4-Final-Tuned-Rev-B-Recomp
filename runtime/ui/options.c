@@ -111,6 +111,11 @@ const option_info options[OPT_COUNT] = {
                         "Software has none.", 0 },
     /* option_about has this text with DirectX 12's sentence where that is offered */
     [OPT_RAYTRACING] = { "Ray tracing", RT_ABOUT_1 RT_ABOUT_2, 0 },
+    [OPT_RAYQUALITY] = { "Ray tracing quality",
+                         "How much work ray tracing is for the graphics chip. High: every pixel of the picture is "
+                         "traced. Medium: a quarter of them, filled in over the picture: much less work, and the "
+                         "shadows' edges a little softer. Low: that with fewer rays, for a slow chip. A change "
+                         "applies at once. Internal resolution counts too: the lower, the less to trace.", 0 },
     [OPT_LIGHTING] = { "Lighting",
                        "Which chip works out the lights with the GPU renderer. CPU: the processor, as always. "
                        "GPU: the graphics chip, which takes that work off the processor: try it if the game "
@@ -337,6 +342,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_strlcpy(buf, rt[s->raytracing == RAYTRACING_DIRECTX && !directx_offered ? RAYTRACING_OFF : s->raytracing], n);
         break;
     }
+    case OPT_RAYQUALITY: {
+        static const char *const rq[RAYQUALITIES] = { "Low", "Medium", "High" };
+        SDL_strlcpy(buf, rq[s->rayquality], n);
+        break;
+    }
     case OPT_CARD1:
     case OPT_CARD2: {
         const char *name = s->card[o - OPT_CARD1];
@@ -425,6 +435,7 @@ void option_change(settings *s, int o, int d)
         if (s->raytracing == RAYTRACING_DIRECTX && !directx_offered)    /* the Windows game's alone */
             s->raytracing = wrap(s->raytracing, d < 0 ? -1 : 1, RAYTRACINGS);
         break;
+    case OPT_RAYQUALITY: s->rayquality = wrap(s->rayquality, d, RAYQUALITIES); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
     case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;

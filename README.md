@@ -565,7 +565,11 @@ the picture's light: the fighters' shadows get soft edges, the fighters
 shade themselves and each other, and glass mirrors the scene; DirectX 12,
 in the Windows game (on Windows or under Proton), traces the same picture
 through DirectX instead. It needs a
-graphics chip with ray tracing, and a fast one; it is off by default. For a PC whose
+graphics chip with ray tracing; it is off by default. Ray tracing quality
+says how much work that is: High traces every pixel of the picture, Medium
+(the default) a quarter of them and fills the picture in, which looks
+nearly the same for much less work, and Low does that with fewer rays, for
+a slow chip. For a PC whose
 processor cannot keep the game at full speed, the same tab has Lighting:
 GPU (the graphics chip works out the lights) and Frame skip: Every other
 frame (the game keeps its full speed and 30 pictures a second are drawn).
@@ -680,6 +684,11 @@ with only a gamepad, the menu's Operator test menu does the same.
   it as off and does not offer it; default off:
   [design.md s74](docs/design.md#74-ray-traced-light-step-1-vulkan-2026-11-24),
   [s75](docs/design.md#75-ray-traced-light-through-directx-12-2026-11-24)),
+  `rayquality` (low | medium | high: how much work ray tracing is: high
+  traces every pixel of the picture, medium a quarter of them (half the
+  internal resolution each way), filled in over the picture, low that
+  with a quarter of the rays; default medium:
+  [design.md s76](docs/design.md#76-ray-tracing-quality-2026-11-25)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad1.*` and `pad2.*` for each player's gamepad (a

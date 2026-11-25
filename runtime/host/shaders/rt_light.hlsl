@@ -31,7 +31,7 @@ cbuffer P : register(b0) {
     float4 p_tune;          // eps, baked surfaces' share of the occlusion, the most a pixel is brightened, the glass's gain
     int4 p_opt;             // reflection rays, bounce on, point lights' shadows on, seed
     float4 p_tune2;         // the glass's roughness, 0, 0, 0
-    int4 p_counts;          // texels
+    int4 p_counts;          // texels; the filter's neighborhood (rt_filter.hlsl)
 };
 StructuredBuffer<Tri> tri : register(t1);
 StructuredBuffer<Job> job : register(t2);

@@ -4,9 +4,14 @@
 // those whose surface is about as far from the eye as its own; the reflections over a smaller
 // neighborhood.
 
-cbuffer P : register(b0) {
+cbuffer P : register(b0) {      // rt_light.hlsl's
     float4 p_proj, p_misc, p_shadow_dir;
     int4 p_size;            // picture w, h
+    int4 p_base;
+    float4 p_dist, p_tune;
+    int4 p_opt;
+    float4 p_tune2;
+    int4 p_counts;          // texels; the ratio's neighborhood, in pixels each way (1 to 3)
 };
 StructuredBuffer<uint> light_in : register(t0);     // the ratio / 4, 10 bits a channel
 StructuredBuffer<float> depth : register(t1);       // how far along the eye's ray; 0: nothing
@@ -14,7 +19,7 @@ StructuredBuffer<uint> refl_in : register(t2);      // the mirrored color times 
 RWStructuredBuffer<uint> light_out : register(u0);
 RWStructuredBuffer<uint> refl_out : register(u1);
 
-static const int R = 3, RR = 1;     // the ratio's neighborhood, the reflection's
+static const int RR = 1;        // the reflection's neighborhood
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
@@ -32,6 +37,7 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 sum = float3(0, 0, 0);
     float4 rsum = float4(0, 0, 0, 0);
     float n = 0.0, rn = 0.0;
+    int R = clamp(p_counts.y, 1, 3);
     for (int y = -R; y <= R; y++)
         for (int x = -R; x <= R; x++) {
             int2 q = clamp(px + int2(x, y), int2(0, 0), p_size.xy - 1);

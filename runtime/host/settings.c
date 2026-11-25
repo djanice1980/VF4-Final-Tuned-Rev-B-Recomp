@@ -32,6 +32,7 @@ const char *const settings_lighting_name[LIGHTINGS] = { "cpu", "gpu" };
 const char *const settings_skip_name[SKIPS] = { "off", "half" };
 const char *const settings_occlusion_name[OCCLUSIONS] = { "off", "ssao" };
 const char *const settings_raytracing_name[RAYTRACINGS] = { "off", "vulkan", "directx" };
+const char *const settings_rayquality_name[RAYQUALITIES] = { "low", "medium", "high" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -190,6 +191,7 @@ void settings_defaults(settings *s)
     s->skip = SKIP_OFF;
     s->occlusion = OCCLUSION_OFF;
     s->raytracing = RAYTRACING_OFF;
+    s->rayquality = RAYQUALITY_MEDIUM;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -544,6 +546,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "raytracing")) {
                 if ((ok = choice(v, settings_raytracing_name, RAYTRACINGS, &x)))
                     s->raytracing = x;
+            } else if (!strcmp(name, "rayquality")) {
+                if ((ok = choice(v, settings_rayquality_name, RAYQUALITIES, &x)))
+                    s->rayquality = x;
             } else if (!strcmp(name, "pacing")) {
                 if ((ok = choice(v, settings_pacing_name, PACINGS, &x)))
                     s->pacing = x;
@@ -678,6 +683,10 @@ int settings_save(const settings *s, const char *path)
         "                       # vulkan and directx give the same picture; directx (DirectX 12) is the\n"
         "                       # Windows game's alone: the native Linux game takes it as off\n",
         settings_raytracing_name[s->raytracing]);
+    PUT("rayquality = %s    # low | medium | high: how much work ray tracing is. high traces every pixel\n"
+        "                       # of the picture; medium a quarter of them (half the internal resolution\n"
+        "                       # each way), filled in over the picture; low that with fewer rays\n",
+        settings_rayquality_name[s->rayquality]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

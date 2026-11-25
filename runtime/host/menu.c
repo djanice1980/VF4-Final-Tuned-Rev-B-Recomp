@@ -17,7 +17,7 @@ static const char *const tab_names[TABS] = { "Game", "Cards", "Picture", "Sound"
 enum { A_RESUME = OPT_COUNT, A_TEST, A_RESTART, A_UPDATES, A_KOFI, A_LAUNCHER, A_QUIT, A_EDIT1, A_EDIT2, A_CONTROL,
        A_CODE };
 
-#define ROWS 14
+#define ROWS 15
 #define ROWS_X 70.0f        /* the rows' place on the panel (menu_draw), for the mouse */
 #define ROWS_W 640.0f
 #define ROW_H 39.0f
@@ -26,7 +26,7 @@ static const int tab_rows[TABS][ROWS] = {
                    A_KOFI, A_LAUNCHER, A_QUIT, -1 },
     [TAB_CARDS] = { OPT_CARD1, A_EDIT1, OPT_CARD2, A_EDIT2, OPT_CARDS, -1 },
     [TAB_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
-                      OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_LIGHTING, OPT_SKIP, OPT_PACING, -1 },
+                      OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_LIGHTING, OPT_SKIP, OPT_PACING, -1 },
     [TAB_SOUND] = { OPT_VOLUME, OPT_SOUND, -1 },
 };
 static int shown_rows[TABS][ROWS], nshown[TABS];   /* tab_rows without Updates and the launcher outside a release folder */
@@ -162,12 +162,13 @@ static int change(int d)
         return MENU_STAY;
     if (id == OPT_VOLUME && !run.sound)
         return MENU_STAY;
-    if ((id == OPT_SCALE || id == OPT_GPU || id == OPT_OCCLUSION || id == OPT_RAYTRACING) && s->renderer != RENDERER_GPU)
+    if ((id == OPT_SCALE || id == OPT_GPU || id == OPT_OCCLUSION || id == OPT_RAYTRACING || id == OPT_RAYQUALITY) &&
+        s->renderer != RENDERER_GPU)
         return MENU_STAY;
     option_change(s, id, d);
     return id == OPT_PICTURE || id == OPT_FILTER || id == OPT_FULLSCREEN || id == OPT_WINDOW || id == OPT_VOLUME ||
                    id == OPT_DISPLAY || id == OPT_RENDERER || id == OPT_GPU || id == OPT_SCALE || id == OPT_PACING ||
-                   id == OPT_LIGHTING || id == OPT_SKIP || id == OPT_OCCLUSION || id == OPT_RAYTRACING
+                   id == OPT_LIGHTING || id == OPT_SKIP || id == OPT_OCCLUSION || id == OPT_RAYTRACING || id == OPT_RAYQUALITY
                ? MENU_LIVE
                : MENU_STAY;
 }
@@ -771,7 +772,8 @@ static void about_of(int id, const char **title, const char **text, const char *
                     "output, then quit and start the game again.";
         else if (id == OPT_VOLUME && !run.sound)
             *note = "Sound is off: turn it on below, for the next start.";
-        else if ((id == OPT_SCALE || id == OPT_GPU || id == OPT_OCCLUSION || id == OPT_RAYTRACING) && s->renderer != RENDERER_GPU)
+        else if ((id == OPT_SCALE || id == OPT_GPU || id == OPT_OCCLUSION || id == OPT_RAYTRACING || id == OPT_RAYQUALITY) &&
+                 s->renderer != RENDERER_GPU)
             *note = "The Software renderer does not use it.";
         else if ((id == OPT_RENDERER || id == OPT_GPU || id == OPT_SCALE) && s->renderer == RENDERER_GPU &&
                  !(run.gpu_now && run.gpu_now[0]))

@@ -6623,7 +6623,7 @@ Settings; off by default), for the GPU renderer. A change applies at once.
   scene by 2 rays, weighed by its angle to the eye. The rays are the same
   every frame, so what stands still does not flicker.
 - The filter (`rt_filter.comp`): each pixel's ratio is the weighted mean
-  of its neighbours' within 3 pixels whose surface is about as far from
+  of its neighbors' within 3 pixels whose surface is about as far from
   the eye; the reflections the same within 1.
 - Into the picture (`gpu_render.c`, `rt_apply.frag`). The renderer leaves
   the game's shadow volumes out, and after the solid lists the two
@@ -6855,7 +6855,7 @@ enclosure; "against Vulkan" is the same Windows game with
 Steam Deck; a GPU with DirectX 12 but ray tracing tier 1.0 only (the
 message for it was read, not seen); a two-PC game; frame skip with it; a
 long run at the game's own pace. Still to come, for both: a quality
-setting (fewer rays for a slower card), motion from frame to frame, the
+setting (section 76), motion from frame to frame, the
 game's own shadow light, a list of materials, the renderer owning the
 whole frame so that DLSS and FSR can work, FSR's ray regeneration on the
 DirectX side.
@@ -6868,3 +6868,204 @@ the launcher already does for the compiler of the first build and for an
 update. Nothing of this section needs a download: the DirectX shaders are
 in the repository ready made, and Direct3D 12 is Windows' own (under
 Proton, vkd3d-proton's).
+
+## 76. Ray tracing quality (2026-11-25)
+
+**Why.** Sections 74 and 75 trace every pixel of the picture with fixed ray
+counts, which a Radeon 8060S cannot do in a frame's time. The maintainer
+asked for a quality setting next; the plan had been "fewer rays for a
+slower card".
+
+**Measured first** (the Linux game, Vulkan, one stage at 1280 x 960, as
+fast as the machine goes; the ray counts set through a test switch that is
+gone again; the time is from handing the frame to the ray tracing's device
+until it is done):
+
+| rays a pixel: around, a light, a mirror | Radeon 8060S | RTX 5070 Ti (external enclosure) |
+|---|---|---|
+| 4, 4, 2 (sections 74 and 75) | 12.0 ms | 7.7 ms |
+| 2, 2, 1 | 9.2 | 7.2 |
+| 1, 1, 1 | 7.8 | 7.0 |
+| none: the eye's ray and the filter alone | 5.5 | 6.9 |
+| none, at 640 x 480 | 2.4 | 4.3 |
+| none, at 1920 x 1440 | 8.0 | 11.4 |
+
+- On the Radeon the rays are about half of the time, and the rest goes
+  with the number of pixels. On the NVIDIA card the rays are a tenth of
+  it. What costs there is carrying data over the enclosure's cable: the
+  scene in (180 bytes a triangle: 9 MB a frame with section 74's 50,000
+  triangles) and the two results back (8 bytes a pixel, 10 MB at
+  1280 x 960). By the three sizes above that is about 2.7 GB a second,
+  an estimate: the eye rays and the filter are in those times too. A card
+  inside the PC has several times that, so this share should be smaller
+  there; none was here to measure.
+- So fewer rays alone would have taken a third off the Radeon's time and
+  next to nothing off the other card's. Fewer traced pixels take it off
+  both. The setting does both.
+- Bounced light (an ambient ray brings the light of what it meets) costs
+  0.2 ms of the Radeon's 7.8: it stays on at every level.
+- The first traced frame of a run took 0.4 to 0.5 s on the Radeon when
+  Mesa's shader cache was empty (each test batch has a cache of its own):
+  RADV compiles the shaders it builds acceleration structures with at
+  their first use. It is once, not a frame's cost, but it was inside the
+  mean the log gives, and the game ran flat out, where the renderer's own
+  frames queue up on a slow GPU and the tracing waits behind them. Section
+  74's 20.9 ms for the Radeon was both: at the game's own pace, without
+  the first frame, the same picture takes 17.5 ms.
+
+**What is done.** A setting, Ray tracing quality (settings.txt
+`rayquality = low | medium | high`; a row under Ray tracing on the Picture
+tab of the game's menu and of the launcher's Settings), for both ray
+tracers. A change applies at once. Medium is the default.
+
+| | traced pixels | rays: around, a light, a mirror | the filter reaches |
+|---|---|---|---|
+| High | every pixel of the picture | 4, 4, 2 | 3 pixels |
+| Medium | a quarter (half the internal resolution each way) | 4, 4, 2 | 2 traced pixels (4 of the picture's) |
+| Low | a quarter | 1, 1, 1 | 3 traced pixels (6 of the picture's) |
+
+- The levels are a table in `gpu_render.c` (`rt_levels`, an `rt_quality`
+  each: the rays, the bounce, the divisor, the filter's reach).
+  `gpu_render_raytracing` takes the level with the backend; the next
+  frame uses it.
+- Fewer traced pixels. The tracer is not changed: it is asked for a
+  picture half the size each way, so its eye rays go through the middle
+  of each 2 x 2 block of the picture's pixels, and the filter works on
+  that smaller picture. Besides the two results a backend now hands back,
+  when asked, how far each eye ray went (`reach`; the filter had it
+  already). Three small buffers come back instead of two large ones:
+  3 bytes a picture pixel instead of 8.
+- The fill (`shaders/rt_fill.frag`, the renderer's own GPU). Each pixel of
+  the picture takes the four traced pixels around it by how near they lie
+  (as any enlarging does), but only those whose eye ray went about as far
+  as this pixel's own surface is (the filter's measure: within 4 % and a
+  little). So a fighter's light does not run over the outline onto the
+  floor behind, and the floor's shadow not onto the fighter. How far the
+  pixel's surface is comes from the picture's own depth buffer, as the
+  ambient occlusion of section 73 reads it. If none of the four fits
+  (something thin, or an outline the tracer drew a pixel aside), the one
+  of the sixteen around that comes nearest is taken alone; if nothing was
+  traced near, the pixel keeps the game's own light.
+- Two passes for it, because a pass cannot read the depth buffer and use
+  its stencil at once: the fill writes the lit picture into the second
+  color target for every pixel with something drawn; the pass that goes
+  on then first copies the picture as it was back where stencil bit 3 is
+  not set (the 2D layer over the scene), and the translucent list follows
+  as ever.
+- High goes the way of sections 74 and 75, through the same pass as
+  before: its picture is theirs to the pixel.
+- The filter's reach is a constant of the shaders now
+  (`rt_consts.counts[1]`; the GLSL and the HLSL filter both), 1 to 3
+  traced pixels each way. Medium's is 2: with 3, as first tried, a
+  shadow's edge under a foot was visibly softer than High's.
+- A device whose depth buffer no shader can read (none here; the ambient
+  occlusion's own condition) traces every pixel with the level's rays,
+  and the log says so.
+- The log says what is traced, at the start and at each change
+  ("ray tracing quality medium: 640 x 480 traced for a picture
+  1280 x 960"), and the settings line has the level. The mean time it
+  gives at the end leaves the first frame after each start out and names
+  it apart.
+
+Why Medium is the default: its picture is hard to tell from High's (below),
+and it is what a mid-range chip can do in a frame's time. Ray tracing
+itself stays off by default.
+
+Found on the way: the launcher's `--shot` read the window back after
+presenting it, and what comes back then is an older frame's picture (one
+frame back on Linux here, three under Wine). So a `--shot-keys` picture
+lagged that many keys behind what the keys had done (seen in section 75's
+tests and not explained then; the saved files were right, and those were
+what was checked). The last frame is now drawn and read back
+without being presented: ten times Down shows the tenth row in both
+launchers, and their two pictures are the same to the pixel.
+
+**Checked** (the development PC; the windowed games from stage snapshots
+in a headless desktop; the picture shown at a vertical blank in a fight;
+1280 x 960 unless said; NVIDIA is an RTX 5070 Ti in an external enclosure,
+the Radeon an 8060S with Mesa's RADV):
+
+- High against the build before this change: no pixel differs, four
+  stages; Off the same.
+- The cost, at the game's own pace (60 a second), to trace a frame and
+  bring it back, in ms:
+
+  | picture, stage | NVIDIA: High | Medium | Low | Radeon: High | Medium | Low |
+  |---|---|---|---|---|---|---|
+  | 640 x 480, stage 3 | 5.8 | 5.3 | 4.9 | 6.6 | 4.4 | 3.8 |
+  | 1280 x 960, stage 3 | 10.0 | 6.3 | 6.1 | 17.5 | 6.7 | 4.6 |
+  | 1280 x 960, stage 21 | 9.0 | 5.8 | 5.6 | 13.0 | 5.2 | 4.0 |
+  | 1280 x 960, stage 22 | 11.7 | 8.1 | 7.7 | 18.3 | 6.7 | 4.9 |
+  | 1920 x 1440, stage 3 | 16.7 | 8.4 | 7.9 | 34.0 | 11.2 | 6.4 |
+
+  Where a level took longer than a frame the game drew fewer pictures in
+  the same time: the Radeon at High drew 828 of 967 at 1280 x 960 and 464
+  of 957 at 1920 x 1440, the NVIDIA card at High 614 of 958 at
+  1920 x 1440 and 868 of 936 on stage 22. Medium and Low drew all of them
+  in every row.
+- The pictures, four stages. Medium against High differs by 0.45 to 0.85
+  steps of 255 on average, Low by 0.62 to 1.2. By more than 26 steps
+  differ 110 to 699 of 1,228,800 pixels at Medium and 277 to 2,870 at
+  Low; on the stage looked at for it they lie on the edges of the
+  fighters' shadows, which are a little softer. Looked at
+  enlarged three times on three stages: a foot on the floor, a fist
+  before the background, a shadow's edge, the glass panes. No light runs
+  over an outline at any level. A thin beam mirrored in the glass is a
+  row of dots at High, a soft streak at Medium and a clean line at Low
+  (one ray, no roughness).
+- Motion, by numbers only: of eight pictures in a row, how much the
+  traced light's share changes from one to the next: 0.21, 0.21 and 0.20
+  steps for High, Medium and Low on one stage, 0.14, 0.15 and 0.15 on
+  another. Fewer traced pixels add no change from frame to frame by this
+  measure. Nobody has watched it move.
+- 640 x 480 (320 x 240 traced), 1920 x 1440 (960 x 720) and a wide
+  picture (16:9, 1708 x 960; 854 x 480 traced): drawn, Medium against
+  High 0.62, 0.40 and 0.76 steps on average.
+- The Radeon's pictures against the NVIDIA card's, each level: 0.01 steps
+  on average, as section 74 found for High.
+- The game's menu, at the game's own pace, in a fight: Right on the row
+  from Medium, Left from Medium, Left from High. Each time the file has
+  the level and the picture 200 vertical blanks later is the same to the
+  pixel as with that level from the start. With the Software renderer the
+  row does nothing, as Ray tracing's.
+- The launchers (Linux, and the Windows one under Wine), by the file each
+  saved: Right from nothing saved gives high, Left low, Right three times
+  medium again; a file that says high, then Left, medium. The help text
+  fits its box in both, with a line to spare in the launcher's.
+- DirectX 12, the Windows game under Proton, two stages: at each level
+  the DirectX picture differs from the Vulkan one in 173 to 579 of
+  1,228,800 pixels, by 3 steps of 255 at most (High: 487 and 467 pixels,
+  as section 75 had). The Windows game's Vulkan picture at each level:
+  the same to the pixel as the Linux game's. At the game's pace: Vulkan
+  9.8, 6.3 and 6.0 ms; DirectX 10.6, 7.0 and 6.6. The row in the Windows
+  game's menu with DirectX 12 on: Medium to High, Medium to Low, High to
+  Medium, each the same to the pixel as that level from the start.
+- Both development builds compile with no warning.
+
+**Known.**
+
+- Medium and Low are softer where the traced light changes within a few
+  pixels: a shadow's edge near the foot that casts it, a thin thing's
+  shadow. Something thinner than two picture pixels may be missed by
+  every eye ray and then takes the light of what lies nearest in depth.
+- Low is hardly cheaper than Medium on the NVIDIA card in its enclosure
+  (0.2 to 0.6 ms): what is left there is carrying the scene over, which
+  no level changes. A triangle is sent twice over (its corners for the
+  acceleration structure, and again with its normals and colors for the
+  shader); sending less is its own step.
+- The levels' numbers were chosen on two GPUs. A Steam Deck or an older
+  card may want a level below Low (a third of the resolution).
+- The first traced frame after Mesa's shader cache was emptied (a new
+  driver, a first run) takes about half a second on the Radeon. Not
+  looked into further: it is RADV's own work, once.
+- Everything sections 74 and 75 list as known holds here too, but for the
+  fixed ray counts.
+
+**Not covered.** Windows itself; a GPU inside the PC; a Steam Deck; Intel
+graphics; a device whose depth buffer cannot be read (the message for it
+was read, not seen); a two-PC game; frame skip with it; the builder's own
+build (no new source file: the development builds have the same ones); the
+picture in motion, watched. Still to come: motion from frame to frame, the
+game's own shadow light, a list of materials, the renderer owning the
+whole frame so that DLSS and FSR can work, FSR's ray regeneration on the
+DirectX side.

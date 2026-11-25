@@ -34,7 +34,7 @@ layout(std140, set = 0, binding = 1) uniform P {
     vec4 tune;          // eps, baked surfaces' share of the occlusion, the most a pixel is brightened, the glass's gain
     ivec4 opt;          // reflection rays, bounce on, point lights' shadows on, seed
     vec4 tune2;         // the glass's roughness, 0, 0, 0
-    ivec4 counts;       // texels
+    ivec4 counts;       // texels; the filter's neighborhood (rt_filter.comp)
 } p;
 layout(std430, set = 0, binding = 2) readonly buffer Tris { Tri tri[]; };
 layout(std430, set = 0, binding = 3) readonly buffer Jobs { Job job[]; };

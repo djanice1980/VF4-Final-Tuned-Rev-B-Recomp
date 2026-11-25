@@ -18,10 +18,10 @@ typedef struct rt_tri {
     float uv01[4], uv2[2];
     Uint32 strip;               /* its view_rt_strip */
     Uint32 flags;               /* RT_TRI_* */
-    Uint32 col[4];              /* its corners' own colours (0: the material's) */
+    Uint32 col[4];              /* its corners' own colors (0: the material's) */
 } rt_tri;
 #define RT_TRI_BLEND 3u         /* 0 opaque, 1 by its alpha (the translucent list), 2 punch-through */
-#define RT_TRI_BAKED 4u         /* colours of its own, or a material that takes no lights */
+#define RT_TRI_BAKED 4u         /* colors of its own, or a material that takes no lights */
 #define RT_TRI_FIGHTER 8u       /* lit, and not marked to take the game's shadows */
 #define RT_TRI_ONE_SIDED 16u
 #define RT_TRI_BACK 32u         /* one-sided: its front is the other way */
@@ -37,7 +37,7 @@ typedef struct rt_consts {
     float tune[4];              /* eps, baked surfaces' share of the occlusion, the most a pixel is brightened, the glass's gain */
     Sint32 opt[4];              /* reflection rays, bounce on, point lights' shadows on, seed */
     float tune2[4];             /* the glass's roughness */
-    Sint32 counts[4];           /* texels */
+    Sint32 counts[4];           /* texels; the filter's neighborhood, in traced pixels each way */
 } rt_consts;
 
 /* The triangles in four groups, each an acceleration structure of its own: 0 the fighters' solid
@@ -48,9 +48,13 @@ typedef struct rt_scene {
     rt_consts consts;
 } rt_scene;
 
-/* how many rays a pixel (what a frame can afford is the GPU's matter) */
+/* how much of a frame is traced (the Ray tracing quality setting, section 76; the levels are
+ * gpu_render.c's) */
 typedef struct rt_quality {
-    int ambient, shadow, reflection;
+    int ambient, shadow, reflection;    /* rays a traced pixel: for the light around, towards each light, in a mirror */
+    int bounce;                 /* an ambient ray brings the light of what it meets (1), or only its shade (0) */
+    int div;                    /* the traced picture is the renderer's over this each way (1: every pixel) */
+    int smooth;                 /* the filter takes the traced pixels this far around each way (1 to 3) */
 } rt_quality;
 
 /* first: the frame's triangles sorted into the groups (s->ntri, count, base); the triangles
@@ -69,8 +73,11 @@ typedef struct rt_backend {
     /* texels of the arena that changed (view.c's, as the GPU renderer uploads them) */
     void (*texels)(Uint32 at, Uint32 n, const Uint32 *data);
     /* traces the frame for a picture w x h; the results, w * h words each (rt_light.comp's two
-     * outputs), stay good until the next call. 0, or -1 */
-    int (*trace)(const struct view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl);
+     * outputs), stay good until the next call. reach, when not NULL: how far each pixel's eye
+     * ray went as well (w * h floats; 0: it met nothing), which the renderer needs to fill a
+     * traced picture smaller than its own in. 0, or -1 */
+    int (*trace)(const struct view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl,
+                 const float **reach);
 } rt_backend;
 
 extern const rt_backend rt_vulkan;      /* rt_vk.c */

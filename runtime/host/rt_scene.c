@@ -243,9 +243,10 @@ void rt_scene_fill(const view_gpu_frame *f, rt_scene *s, rt_tri *tris, float *po
     u->tune[2] = 1.25f;         /* the most a pixel is brightened (bounced light) */
     u->tune[3] = 1.0f;
     u->opt[0] = q->reflection;
-    u->opt[1] = 1;
+    u->opt[1] = q->bounce;
     u->opt[2] = 1;
     u->opt[3] = 1;              /* the same rays every frame: what is still does not flicker */
     u->tune2[0] = 0.01f;
     u->counts[0] = (Sint32)texels;
+    u->counts[1] = q->smooth;
 }

@@ -75,7 +75,7 @@ static vbuf arena_stage, arena_gpu;     /* the texel arena: all of it mapped; th
 static struct { Uint32 at, n; } *dirty;
 static size_t dirty_n, dirty_cap;
 static vbuf consts;                     /* the shader's constants, mapped */
-static vbuf out_gpu[2], out_back[2];    /* the two results, and where the processor reads them */
+static vbuf out_gpu[2], out_back[3];    /* the two results, and where the processor reads them (and the eye rays' lengths) */
 static vbuf raw_light, raw_refl, raw_depth;     /* the two before the filter, and the eye rays' lengths */
 static vbuf as_store[5], as_scratch;    /* the acceleration structures' memory (4 groups and the top), and the builds' */
 static VkAccelerationStructureKHR as[5];
@@ -155,10 +155,10 @@ static void rt_vk_stop(void)
             vbuf_free(&stage[i]);
             vbuf_free(&gpu[i]);
         }
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < 2; i++)
             vbuf_free(&out_gpu[i]);
+        for (int i = 0; i < 3; i++)
             vbuf_free(&out_back[i]);
-        }
         vbuf_free(&raw_light);
         vbuf_free(&raw_refl);
         vbuf_free(&raw_depth);
@@ -425,7 +425,8 @@ static int build(int i, const VkAccelerationStructureGeometryKHR *geom, uint32_t
     return 0;
 }
 
-static int rt_vk_trace(const view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl)
+static int rt_vk_trace(const view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl,
+                       const float **reach)
 {
     if (!dev)
         return SDL_SetError("ray tracing (Vulkan): not started"), -1;
@@ -446,7 +447,8 @@ static int rt_vk_trace(const view_gpu_frame *f, int w, int h, const rt_quality *
             vbuf_room(&out_back[i], pixels, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 2))
             return -1;
     if (vbuf_room(&as_scratch, 5u * (16u << 20), STORAGE | ADDRESS, 0) || vbuf_room(&raw_light, pixels, STORAGE, 0) ||
-        vbuf_room(&raw_refl, pixels, STORAGE, 0) || vbuf_room(&raw_depth, pixels, STORAGE, 0))
+        vbuf_room(&raw_refl, pixels, STORAGE, 0) || vbuf_room(&raw_depth, pixels, STORAGE | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0) ||
+        (reach && vbuf_room(&out_back[2], pixels, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 2)))
         return -1;
     rt_scene_fill(f, &sc, stage[B_TRI].map, stage[B_POS].map, w, h, VIEW_GPU_ARENA, q);
     memcpy(stage[B_STRIP].map, f->rt_strips, bytes[B_STRIP]);
@@ -553,6 +555,10 @@ static int rt_vk_trace(const view_gpu_frame *f, int w, int h, const rt_quality *
         VkBufferCopy c = { 0, 0, pixels };
         vkCmdCopyBuffer(cmd, out_gpu[i].b, out_back[i].b, 1, &c);
     }
+    if (reach) {
+        VkBufferCopy c = { 0, 0, pixels };
+        vkCmdCopyBuffer(cmd, raw_depth.b, out_back[2].b, 1, &c);
+    }
     if ((r = vkEndCommandBuffer(cmd)) != VK_SUCCESS)
         return fail("vkEndCommandBuffer", r);
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd };
@@ -560,6 +566,8 @@ static int rt_vk_trace(const view_gpu_frame *f, int w, int h, const rt_quality *
         return fail("running the frame", r);
     *light = out_back[0].map;
     *refl = out_back[1].map;
+    if (reach)
+        *reach = out_back[2].map;
     return 0;
 }
 

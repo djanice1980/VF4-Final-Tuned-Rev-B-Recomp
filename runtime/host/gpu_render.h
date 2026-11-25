@@ -46,11 +46,15 @@ void gpu_render_occlusion(int on);
 /* on the window's thread, at any time (before gpu_render_init too; it stays over a start again):
  * ray traced light (docs/design.md section 74) by this backend (rt.h), or NULL for none, the
  * default. The backend is started on the renderer's GPU with the next frame; one that cannot
- * start (no ray tracing on the GPU) is said in the log, and the picture is drawn as without. */
-void gpu_render_raytracing(const rt_backend *backend);
+ * start (no ray tracing on the GPU) is said in the log, and the picture is drawn as without.
+ * quality (section 76): 0 low, 1 medium, 2 high (settings.h RAYQUALITY_*): how many of the
+ * picture's pixels are traced, and by how many rays; a change is taken up with the next frame. */
+void gpu_render_raytracing(const rt_backend *backend, int quality);
 
-/* frames drawn with traced light, and the mean time one took to trace and bring back, ms */
-void gpu_render_rt_stats(unsigned *frames, double *ms);
+/* frames drawn with traced light and the mean time one took to trace and bring back, ms; but for
+ * the first frame after each start of the ray tracing, whose time is first_ms (the last start's):
+ * it holds work done once (a driver may compile shaders of its own then) */
+void gpu_render_rt_stats(unsigned *frames, double *ms, double *first_ms);
 
 /* any thread: the frames the machine handed over, and those of them never
  * drawn (a newer one came first) */

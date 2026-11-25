@@ -78,6 +78,11 @@ enum { OCCLUSION_OFF, OCCLUSION_SSAO, OCCLUSIONS };
  * build, because a Linux launcher keeps the settings of the Windows game it builds for Steam;
  * the game built for Linux takes it as off (main.c), and nothing offers it for that game. */
 enum { RAYTRACING_OFF, RAYTRACING_VULKAN, RAYTRACING_DIRECTX, RAYTRACINGS };
+/* Ray tracing quality (docs/design.md section 76): how much work the traced light is. High: every
+ * pixel of the picture is traced, with the most rays. Medium: a quarter of the pixels (half the
+ * internal resolution each way), filled in over the picture by its depth. Low: that with a
+ * quarter of the rays. What each is in numbers: gpu_render.c. */
+enum { RAYQUALITY_LOW, RAYQUALITY_MEDIUM, RAYQUALITY_HIGH, RAYQUALITIES };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
@@ -106,6 +111,7 @@ typedef struct settings {
     int skip;               /* SKIP_*: off by default */
     int occlusion;          /* OCCLUSION_*: off by default */
     int raytracing;         /* RAYTRACING_*: off by default */
+    int rayquality;         /* RAYQUALITY_*: medium by default */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[2][ACT_COUNT];      /* gamepad, player 1's and player 2's (the same by default) */
     char pad_wish[2][PAD_WISH_MAX]; /* the controller each player asks for: "" Auto (the pads in the
@@ -198,6 +204,7 @@ extern const char *const settings_lighting_name[LIGHTINGS];   /* "cpu", "gpu" (s
 extern const char *const settings_skip_name[SKIPS];           /* "off", "half" */
 extern const char *const settings_occlusion_name[OCCLUSIONS]; /* "off", "ssao" */
 extern const char *const settings_raytracing_name[RAYTRACINGS]; /* "off", "vulkan", "directx" */
+extern const char *const settings_rayquality_name[RAYQUALITIES]; /* "low", "medium", "high" */
 extern const char *const settings_pacing_name[PACINGS];       /* "game", "screen", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",
