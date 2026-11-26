@@ -30,6 +30,7 @@ const char *const settings_latency_name[LATENCIES] = { "auto", "on", "off" };
 const char *const settings_pacing_name[PACINGS] = { "game", "screen", "off" };
 const char *const settings_lighting_name[LIGHTINGS] = { "cpu", "gpu" };
 const char *const settings_skip_name[SKIPS] = { "off", "half" };
+const char *const settings_stats_name[STATS] = { "off", "numbers", "graph" };
 const char *const settings_occlusion_name[OCCLUSIONS] = { "off", "ssao" };
 const char *const settings_raytracing_name[RAYTRACINGS] = { "off", "vulkan", "directx" };
 const char *const settings_rayquality_name[RAYQUALITIES] = { "low", "medium", "high" };
@@ -594,6 +595,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "frameskip")) {
                 if ((ok = choice(v, settings_skip_name, SKIPS, &x)))
                     s->skip = x;
+            } else if (!strcmp(name, "stats")) {
+                if ((ok = choice(v, settings_stats_name, STATS, &x)))
+                    s->stats = x;
             } else if (!strcmp(name, "occlusion")) {
                 if ((ok = choice(v, settings_occlusion_name, OCCLUSIONS, &x)))
                     s->occlusion = x;
@@ -741,6 +745,10 @@ int settings_save(const settings *s, const char *path)
     PUT("frameskip = %s        # off | half: half draws every second picture (30 a second) while the game\n"
         "                       # keeps its full speed, for a PC whose processor cannot keep up\n",
         settings_skip_name[s->skip]);
+    PUT("stats = %s            # off | numbers | graph: the frame rate display at the window's bottom left\n"
+        "                       # (pictures a second, the time between them, the game's and the ray\n"
+        "                       # tracing's time a frame; graph adds a bar for each of the last 120)\n",
+        settings_stats_name[s->stats]);
     PUT("occlusion = %s        # off | ssao: ssao darkens corners and the places where things meet a little\n"
         "                       # (ambient occlusion, worked out of the picture's depth by the GPU renderer;\n"
         "                       # the cabinet's picture has none, and the software renderer draws none)\n",

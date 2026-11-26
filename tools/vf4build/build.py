@@ -63,7 +63,7 @@ def units(gen_dirs, tables_cs, tc, version):
                                                      '-DVF4FT_SOURCE="sources %s"' % source_id()]
     for s in ("main.c", "game_machine.c", "dimm_image.c", "settings.c", "gpu_render.c", "menu.c", "updates.c",
               "art.c", "cards.c", "udp.c", "session.c", "snap_patch.c", "secure.c", "devices.c", "compositor.c",
-              "vsync.c", "rt_scene.c", "rt_vk.c", "sysidle.c"):
+              "vsync.c", "rt_scene.c", "rt_vk.c", "sysidle.c", "perf.c"):
         out.append((R("host", s), hflags))
     if tc.target == "windows":      # the ray tracing through DirectX 12 (toolchain.py links Windows' d3d12 and dxgi)
         out.append((R("host", "rt_dx12.c"), hflags))

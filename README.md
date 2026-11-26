@@ -582,6 +582,12 @@ same). For a PC whose
 processor cannot keep the game at full speed, the same tab has Frame skip:
 Every other
 frame (the game keeps its full speed and 30 pictures a second are drawn).
+Frame rate display, on the same tab, puts a small panel at the window's
+bottom left while the game runs: the pictures shown a second and the time
+from one to the next, what the game itself and the ray tracing took for a
+frame, the slowest of the last two seconds, and with Numbers and graph a
+bar for each of the last 120 pictures
+([design.md s88](docs/design.md#88-the-frame-rate-display-2026-11-26)).
 With the GPU renderer the graphics chip also draws the reflection a stage
 with water has, which the processor drew before
 ([design.md s78](docs/design.md#78-a-stages-reflection-drawn-by-the-graphics-chip-2026-11-25)).
@@ -687,7 +693,7 @@ with only a gamepad, the menu's Operator test menu does the same.
   Big Picture; older files say on for borderless; the launcher's window follows it, as a borderless one
   always), `screenmode` (auto | WIDTHxHEIGHT@HZ, as 1920x1080@60: the display mode Exclusive sets; auto is
   the desktop's own), `screenkept` (the screenmode kept when the game last asked, which it writes itself;
-  none: it asks before keeping another), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
+  none: it asks before keeping another), `stats` (off | numbers | graph: the frame rate display), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
   ones keep the cabinet's screen in the middle, unstretched, and draw what
   the camera sees past its sides; default 4:3, and 16:10 on a Steam
   Deck), `window` (maximized | auto | the window's height in pixels;

@@ -74,6 +74,8 @@ enum { PACING_GAME, PACING_SCREEN, PACING_OFF, PACINGS };
 enum { LIGHTING_CPU, LIGHTING_GPU, LIGHTINGS };
 /* Frame skip (docs/design.md section 71): the screen drawn for every frame, or for every second one */
 enum { SKIP_OFF, SKIP_HALF, SKIPS };
+/* the frame rate display (docs/design.md section 88): off, its numbers, or the numbers and a graph */
+enum { STATS_OFF, STATS_NUMBERS, STATS_GRAPH, STATS };
 /* Ambient occlusion (docs/design.md section 73): none, as the cabinet draws; or SSAO, the GPU
  * renderer's, out of the depth buffer: corners and the places where things meet are a little
  * darker. The software renderer has none. */
@@ -120,6 +122,7 @@ typedef struct settings {
     int pacing;             /* PACING_*: Game clock by default */
     int lighting;           /* LIGHTING_*: the GPU's by default */
     int skip;               /* SKIP_*: off by default */
+    int stats;              /* STATS_*: the frame rate display, off by default */
     int occlusion;          /* OCCLUSION_*: off by default */
     int raytracing;         /* RAYTRACING_*: off by default */
     int rayquality;         /* RAYQUALITY_*: medium by default */
@@ -220,6 +223,7 @@ extern const char *const settings_region_text[REGIONS];      /* "Japan", "USA", 
 extern const char *const settings_latency_name[LATENCIES];   /* "auto", "on", "off" (settings.txt's) */
 extern const char *const settings_lighting_name[LIGHTINGS];   /* "cpu", "gpu" (settings.txt's) */
 extern const char *const settings_skip_name[SKIPS];           /* "off", "half" */
+extern const char *const settings_stats_name[STATS];          /* "off", "numbers", "graph" */
 extern const char *const settings_occlusion_name[OCCLUSIONS]; /* "off", "ssao" */
 extern const char *const settings_raytracing_name[RAYTRACINGS]; /* "off", "vulkan", "directx" */
 extern const char *const settings_rayquality_name[RAYQUALITIES]; /* "low", "medium", "high" */

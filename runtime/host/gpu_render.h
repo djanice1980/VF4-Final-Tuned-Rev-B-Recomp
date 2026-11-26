@@ -55,6 +55,9 @@ void gpu_render_raytracing(const rt_backend *backend, int quality);
  * the first frame after each start of the ray tracing, whose time is first_ms (the last start's):
  * it holds work done once (a driver may compile shaders of its own then) */
 void gpu_render_rt_stats(unsigned *frames, double *ms, double *first_ms);
+/* what the ray tracing took for the frame traced last, in ms (0: none yet), for the frame rate
+ * display (perf.h) */
+double gpu_render_rt_last_ms(void);
 
 /* on the window's thread, at any time (before gpu_render_init too): the passes into textures the
  * game makes (docs/design.md section 78: a stage's reflection in its water) are drawn here, on the

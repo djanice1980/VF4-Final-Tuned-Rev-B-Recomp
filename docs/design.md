@@ -8178,3 +8178,89 @@ reads the number first now.
 gamepad's buttons on the question (the keys and the menu's commands are
 the same ones the rest of the menu takes). The mouse on its buttons. A
 screen that really shows nothing.
+
+## 88. The frame rate display (2026-11-26)
+
+**Why.** The maintainer asked for a counter of frames a second and of the
+frame's time, with a small graph, after noticing that ray tracing at a
+high Internal resolution lowers the frame rate. The game measured all of
+it already and wrote it to the log only, every ten seconds.
+
+**What it shows.** A panel at the window's bottom left, while the game
+runs:
+
+- The pictures shown a second, and the time from one to the next, over
+  the last half second (30 pictures of a 60 a second game).
+- What the game's machine took for its last frame ("game"), and with ray
+  tracing on what the trace of the last frame took, with its way back
+  from the graphics chip ("rays"), both smoothed.
+- The slowest picture among the last 120.
+- With **Numbers and graph**, a bar for each of the last 120 pictures,
+  the newest at the right. The graph is two frames high (33.4 ms), a line
+  marks one frame at 60 a second (16.7 ms), and a bar over 20 ms is in
+  the accent color.
+
+A picture is one the game drew and the window showed for the first time:
+with Frame skip at Every other frame that is 30 a second. A gap of a
+second or more (the menu, a loading) is not counted, and the count starts
+anew after it.
+
+**What is done.**
+
+- `runtime/host/perf.c` (new): keeps the last 120 times, and draws the
+  panel with the menu's own drawing kit. The numbers are written anew
+  four times a second, so that they can be read; the graph with every
+  picture.
+- `main.c`: the window's loop tells it of each new picture, by either
+  renderer. The panel is drawn at the top left of the menu's surface,
+  which the menu, the operator bar and the note have handed over by then,
+  and goes to a small texture of its own; `compose` puts that over the
+  picture. Not while the menu is up. A picture taken of the window
+  (`--keys shot=`) has it; the game's own pictures (`--shot`) do not.
+- The machine's thread leaves its last frame's time for it, and
+  `gpu_render.c` the last trace's.
+- The setting is `stats` (`off`, `numbers`, `graph`), the row **Frame
+  rate display** at the end of the Picture tab, in the launcher and in
+  the game's menu, where it takes at once. Off by default.
+
+**Where it sits.** It was at the top left first, and lay over player 1's
+life bar when the picture fills the window. At the bottom left a fight
+shows nothing; with a 4:3 picture in a wide window it is in the black
+side.
+
+**Checked** (the development builds in a headless desktop at the game's
+own pace, stage 22 from its snapshot; the window as shown, taken at
+vertical blank 7300):
+
+- Off: the window has no panel.
+- Numbers: the panel at the bottom left reads 59.9 fps and 16.7 ms, the
+  game's time (5 to 7 ms there) and the slowest of the last 120. Numbers
+  and graph: the same over its bars, a level band at one frame's height.
+- With ray tracing on, "rays" is in the second line: about 9.5 ms, where
+  the log's average over the run is 8.2 to 8.4 ms.
+- A 16:9 picture in the borderless fullscreen at 1920 x 1080: the panel
+  is clear of the life bars and of player 1's card signs (the pictures
+  were looked at; a first, wider panel lay over those signs).
+- The software renderer: the panel shows the same.
+- From the menu: the row at the Picture tab's end, set to Numbers and
+  graph; the panel shows once the menu has closed, and the settings file
+  has `stats = graph`. The launcher's page has the row and its text.
+- With the display on, the game's own picture at the end is the same to
+  the pixel as without it, and the presents in ten seconds are as many
+  (604 to 607).
+- The Windows game under Proton, with the graph and ray tracing: the
+  same panel, 604 presents in its ten seconds, a clean exit.
+
+**Known.**
+
+- The panel is opaque and has one place. On the title screens and in the
+  test menu it may lie over the game's own writing.
+- "game" is the time the machine's thread worked for a frame, not the
+  whole frame's: the window's own drawing, the wait for the screen and
+  the graphics chip's work are in the time from picture to picture only.
+- There is no key for it; it is switched in the menu.
+
+**Not covered.** Windows itself. A screen that is not at 60 Hz, a slow
+PC, and Frame skip, where the numbers matter most: the headless desktop
+gave a steady 60. The numbers were read from pictures, not compared with
+another counter.

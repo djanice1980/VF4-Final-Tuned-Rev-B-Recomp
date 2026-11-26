@@ -144,6 +144,7 @@
 #include "gpu_render.h"
 #include "menu.h"
 #include "options.h"
+#include "perf.h"
 #include "session.h"
 #include "snap_patch.h"
 #include "sysidle.h"
@@ -234,6 +235,7 @@ static SDL_AtomicInt restart_req;       /* GAME_COINS_*: the game starts again f
 static int net_first;                   /* a blank backup with the network wanted off: it goes in once the
                                          * game has made its settings record (on_frame) */
 static SDL_AtomicInt frame_now;         /* the machine's vertical blank */
+static SDL_AtomicInt perf_game_us;      /* what the machine took for its last frame, in microseconds (perf.h) */
 static SDL_AtomicInt program_now;       /* 1 while the test program runs */
 
 /* The board's clock (docs/design.md section 77): this PC's date and time as the game starts, so
@@ -1315,6 +1317,7 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
     if (busy_since) {
         Uint64 b = now - busy_since;
         busy_ns += b;
+        SDL_SetAtomicInt(&perf_game_us, (int)(b / 1000));
         if (b > busy_max_ns)
             busy_max_ns = b;
         if (machine_path != 1)
@@ -2100,7 +2103,12 @@ static struct {
     Uint32 grab_w, grab_h;
     int ready;                      /* what tex holds: 0 nothing, 1 the menu, 2 the bar */
     int bar_w, bar_h;
+    SDL_GPUTexture *perf;           /* the frame rate display's panel (section 88), drawn on ren at surf's */
+    SDL_GPUTransferBuffer *perf_up; /* top left and handed over here (it is shown at the window's bottom left) */
+    int perf_w, perf_h, perf_ready; /* its size in pixels; the texture holds a panel */
 } ovl;
+static int perf_new;                /* a picture was shown since the panel was drawn */
+static int perf_show_now;           /* compose draws the panel (not under the menu) */
 
 /* ---- the menu (menu.c) ---- */
 
@@ -3357,6 +3365,13 @@ static void ovl_gpu_free(SDL_GPUDevice *dev)
         SDL_ReleaseGPUTransferBuffer(dev, ovl.up);
     if (ovl.grab)
         SDL_ReleaseGPUTexture(dev, ovl.grab);
+    if (ovl.perf)
+        SDL_ReleaseGPUTexture(dev, ovl.perf);
+    if (ovl.perf_up)
+        SDL_ReleaseGPUTransferBuffer(dev, ovl.perf_up);
+    ovl.perf = NULL;
+    ovl.perf_up = NULL;
+    ovl.perf_w = ovl.perf_h = ovl.perf_ready = 0;
     ovl.tex = NULL;
     ovl.up = NULL;
     ovl.grab = NULL;
@@ -3536,6 +3551,26 @@ static void compose(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, Uint32 w,
         t.load_op = SDL_GPU_LOADOP_CLEAR;
         t.store_op = SDL_GPU_STOREOP_STORE;
         SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
+    }
+    if (perf_show_now && ov != 1 && ovl.perf && ovl.perf_ready) {
+        /* the frame rate display (section 88): at the window's bottom left, 8 pixels in of a window
+         * 1080 high. A fight shows nothing there; at the top left it lay over player 1's life bar */
+        Uint32 m = h / 135, py = h > m + (Uint32)ovl.perf_h ? h - m - (Uint32)ovl.perf_h : 0;
+        if (m + (Uint32)ovl.perf_w <= w && py + (Uint32)ovl.perf_h <= h) {
+            SDL_GPUBlitInfo pb;
+            SDL_zero(pb);
+            pb.source.texture = ovl.perf;
+            pb.source.w = (Uint32)ovl.perf_w;
+            pb.source.h = (Uint32)ovl.perf_h;
+            pb.destination.texture = target;
+            pb.destination.x = m;
+            pb.destination.y = py;
+            pb.destination.w = pb.source.w;
+            pb.destination.h = pb.source.h;
+            pb.load_op = SDL_GPU_LOADOP_LOAD;
+            pb.filter = SDL_GPU_FILTER_NEAREST;
+            SDL_BlitGPUTexture(cmd, &pb);
+        }
     }
     if (!ov || ovl.ready != ov)
         return;
@@ -4632,6 +4667,8 @@ int main(int argc, char **argv)
                 SDL_EndGPUCopyPass(cp);
                 have_picture = 1;
                 pictures++;
+                perf_new = 1;               /* the frame rate display (section 88) */
+                perf_picture(SDL_GetTicksNS());
             }
             shown_frame = frame;
         }
@@ -4727,6 +4764,78 @@ int main(int argc, char **argv)
             }
             ov_dirty = 0;
         }
+        /* the frame rate display (section 88): its panel is drawn at the top left of the overlay's
+         * surface (whose own picture has been handed over by now) and goes to a texture of its
+         * own, each time a picture was shown. Not while the menu is up */
+        perf_show_now = 0;
+        {
+            static int perf_was;
+            if (cfg_.stats != perf_was) {
+                perf_was = cfg_.stats;
+                perf_reset();
+                ovl.perf_ready = 0;
+            }
+        }
+        if (cfg_.stats != STATS_OFF && ov != 1) {
+            int ww = 0, wh = 0, pw = 0, ph = 0, graph = cfg_.stats == STATS_GRAPH;
+            SDL_GetWindowSizeInPixels(win, &ww, &wh);
+            if (ww > 0 && wh > 0 && (ww != ovl.w || wh != ovl.h) && ovl_size(gpu, ww, wh) == 0)
+                ov_dirty = 1;       /* the surface was made anew: the bar or the note is drawn again */
+            if (ovl.ren)
+                perf_size(graph, ovl.h, &pw, &ph);
+            if (ovl.ren && pw > 0 && pw <= ovl.w && ph <= ovl.h) {
+                if (!ovl.perf || ovl.perf_w != pw || ovl.perf_h != ph) {
+                    if (ovl.perf)
+                        SDL_ReleaseGPUTexture(gpu, ovl.perf);
+                    if (ovl.perf_up)
+                        SDL_ReleaseGPUTransferBuffer(gpu, ovl.perf_up);
+                    SDL_GPUTextureCreateInfo pi;
+                    SDL_zero(pi);
+                    pi.type = SDL_GPU_TEXTURETYPE_2D;
+                    pi.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+                    pi.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                    pi.width = (Uint32)pw;
+                    pi.height = (Uint32)ph;
+                    pi.layer_count_or_depth = 1;
+                    pi.num_levels = 1;
+                    ovl.perf = SDL_CreateGPUTexture(gpu, &pi);
+                    SDL_GPUTransferBufferCreateInfo pbi;
+                    SDL_zero(pbi);
+                    pbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                    pbi.size = (Uint32)pw * (Uint32)ph * 4;
+                    ovl.perf_up = SDL_CreateGPUTransferBuffer(gpu, &pbi);
+                    ovl.perf_w = pw;
+                    ovl.perf_h = ph;
+                    ovl.perf_ready = 0;
+                }
+                if (ovl.perf && ovl.perf_up && (perf_new || !ovl.perf_ready)) {
+                    float rays = use_gpu && raytracing_wanted() ? (float)gpu_render_rt_last_ms() : -1;
+                    perf_new = 0;
+                    perf_draw(graph, pw, ph, (float)SDL_GetAtomicInt(&perf_game_us) / 1000.0f, rays);
+                    SDL_FlushRenderer(ovl.ren);
+                    unsigned char *pd = SDL_MapGPUTransferBuffer(gpu, ovl.perf_up, true);
+                    int plocked = pd && SDL_LockSurface(ovl.surf);
+                    if (plocked) {
+                        for (int y = 0; y < ph; y++)
+                            memcpy(pd + (size_t)y * (size_t)pw * 4,
+                                   (unsigned char *)ovl.surf->pixels + (size_t)y * ovl.surf->pitch, (size_t)pw * 4);
+                        SDL_UnlockSurface(ovl.surf);
+                    }
+                    if (pd)
+                        SDL_UnmapGPUTransferBuffer(gpu, ovl.perf_up);
+                    if (plocked) {
+                        SDL_GPUCopyPass *pcp = SDL_BeginGPUCopyPass(cmd);
+                        SDL_GPUTextureTransferInfo psrc = { .transfer_buffer = ovl.perf_up, .offset = 0,
+                                                            .pixels_per_row = (Uint32)pw, .rows_per_layer = (Uint32)ph };
+                        SDL_GPUTextureRegion preg = { .texture = ovl.perf, .w = (Uint32)pw, .h = (Uint32)ph, .d = 1 };
+                        SDL_UploadToGPUTexture(pcp, &psrc, &preg, true);
+                        SDL_EndGPUCopyPass(pcp);
+                        ovl.perf_ready = 1;
+                    }
+                }
+                perf_show_now = ovl.perf_ready;
+            }
+        }
         SDL_GPUTexture *sc = NULL;
         Uint32 w = 0, h = 0;
         compositor_busy(1);     /* the frame, to its end: it may never finish once the compositor has gone */
@@ -4771,8 +4880,11 @@ int main(int argc, char **argv)
                 fprintf(sync_log, "P %u %llu\n", gf, (unsigned long long)SDL_GetTicksNS());
             if (t) {
                 src_tex = t;
-                if (gf != shown_frame)
+                if (gf != shown_frame) {
                     pictures++;
+                    perf_new = 1;           /* the frame rate display (section 88) */
+                    perf_picture(SDL_GetTicksNS());
+                }
                 shown_frame = gf;
                 have_picture = 1;
             }

@@ -1745,13 +1745,13 @@ enum { T_GAME, T_CARDS, T_PICTURE, T_SOUND, T_PAD, T_KEYS, T_COUNT };
 static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
-#define ST_ROWS 16      /* a tab's rows at most, with the -1 that ends them */
+#define ST_ROWS 17      /* a tab's rows at most, with the -1 that ends them */
 static const int tab_rows[T_COUNT][ST_ROWS] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, OPT_LATENCY, -1 },
     [T_CARDS] = { -1 },
     [T_PICTURE] = { OPT_FULLSCREEN, OPT_SCREENMODE, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER,
                     OPT_GPU, OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_LIGHTING, OPT_SKIP,
-                    OPT_PACING, -1 },
+                    OPT_PACING, OPT_STATS, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEYS] = { -1 },
 };

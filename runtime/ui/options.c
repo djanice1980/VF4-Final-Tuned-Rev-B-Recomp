@@ -112,6 +112,12 @@ const option_info options[OPT_COUNT] = {
                    "and its timing, and every second picture is drawn, 30 a second. Try it if the game runs in "
                    "slow motion on a PC with a slow processor, after Lighting: GPU. In a two-PC game each PC "
                    "chooses for itself.", 0 },
+    [OPT_STATS] = { "Frame rate display",
+                    "At the window's bottom left while the game runs: the pictures shown a second and the "
+                    "time from one to the next, then what the game itself and the ray tracing took for "
+                    "a frame and the slowest of the last two seconds. Numbers and graph adds a bar for "
+                    "each of the last 120 pictures: the line across is one frame at 60 a second, and "
+                    "a slow one is marked.", 0 },
     [OPT_OCCLUSION] = { "Ambient occlusion",
                         "Off: the picture as the cabinet draws it. SSAO: corners, folds and the places where things "
                         "meet (a foot on the floor) are a little darker, which gives the picture more depth. The GPU "
@@ -342,6 +348,11 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         SDL_strlcpy(buf, lt[s->lighting], n);
         break;
     }
+    case OPT_STATS: {
+        static const char *const st[STATS] = { "Off", "Numbers", "Numbers and graph" };
+        SDL_strlcpy(buf, st[s->stats], n);
+        break;
+    }
     case OPT_SKIP: {
         static const char *const sk[SKIPS] = { "Off", "Every other frame" };
         SDL_strlcpy(buf, sk[s->skip], n);
@@ -456,6 +467,7 @@ void option_change(settings *s, int o, int d)
     case OPT_PACING: s->pacing = wrap(s->pacing, d, PACINGS); break;
     case OPT_LIGHTING: s->lighting = wrap(s->lighting, d, LIGHTINGS); break;
     case OPT_SKIP: s->skip = wrap(s->skip, d, SKIPS); break;
+    case OPT_STATS: s->stats = wrap(s->stats, d, STATS); break;
     case OPT_OCCLUSION: s->occlusion = wrap(s->occlusion, d, OCCLUSIONS); break;
     case OPT_RAYTRACING:
         s->raytracing = wrap(s->raytracing, d, RAYTRACINGS);

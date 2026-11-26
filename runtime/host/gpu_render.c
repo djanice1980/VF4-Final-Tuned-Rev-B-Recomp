@@ -334,7 +334,7 @@ static Uint32 xfer_rt_size;
 /* frames traced and their time, but for the first after each start, which holds one-off work (a
  * driver may compile its own shaders for the acceleration structures then): that one's time */
 static unsigned stat_rt_frames;
-static double stat_rt_ms, stat_rt_first_ms;
+static double stat_rt_ms, stat_rt_first_ms, stat_rt_last_ms;
 static int rt_first;
 /* passes into textures (section 78): asked for (gpu_render_passes: on, but for a test); each
  * target picture with its depth buffer, as last made; a texture to bind where there is none; the
@@ -803,6 +803,11 @@ void gpu_render_pass_stats(unsigned *passes, unsigned *stale)
 {
     *passes = stat_passes;
     *stale = stat_pass_stale;
+}
+
+double gpu_render_rt_last_ms(void)
+{
+    return stat_rt_last_ms;
 }
 
 void gpu_render_rt_stats(unsigned *frames, double *ms, double *first_ms)
@@ -1420,6 +1425,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
             }
             SDL_EndGPUCopyPass(rcp);
             double ms = (double)(SDL_GetTicksNS() - t0) / 1e6;
+            stat_rt_last_ms = ms;
             if (rt_first) {
                 rt_first = 0;
                 stat_rt_first_ms = ms;

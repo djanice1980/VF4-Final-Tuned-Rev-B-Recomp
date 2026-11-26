@@ -110,7 +110,7 @@ if(TARGET vf4ft_gen_main AND TARGET vf4ft_gen_test)
                          runtime/host/settings.c runtime/host/gpu_render.c runtime/host/menu.c runtime/host/updates.c
                          runtime/host/art.c runtime/host/cards.c runtime/host/udp.c runtime/host/session.c
                          runtime/host/snap_patch.c runtime/host/secure.c runtime/host/devices.c runtime/host/compositor.c
-                         runtime/host/vsync.c runtime/host/rt_scene.c runtime/host/rt_vk.c runtime/host/sysidle.c
+                         runtime/host/vsync.c runtime/host/rt_scene.c runtime/host/rt_vk.c runtime/host/sysidle.c runtime/host/perf.c
                          runtime/crypto/monocypher.c
                          runtime/crypto/monocypher-ed25519.c ${VF4FT_UI})
     # runtime/vulkan: Khronos's Vulkan headers for the ray tracing (rt_vk.c), before any the system has
