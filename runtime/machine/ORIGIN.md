@@ -221,6 +221,16 @@ What the recomp changed:
   window (`host_mode`) a pass's lists are taken when the lists of the
   screen before it were (frame skip, a frame run again); the headless
   program's rule is VF4debug's, unchanged.
+- Traced water (2026-11-25, docs/design.md section 81). `view.h`,
+  `view.c`: `view_host_rt_mirror`; while it is on and
+  `view_host_gpu_passes` is off, a pass into a texture of the kind the
+  host could draw is neither drawn here nor handed on: the states that use
+  its picture are marked as with a pass the host draws, and the frame says
+  so (`view_gpu_frame.rt_mirror`: 1 no pass was drawn, 2 the pass was
+  handed to the host as ever). With either, the frame carries what that
+  pass had behind everything (`rt_mirror_bg`) and its fog (`rt_fog_at`:
+  the table, the color, the density, after the light sets' floats;
+  `rt_mirror_note`). Off (the default), nothing changes.
 - `runtime/headless/main.c` (M4): `--sound chip|mailbox`, `--arm-budget N`
   and `--wav FILE`. (M6) It keeps the power-on state for test mode
   (`rt_native_power_on`) and reports the program switches.

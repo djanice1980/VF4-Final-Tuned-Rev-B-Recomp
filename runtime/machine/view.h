@@ -177,6 +177,17 @@ typedef struct view_gpu_frame {
     const view_rt_strip *rt_strips;
     u32 nrt_strips;
     float rt_near;
+    /* recomp (traced water): rt_mirror not 0: the frame has states with a target, the water. 1: no
+     * pass was drawn for them; the ray tracing mirrors the scene there in the pass's place
+     * (view_host_rt_mirror). 2: the pass was handed to the host as ever. rt_mirror_bg: what that
+     * pass had behind everything (0..1, its background plane with its fog), for a mirror's ray
+     * that leaves the scene */
+    int rt_mirror;
+    float rt_mirror_bg[3];
+    /* not 0: where in lights (a float's index) that pass's fog begins: the 129 steps of its table
+     * (0..255), its color (r, g, b: 0..255), its density, and 1 when the fog is on */
+    u32 rt_fog_at;
+#define VIEW_RT_FOG_FLOATS 134
     /* the texel arena (0xAARRGGBB): the ranges that changed since the last frame; reset: drop everything */
     const u32 *arena;
     u32 arena_texels;
@@ -196,6 +207,12 @@ void view_host_gpu_lighting(int on);
 /* recomp (section 74): the GPU path's frames carry the scene for ray tracing (on) or not (off, the
  * default). Any thread; the next pass to the screen takes it */
 void view_host_rt(int on);
+/* recomp (traced water): while it is on and view_host_gpu_passes is off, a pass into a texture of
+ * the kind the host could draw is neither drawn here nor handed on: the states that use its
+ * picture are marked as with a pass the host draws (their target), and the frame says so
+ * (rt_mirror). For a host whose ray tracing mirrors the scene on those polygons. Any thread; the
+ * next pass takes it */
+void view_host_rt_mirror(int on);
 
 /* called from hw_gfx.c, only while view_on is set */
 void view_list_segment(sh4 *c, u32 addr, u32 len);       /* a display list segment the ELAN is told to run */

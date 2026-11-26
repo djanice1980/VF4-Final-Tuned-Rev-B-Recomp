@@ -187,7 +187,7 @@ void settings_defaults(settings *s)
     s->region = REGION_JAPAN;
     s->latency = LATENCY_AUTO;
     s->pacing = PACING_GAME;
-    s->lighting = LIGHTING_CPU;
+    s->lighting = LIGHTING_GPU;
     s->skip = SKIP_OFF;
     s->occlusion = OCCLUSION_OFF;
     s->raytracing = RAYTRACING_OFF;
@@ -447,7 +447,7 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
         }
         return -1;
     }
-    int line_no = 0, layout = 1, window_auto = 0;
+    int line_no = 0, layout = 1, window_auto = 0, lighting_cpu = 0;
     for (char *line = text; line;) {
         char *nl = strchr(line, '\n');
         if (nl)
@@ -535,8 +535,10 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
                 if ((ok = choice(v, settings_latency_name, LATENCIES, &x)))
                     s->latency = x;
             } else if (!strcmp(name, "lighting")) {
-                if ((ok = choice(v, settings_lighting_name, LIGHTINGS, &x)))
+                if ((ok = choice(v, settings_lighting_name, LIGHTINGS, &x))) {
                     s->lighting = x;
+                    lighting_cpu = x == LIGHTING_CPU;
+                }
             } else if (!strcmp(name, "frameskip")) {
                 if ((ok = choice(v, settings_skip_name, SKIPS, &x)))
                     s->skip = x;
@@ -598,6 +600,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
     /* a file from before Maximized was the default: its auto was the default then */
     if (layout < 2 && window_auto)
         s->window = WINDOW_MAXIMIZED;
+    /* a file from before the GPU's lighting was the default: its cpu was the default then */
+    if (layout < 3 && lighting_cpu)
+        s->lighting = LIGHTING_GPU;
     return 0;
 }
 
@@ -609,7 +614,8 @@ int settings_save(const settings *s, const char *path)
     PUT("# Virtua Fighter 4 Final Tuned (recomp): settings. The launcher's Settings page and the\n"
         "# game's menu write this file; the game reads it when it starts. Lines it does not know\n"
         "# are skipped.\n\n");
-    PUT("layout = %d              # this file's layout (2: Window size's default is maximized)\n", SETTINGS_LAYOUT);
+    PUT("layout = %d              # this file's layout (2: Window size's default is maximized; 3: Lighting's is gpu)\n",
+        SETTINGS_LAYOUT);
     PUT("coins = %s            # free play | arcade (coins; an operator's own coin setting is kept)\n",
         coins_names[s->coins]);
     PUT("fullscreen = %s       # auto (on for the Steam Deck and Big Picture) | on | off\n",
@@ -666,9 +672,9 @@ int settings_save(const settings *s, const char *path)
         "                       # multiple of it (not in a two-PC game); off: the newest frame at each\n"
         "                       # refresh, as before 0.5.12\n",
         settings_pacing_name[s->pacing]);
-    PUT("lighting = %s          # cpu | gpu: where the GPU renderer's lights are worked out. gpu: by the\n"
-        "                       # graphics chip, which takes that work off a slow processor (the software\n"
-        "                       # renderer's are always the processor's)\n",
+    PUT("lighting = %s          # gpu | cpu: where the GPU renderer's lights are worked out. gpu: by the\n"
+        "                       # graphics chip, which takes that work off the processor; cpu: by the\n"
+        "                       # processor (the software renderer's are always the processor's)\n",
         settings_lighting_name[s->lighting]);
     PUT("frameskip = %s        # off | half: half draws every second picture (30 a second) while the game\n"
         "                       # keeps its full speed, for a PC whose processor cannot keep up\n",

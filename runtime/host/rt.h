@@ -25,6 +25,7 @@ typedef struct rt_tri {
 #define RT_TRI_FIGHTER 8u       /* lit, and not marked to take the game's shadows */
 #define RT_TRI_ONE_SIDED 16u
 #define RT_TRI_BACK 32u         /* one-sided: its front is the other way */
+#define RT_TRI_MIRROR 64u       /* water: the game gives it its reflection picture; the rays mirror the scene there */
 
 /* the shader's constants (its P) */
 typedef struct rt_consts {
@@ -38,6 +39,10 @@ typedef struct rt_consts {
     Sint32 opt[4];              /* reflection rays, bounce on, point lights' shadows on, seed */
     float tune2[4];             /* the glass's roughness */
     Sint32 counts[4];           /* texels; the filter's neighborhood, in traced pixels each way */
+    float mirror[4];            /* the water's plane: its normal towards the eye (view space); w: 0 no water, 1 the
+                                 * mirror in the place of the game's picture, 2 over it by the angle's share */
+    float mirror_bg[4];         /* what a mirror's ray that leaves the scene shows (0..1); w: the plane's place (normal . point) */
+    float mirror_fog[4];        /* x: where the fog of the water's picture begins in the lights' floats (0: none) */
 } rt_consts;
 
 /* The triangles in four groups, each an acceleration structure of its own: 0 the fighters' solid

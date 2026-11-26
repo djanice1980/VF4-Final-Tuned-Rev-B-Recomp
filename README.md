@@ -562,16 +562,23 @@ makes corners, folds and the places where things meet (a foot on the
 floor) a little darker, which the cabinet's picture does not have; it is
 off by default. Ray tracing: Vulkan has the graphics chip trace rays for
 the picture's light: the fighters' shadows get soft edges, the fighters
-shade themselves and each other, and glass mirrors the scene; DirectX 12,
+shade themselves and each other, and glass mirrors the scene, and so does
+the water of the stages that have it (the Shrine's pond is a mirror of the
+scene around it; on the other stages the mirror lies over the game's own
+water, most where the eye looks along it:
+[design.md s81](docs/design.md#81-traced-water-2026-11-25)); DirectX 12,
 in the Windows game (on Windows or under Proton), traces the same picture
-through DirectX instead. It needs a
+through DirectX instead, without the water's mirror so far. It needs a
 graphics chip with ray tracing; it is off by default. Ray tracing quality
 says how much work that is: High traces every pixel of the picture, Medium
 (the default) a quarter of them and fills the picture in, which looks
 nearly the same for much less work, and Low does that with fewer rays, for
-a slow chip. For a PC whose
-processor cannot keep the game at full speed, the same tab has Lighting:
-GPU (the graphics chip works out the lights) and Frame skip: Every other
+a slow chip. Lighting says which chip works out the lights with the GPU
+renderer: GPU, the default, is the graphics chip, which takes that work off
+the processor; CPU is the processor, as before 0.5.24 (the picture is the
+same). For a PC whose
+processor cannot keep the game at full speed, the same tab has Frame skip:
+Every other
 frame (the game keeps its full speed and 30 pictures a second are drawn).
 With the GPU renderer the graphics chip also draws the reflection a stage
 with water has, which the processor drew before
@@ -677,9 +684,12 @@ with only a gamepad, the menu's Operator test menu does the same.
   (auto | on | off: a two-PC game's latency optimization; default auto),
   `pacing` (game | screen | off: Frame pacing, above; default game.
   0.5.12's `pace = timer` is read as off),
-  `lighting` (cpu | gpu: which chip works out the lights with the GPU
-  renderer; gpu takes that work off a slow processor; default cpu:
-  [design.md s67](docs/design.md#67-lighting-on-the-gpu-as-an-option-2026-11-24)),
+  `lighting` (gpu | cpu: which chip works out the lights with the GPU
+  renderer; gpu takes that work off the processor; default gpu since
+  0.5.24, and a file from before that says cpu, the default then, is read
+  as gpu once:
+  [design.md s67](docs/design.md#67-lighting-on-the-gpu-as-an-option-2026-11-24),
+  [s79](docs/design.md#79-lighting-on-the-gpu-by-default-2026-11-25)),
   `frameskip` (off | half: half draws every second picture, 30 a second,
   while the game keeps its full speed, for a PC whose processor cannot
   keep up; each PC of a two-PC game chooses for itself; default off:

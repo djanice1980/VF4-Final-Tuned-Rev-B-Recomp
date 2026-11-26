@@ -65,6 +65,10 @@ void gpu_render_passes(int on);
 /* passes into textures drawn here, and the frames with a state that took a target picture not
  * drawn for that frame (an older one's, or none), for the log */
 void gpu_render_pass_stats(unsigned *passes, unsigned *stale);
+/* Traced water (docs/design.md section 81): how ray tracing through Vulkan shows a stage's water.
+ * 1: the scene mirrored by rays in the place of the game's reflection picture; 2 (the start's):
+ * mirrored over that picture where the eye looks along the water. Any thread. */
+void gpu_render_water(int mode);
 
 /* any thread: the frames the machine handed over, and those of them never
  * drawn (a newer one came first) */

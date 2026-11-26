@@ -30,6 +30,10 @@ static int classify(const view_gpu_frame *f, const view_rt_tri *t, Uint32 *flags
     float front = s->flags & VIEW_RT_ONE_SIDED ? -side * (s->flags & VIEW_RT_BACK ? -1.0f : 1.0f) : 0;
     *flags = (Uint32)blend | (baked ? RT_TRI_BAKED : 0) | (fighter ? RT_TRI_FIGHTER : 0) | (front != 0 ? RT_TRI_ONE_SIDED : 0) |
              (front < 0 ? RT_TRI_BACK : 0);
+    /* water: the game's own rule, the polygons it gives a reflection pass's picture to, in a frame
+     * no such pass was drawn for (view.h, rt_mirror) */
+    if (f->rt_mirror && st->target && blend == 0)
+        *flags |= RT_TRI_MIRROR;
     return (fighter ? 0 : 2) + (blend ? 1 : 0);
 }
 
@@ -193,6 +197,8 @@ void rt_scene_fill(const view_gpu_frame *f, rt_scene *s, rt_tri *tris, float *po
     memcpy(fill, s->base, sizeof fill);
     shadow_frame sf;
     shadow_start(f, &sf);
+    double mirror_n[3] = { 0, 0, 0 };   /* the water's triangles' normals, each towards the eye, by their areas */
+    double mirror_c[3] = { 0, 0, 0 }, mirror_a = 0;     /* their middles by their areas, and the areas' sum */
     for (Uint32 i = 0; i < f->nrt_tris; i++) {
         const view_rt_tri *t = &f->rt_tris[i];
         Uint32 fl;
@@ -218,6 +224,21 @@ void rt_scene_fill(const view_gpu_frame *f, rt_scene *s, rt_tri *tris, float *po
         o->uv2[0] = t->v[2].uv[0]; o->uv2[1] = t->v[2].uv[1];
         o->strip = t->strip;
         o->flags = fl;
+        if (fl & RT_TRI_MIRROR) {
+            /* from the frame's vertices again (o is written only) */
+            const float a[3] = { -t->v[0].p[0], t->v[0].p[1], -t->v[0].p[2] }, b[3] = { -t->v[1].p[0], t->v[1].p[1], -t->v[1].p[2] },
+                        c[3] = { -t->v[2].p[0], t->v[2].p[1], -t->v[2].p[2] };
+            double e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+            double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+            double side = n[0] * a[0] + n[1] * a[1] + n[2] * a[2] > 0 ? -1.0 : 1.0;    /* the eye is at the origin */
+            double area = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            for (int x = 0; x < 3; x++) {
+                mirror_n[x] += side * n[x];
+                mirror_c[x] += area * ((double)a[x] + b[x] + c[x]) / 3;
+            }
+            mirror_a += area;
+            o->col[3] = t->v[0].ofs;    /* the color its polygons add (one for the strip) */
+        }
     }
     rt_consts *u = &s->consts;
     SDL_zerop(u);
@@ -249,4 +270,16 @@ void rt_scene_fill(const view_gpu_frame *f, rt_scene *s, rt_tri *tris, float *po
     u->tune2[0] = 0.01f;
     u->counts[0] = (Sint32)texels;
     u->counts[1] = q->smooth;
+    double ml = sqrt(mirror_n[0] * mirror_n[0] + mirror_n[1] * mirror_n[1] + mirror_n[2] * mirror_n[2]);
+    if (ml > 0) {
+        for (int x = 0; x < 3; x++) {
+            u->mirror[x] = (float)(mirror_n[x] / ml);
+            u->mirror_bg[x] = f->rt_mirror_bg[x];
+        }
+        u->mirror[3] = (float)f->rt_mirror;
+        u->mirror_fog[0] = (float)f->rt_fog_at;
+        if (mirror_a > 0)
+            u->mirror_bg[3] = (float)((u->mirror[0] * mirror_c[0] + u->mirror[1] * mirror_c[1] + u->mirror[2] * mirror_c[2]) /
+                                      mirror_a);
+    }
 }

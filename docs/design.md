@@ -7343,3 +7343,405 @@ in the menu on a water stage (the passes change hands then: reasoned,
 not run); a renderer started again on another GPU on a water stage; stage
 15's two passes (no state used them in the frames looked at); a PC joining
 a game going on; the builder's own build (no new source file).
+
+## 79. Lighting on the GPU by default (2026-11-25)
+
+**Why.** Section 67 made the GPU renderer's lights an option, the
+processor's by default, until it had been seen on more graphics chips.
+Since then it has run on a GeForce RTX 5070 Ti and a Radeon 8060S on
+Linux, the same two with the Windows game under Proton and Wine, and on a
+player's Intel HD Graphics 620 on Windows (issue 3), with no fault in the
+picture. It takes about a tenth off the game's thread on that laptop, and
+costs a fast PC nothing. The maintainer asked for it to be the default.
+
+**What is done.**
+
+- `settings_defaults` gives `lighting = gpu`.
+- A settings file says `lighting = cpu` on every PC that ran 0.5.19 to
+  0.5.23, because the game writes every setting out, not because the
+  player chose it. So the file's layout number goes to 3 (section 70 made
+  it 2 for Window size's default): a file of an earlier layout that says
+  `cpu` is read as `gpu`, once. The next time the file is written it has
+  layout 3, and from then on `cpu` means the player's choice and stays.
+  A player who had chosen GPU and gone back to CPU on purpose gets GPU
+  once more and has to set CPU again; the two cannot be told apart in an
+  old file.
+- The row's help text and the file's comment name GPU first, and say what
+  CPU is for: a picture that looks wrong with GPU.
+- The software renderer's lights are the processor's, as ever.
+
+**Checked.** A game with no settings file, with a file of layout 2 that
+says `cpu`, and with one of layout 3 that says `cpu`: the log's settings
+line has lighting gpu, gpu and cpu. The launcher, given the layout 2
+file: its page shows GPU, and the file it saves has layout 3 and `gpu`.
+The picture with the GPU's lights against the processor's on a stage where
+they differ at all (stage 22 at 1280 x 960): 96,271 of 1,228,800 pixels,
+by one step of 255, none by more.
+
+**Known.** Not run on a Steam Deck, on AMD graphics under Windows itself,
+or on an older graphics chip than these. A test that writes its own
+settings file with `lighting = cpu` must give it `layout = 3` too, or the
+game reads it as gpu (the test kits were changed).
+
+## 80. The traced light's rays, spread evenly (2026-11-25)
+
+**Why.** The maintainer watched the ray traced picture of sections 74 to 76
+move, which nobody had: "The shadows are very noisy either way whether it
+is medium or high." Section 76's numbers for motion had not shown it. What
+the tracer did: four rays for each use (the light around, the game's
+shadow, each light on a fighter), their directions drawn by a hash of the
+pixel, the same every frame so that a still picture does not flicker; one
+smoothing pass over two or three pixels each way; nothing kept from the
+frames before. Rays drawn by chance clump and leave gaps, the pass
+averages a few clumps, and what is left stays where it is on the screen
+while the scene moves under it.
+
+**How it was measured.** A reference of the same frame with 48 rays for
+each use (a measuring switch, gone again), through the same smoothing
+pass, traced at each level's own size. A level's error is the root mean
+square of its picture's difference from that reference, in steps of 255,
+over the whole 1280 x 960 picture at one vertical blank of a fight. Three
+stages.
+
+**What is done** (`rt_light.comp`, and `rt_light.hlsl` the same):
+
+- *Rays that are placed, not drawn.* The n rays of a use lie on a spiral
+  over the light's disk (or the hemisphere), one in each ring of equal
+  area (`ray_at`). Each pixel turns its spiral by an angle of its own and
+  shifts its rings by an offset of its own, and these two come from
+  interleaved gradient noise: a pattern whose values over any small
+  neighborhood of pixels are spread evenly. So the pixels the smoothing
+  pass averages hold rays that cover the disk evenly between them. Each
+  use adds its own constant to both, so that a pixel's uses do not share
+  directions. The pattern is the same every frame, as before.
+- *More rays in a soft edge.* Where some of the game's shadow rays pass and
+  some do not, the pixel is in a shadow's soft edge: it takes twice as
+  many again (12 in all at Medium and High). The same for each light on a
+  fighter. Elsewhere all rays agree, and more would tell nothing.
+- *No rays for nothing.* A surface with painted light (most of a stage)
+  took four shaded rays for the light around it and then used nothing of
+  them but how open it is to the fighters, and that only where the game's
+  shadow falls on it. Now it takes three times the rays there, none of
+  them shaded (what they meet is not asked for its color), and none at all
+  elsewhere.
+
+**Tried and not kept**, each measured:
+
+- *A wider or flatter smoothing pass.* Against a reference with the pass
+  at its smallest, every wider or flatter setting had more error: it blurs
+  more than it cleans. A narrower one at High let the rays' pattern show
+  as a faint regular weave. The pass is as it was.
+- *More rays for the light around* where something is near (three times
+  as many, shaded): a quarter less error again, for 22 % more time at High
+  on the NVIDIA card and about 40 % more at Medium on the Radeon (one run
+  of each, and the Radeon's runs swing). The same rays unshaded: no less
+  error at all, and nearly the same time on the Radeon.
+  The same kept to the fighters and their floor: no less error.
+- *A bounce reading a smaller level of the texture it meets:* no less
+  error.
+
+So the grain that is left is in the color the rays for the light around
+bring back from the lit scenery, and neither a cheaper ray nor a blurrier
+texture touches it. Its remedy is to average over frames, or in the scene
+itself, which needs to know how every surface moved since the last frame.
+That is the next step, not this one.
+
+**Checked** (the development PC; the windowed game from stage snapshots in
+a headless desktop; 1280 x 960; NVIDIA is an RTX 5070 Ti in an external
+enclosure, the Radeon an 8060S):
+
+- The error against the reference, release 0.5.23 and now:
+
+  | stage | High | Medium | Low |
+  |---|---|---|---|
+  | 3 | 0.626, 0.338 | 0.674, 0.403 | 1.197, 1.131 |
+  | 22 | 0.937, 0.707 | 1.094, 0.823 | 2.159, 1.992 |
+  | 21 | 0.675, 0.501 | 0.792, 0.568 | 1.545, 1.419 |
+
+  A quarter to nearly half less at Medium and High, 6 to 8 % less at Low
+  (one ray a use: no spiral to place, and no telling a soft edge).
+- Looked at enlarged, the traced light alone and the picture: a fighter's
+  leg and the floor under it at Medium had blotches that are now faint,
+  and a shadow's edge on the floor is smooth where it was lumpy.
+- Ray tracing off: the same to the pixel as 0.5.23 on the three stages.
+- The mean brightness of the picture against the reference moved by less
+  than 0.05 steps.
+- Medium on the Radeon against the NVIDIA card: 0.012 steps on average, as
+  before.
+- What a traced frame costs, at the game's own pace on the stage that
+  costs most (22), three runs of each, in ms, release 0.5.23 and now:
+
+  | | High | Medium | Low |
+  |---|---|---|---|
+  | NVIDIA, 0.5.23 | 11.5 to 12.1 | 7.9 to 8.9 | 7.5 to 8.2 |
+  | NVIDIA, now | 11.5 to 12.2 | 7.8 to 8.5 | 7.7 to 8.1 |
+  | Radeon, 0.5.23 | 18.6 to 20.1 | 8.1 to 10.0 | 4.9 to 8.1 |
+  | Radeon, now | 18.1 to 18.8 | 8.9 to 11.1 | 6.0 to 8.9 |
+
+  The same within what runs differ by. The Radeon's two lighter levels
+  swing by a third from one run to the next in both builds (a graphics
+  chip that is not kept busy runs slower), so their rows say no more than
+  that.
+- The Windows game under Proton, one stage: its Vulkan picture is the
+  Linux game's to the pixel at the three levels. DirectX 12 against
+  Vulkan: 4,161 to 7,891 of 1,228,800 pixels differ, by 3 steps at most
+  (they were a few hundred: the two compilers round the rays' angles
+  differently, and a ray that grazes an edge falls on either side).
+- Both development builds compile with no warning.
+
+**Known.**
+
+- The pattern still stays put on the screen. It is fainter, not gone.
+- A pixel in a soft edge whose first rays happen to agree takes no more:
+  the edge's outermost part is a little harder than the reference's.
+- Low gained next to nothing.
+- Nobody but the maintainer can say what it looks like in motion.
+
+**Not covered.** Windows itself; a wide picture and other internal
+resolutions (the rays' pattern goes by the traced pixel, whatever the
+size); a two-PC game (the tracer reads the frame, it changes nothing of
+the game).
+
+## 81. Traced water (2026-11-25)
+
+**Why.** With ray tracing on, panes of glass mirror the scene by rays
+(section 74), and the water of three stages did not: it showed the game's
+own reflection picture (section 78), which the processor drew, because the
+ray tracing's device had no such picture. The maintainer asked whether the
+water could be ray traced too: "Outside there would be more reflection in
+the water than inside a cave of course."
+
+**What the game does, looked at first** (temporary probes, gone again):
+
+- The water is model strips in the opaque list, grid tiles of 1.5 units a
+  cell, with the reflection pass's picture as their texture, drawn as it is
+  (source blend one, no blend with what is behind), times the vertex
+  colors: white on stages 19 and 20, a brown on the Shrine (stage 21),
+  where a color is added too.
+- The grid is not flat: heights up to about a tenth of a unit, which the
+  game moves on stages 20 and 21. The strips have no normals.
+- The sky and the backdrop of all three stages are strips a ray can hit:
+  with a marker color for rays that leave the scene, no pixel showed it.
+- **The reflection pass is not the scene mirrored.** It draws models of
+  its own: 229 strips against the screen's 1,140 on stage 19, 27 against
+  527 on stage 20, all without lights; none shares its vertices with the
+  screen's. On stage 19 the picture is near-black with a few reflections,
+  on stage 20 a teal of the game's own making. Only the Shrine's (207
+  strips against 386, mostly lit scenery) is close to a mirror of what is
+  there, in an orange haze: the pass has the game's fog.
+
+So a mirror by rays in the picture's place changes two of the three
+stages' look a great deal. The maintainer saw both ways side by side and
+chose: the true mirror on the Shrine, the mirror over the game's own
+picture on the others.
+
+**What is done** (Vulkan ray tracing; a helper session built the first
+version in a worktree of its own, and it was merged by hand):
+
+- *Which polygons.* The game's own rule: a triangle of the opaque list
+  whose state takes a reflection pass's picture (section 78's `target`)
+  is water (`RT_TRI_MIRROR`). No guess from the geometry.
+- *The mirror.* For a pixel whose eye ray meets water, a ray goes on
+  mirrored in the water's plane: the mean plane of all the water's
+  triangles (`rt_scene_fill`), with 15 % of the grid's own height over it,
+  so that the game's swell is there without swinging the picture. The
+  water itself is not in that ray's way. What it meets is shaded as a
+  bounce is (its color times the game's lights), with the pass's fog by
+  the mirrored point's depth; a ray that leaves the scene shows the pass's
+  own background color. The result goes out with the glass's reflections,
+  and the renderer puts it in as it does those.
+- *In the picture's place (the Shrine).* The mirror takes the picture's
+  whole share, times the polygon's own colors as the picture would be. The
+  reflection pass is then neither drawn nor handed on at all
+  (`view_host_rt_mirror`): the view marks the states as it does for a pass
+  the graphics chip draws, and says so in the frame (`rt_mirror`).
+- *What is under the mirror there.* The picture the game's last pass left
+  is still the water's texture, and it showed: where the mirror's share is
+  not whole, which is along a waterline at Medium (of the traced pixels
+  around a picture pixel some are water and some are bank, as far away as
+  each other, and the fill takes both). What it held depended on how many
+  of the game's passes had been drawn before the mirror took over, one or
+  two, which is a matter of timing: one run in four drew an orange line a
+  pixel or two thick along the far bank and round the posts, the others
+  none (found 2026-11-25 by running one case four times: two pictures,
+  1,785 pixels apart). Proved by clearing that picture to a marker color:
+  the line took the color, in every run. So the water of a frame that is
+  traced with the mirror in the picture's place is drawn over a black
+  picture of the same size (`mirror_under`, `t_under`): nothing of the
+  game's picture is under the mirror. The game's own picture is left as it
+  is, for the frames that still come without a pass once ray tracing is
+  switched off; one that was never drawn is made and cleared, so that the
+  states can name it (`mirror_rooms`).
+- *Over the picture (the other stages).* The graphics chip draws the pass
+  as without ray tracing (section 78; before this the processor drew it
+  whenever ray tracing was on), and the mirror goes over it by the share
+  water has at the eye's angle: 2 % looking straight down, all of it along
+  the surface. Looking down the game's picture stays; along the water the
+  scene shows in it.
+- *Which stage.* The game window asks the game which stage it is on
+  (`game_machine_stage`, the match record's stage) and tells the renderer
+  (`gpu_render_water`): 1 on stage 21, 2 elsewhere. The renderer takes it
+  up with a frame.
+- *What else the water shows.* A bounce ray or a pane's mirror ray that
+  meets water takes the scene mirrored once in the plane, without fog
+  (`water_seen`): the water's own texture is not there to read.
+- DirectX 12 ray tracing is as before: the processor draws the pass and
+  the water shows it.
+
+**Checked** (the development PC, the Linux game from stage snapshots in a
+headless desktop, 1280 x 960, an RTX 5070 Ti):
+
+- The Shrine's intro, where the pond is in view: bridge, rocks, trees and
+  sky are mirrored where the game's own reflection has them, sharper; the
+  shrine and the far bank, which the game's pass leaves out, are in it. No
+  pass is drawn after the first two frames.
+- Stages 19 and 20: the game's water with the scene coming into it along
+  the surface; 176 and 184 passes drawn by the graphics chip in as many
+  frames.
+- A stage without water with ray tracing on: the same to the pixel as
+  before this section (section 80's pictures), Medium and High.
+- Ray tracing off: the same to the pixel as release 0.5.23 on the three
+  stages.
+- The Shrine once the mirror stands, run after run: four runs at Medium
+  (one of them had drawn two of the game's passes first, the others one),
+  two at High: one picture each, the one without the line. Low runs. The
+  other stages are the same to the pixel as before that change (stages 22,
+  3, 19 and 20 at Medium, High and without ray tracing), and so is the
+  Shrine without ray tracing.
+- The Windows game under Proton: on stage 19 at Medium and on the Shrine
+  at Medium and High through Vulkan the same to the pixel as the Linux
+  game (its Shrine runs had drawn two passes first), and so without ray
+  tracing; through DirectX 12 it runs and shows the game's own water, as
+  meant. Stage 3 through both is as section 80 left it.
+- What a traced frame costs did not change by more than runs differ. On
+  stage 19 the machine's thread no longer draws the pass with ray tracing
+  on: about 4.3 against 5.8 ms a frame (the helper's figure, taken while
+  other tests ran).
+
+**Known.**
+
+- The mirror is flat but for that part of the swell: the strips have no
+  normals to ripple it by, and the triangles' own tilt would show as
+  facets.
+- One plane for all the water of a scene. Water at two levels would be
+  wrong; no stage has it.
+- The Shrine's traced water is clearer than the game's hazy one: only the
+  fog table's fog is on the mirrored points.
+- The first frame or two of a stage show the mirror over the game's
+  picture, as on the other stages, before the Shrine's own way is taken
+  up; and the frame or two after ray tracing is switched off show the
+  game's reflection as its last pass left it.
+- On the two blended stages the water's edge against the floor above it is
+  smoothed with its neighbors as any reflection is.
+- Along a waterline on the Shrine the mirror is dimmed over a pixel or two
+  at Medium: its share there is not whole, and what is under it is black.
+  The bank beside it takes a little of the mirror, as beside any glass.
+
+**Not covered.** The Radeon, Low, a wide picture, Frame skip, a two-PC
+game, switching ray tracing or its quality in the menu on a water stage,
+stages 18 and 15, the Windows game on stage 20, real Windows.
+
+## 82. The traced light averaged over frames: tried, not kept (2026-11-25)
+
+**Why it was tried.** After section 80 the grain that is left comes from
+the few rays a pixel has. Path tracers of other games get rid of it with
+three things, and the maintainer asked for them: each pixel's light kept
+and averaged over frames, bounce light kept in the scene, and filters
+that compare the surfaces' normals. The first was built whole, the third
+with it; the second was not begun.
+
+**What was built** (Vulkan; none of it is in the tree any more):
+
+- Each traced pixel found where its surface point was in the frame before,
+  took the mean kept there if that was still the same surface (as far from
+  the eye, facing the same way), and put the frame's value into it: a
+  third pass between the tracing and the smoothing, means of up to 16
+  frames, the rays different from frame to frame.
+- A test for a light that has changed (a shadow that has moved on), which
+  drops the mean: each neighbor's value of the frame against what was kept
+  for it, their mean against its own uncertainty.
+- The smoothing pass skipped neighbors that face another way.
+
+**What it took, and what is worth knowing for anything that follows a
+surface from frame to frame:**
+
+- *A strip's place in the game's memory is no name for it.* About half the
+  strips of a frame, the fighters' among them, lie in lists the game
+  writes anew every frame, at another place each time: by place 336 of
+  747 strips were found again on one stage. A sum over what a pose does
+  not change (the strip's length, its format, its vertices' strip marks
+  and texture coordinates), with the strip's turn among those of one sum,
+  found 739 of 747, and 1,035 of 1,035 on another stage.
+- *A strip's matrix need not say how its points moved.* Many strips share
+  one matrix (on one stage 444 of 1,035 had the camera's alone), which
+  fits vertices the game has worked out itself, frame by frame; that was
+  not looked into further. Each triangle's own corners of the frame
+  before follow any motion and need no matrix, and that is what was used.
+- *Rays that change from frame to frame must change in two ways at once.*
+  Moving the pixel's place in the noise (section 80's provision) moves
+  both of its numbers by one step: the rays of all frames lie on a few
+  curves, and their mean is of those curves, not of the disk. Two steps
+  that share no rhythm cover the disk. (Right by the arithmetic; it did
+  not change the figures below, where the trailing outweighs it.) And the
+  mirrors' rays must stay as they are: their pictures are not averaged,
+  and would flicker.
+- *A pixel's own test for change did not help.* Alone it let most of the
+  trailing through (error 6.1 against 1.8 with the neighborhood's test, in
+  an attack); with the other it added flicker (0.52 against 0.49,
+  standing). Its likely fault: one unlucky dark value looks like a change
+  and the pixel's mean is dropped.
+- *A shadow goes with what casts it.* A floor's kept shadow was taken from
+  where the fighter in the light's way had been (what the shadow rays met,
+  moved back, along the floor). It helped a little (error in an attack
+  2.4 to 2.1).
+
+**Measured** (Medium, 1280 x 960, an RTX 5070 Ti, the game at its own
+pace from stage snapshots, five frames in a row, each against a picture of
+the same frame traced with 48 rays; error: how far from that picture;
+flicker: how much the picture changes from frame to frame beyond what that
+picture changes; both RMS in steps of 255):
+
+| | every frame by itself | | averaged | |
+|---|---|---|---|---|
+| | error | flicker | error | flicker |
+| standing, stage 22 | 0.83 | 0.67 | 1.05 | 0.49 |
+| standing, stage 3 | 0.41 | 0.36 | 0.87 | 0.53 |
+| attacking, stage 22 | 0.81 | 1.06 | 2.11 | 1.92 |
+| attacking, stage 3 | 0.42 | 0.58 | 1.38 | 1.59 |
+
+A stricter test for change brought the averaged figures nearer to the
+others (standing 0.91 / 0.49 and 0.68 / 0.48, attacking 1.39 / 1.49 and
+0.95 / 1.17) and never past them, but for the flicker of one stage
+standing. A traced frame took 1.0 to 1.2 ms longer (about 14 %); where
+that went was not measured (the processor writing each triangle's old
+corners is the likely part).
+
+**Why it does not pay here.**
+
+- Nothing stands still. In their stance the fighters bob by a fraction of
+  a pixel every frame, and their shadows on the floor and on themselves
+  move with them. A mean of several frames trails behind a shadow that
+  moves; in an attack it smears it. The test for change can only take the
+  mean away again, which leaves the frame by itself, with rays that now
+  differ every frame.
+- Little is left to win. Section 80 took a quarter to a half of the grain,
+  and a whole frame is 0.4 to 0.8 steps from the many-ray picture. Its ray
+  pattern stands still on the screen, so what grain there is hardly moves;
+  a mean of a few frames is smoother but shimmers.
+- The normals' test took neighbors away where there are few (toes,
+  fingers), which left speckle there.
+
+So the frame by itself, as section 80 left it, is the better picture in a
+fight, and all of this was taken out again. Checked after that: the
+pictures of sections 80 and 81 to the pixel (stages 22, 3, 19 and 20 at
+Medium, High and without ray tracing; the Shrine in both of the pictures
+its start then gave, which section 81 has since made one).
+
+**If it is taken up again.** The only shape that cannot do harm: average
+only where nothing has moved (the pixel's own place and its shadow's
+caster within a fraction of a pixel, the neighborhood's test passed), and
+let a pixel's rays change from frame to frame only while its mean is
+alive; everywhere else exactly section 80. That would clean the picture in
+a pause, a win pose or an intro, and nowhere else. The old corners belong
+on the graphics chip (last frame's own buffer and one index a triangle),
+not written by the processor.

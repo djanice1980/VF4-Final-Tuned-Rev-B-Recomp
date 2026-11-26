@@ -3227,6 +3227,7 @@ static struct gpu_target {
     u32 addr;                           /* the target's place in video memory */
     int w, h, ox;                       /* the pass's own size; the columns drawn beyond each side */
     int live;
+    int mirror;                         /* recomp (traced water): no pass was drawn for it: the host's rays mirror the scene */
     u32 sum, serial;
 } gpu_tg[VIEW_GPU_TARGETS];
 static u32 gpu_tg_serial;
@@ -3237,6 +3238,16 @@ static int gpu_tg_slot = -1;            /* the pass being drawn is for this one 
 void view_host_gpu_passes(int on)
 {
     __atomic_store_n(&gpu_passes_on, on != 0, __ATOMIC_RELAXED);
+}
+
+/* recomp (traced water): view.h */
+static int rt_mirror_on;
+static float rt_mirror_bg[3];
+static float rt_mirror_fog[VIEW_RT_FOG_FLOATS];
+
+void view_host_rt_mirror(int on)
+{
+    __atomic_store_n(&rt_mirror_on, on != 0, __ATOMIC_RELAXED);
 }
 
 /* the host's picture for the pass about to be drawn (tg is set; own_w is the pass's own width, ox
@@ -3270,6 +3281,7 @@ static int gpu_target_take(int own_w, int ox)
     e->h = tg.h;
     e->ox = ox;
     e->live = 1;
+    e->mirror = 0;
     e->sum = tex_sum(mem, bytes);
     e->serial = ++gpu_tg_serial;
     return (int)(e - gpu_tg);
@@ -3531,6 +3543,24 @@ static void rt_export(const scene *sc, view_gpu_frame *f)
     f->rt_near = sc->jobs_n ? sc->xf[sc->jobs[0].xf].near_z : 0;
 }
 
+/* recomp (traced water): what the pass about to be drawn (tg is set) has behind everything, and
+ * its fog, for the host's rays */
+static void rt_mirror_note(void)
+{
+    bgplane bp;
+    bg_plane(&bp);
+    float k = (float)bp.fog / 256.0f;
+    float fc[3] = { (float)(tg.fog_col >> 16 & 255), (float)(tg.fog_col >> 8 & 255), (float)(tg.fog_col & 255) };
+    for (int c = 0; c < 3; c++) {
+        rt_mirror_bg[c] = (bp.c0[c] * (1.0f - k) + fc[c] * k) / 255.0f;
+        rt_mirror_fog[129 + c] = fc[c];
+    }
+    for (int i = 0; i < 129; i++)
+        rt_mirror_fog[i] = (float)tg.fog_tab[i];
+    rt_mirror_fog[132] = tg.fog_density;
+    rt_mirror_fog[133] = tg.fog_on ? 1.0f : 0.0f;
+}
+
 static void gpu_export(scene *sc)
 {
     view_gpu_frame f;
@@ -3558,6 +3588,8 @@ static void gpu_export(scene *sc)
             for (int k = 0; k < 4; k++)
                 o->clip[k] = r->clip[k];
             if (r->target) {            /* recomp (section 78): the host's own picture, not the arena */
+                /* recomp (traced water): the host's rays in its place (1), or the picture is there (2) */
+                f.rt_mirror = gpu_tg[r->target - 1].mirror ? 1 : f.rt_mirror ? f.rt_mirror : 2;
                 o->target = (u32)r->target;
                 o->target_ox = (u32)r->target_ox;
                 o->tex_w = (u32)r->t->w;
@@ -3665,7 +3697,7 @@ static void gpu_export(scene *sc)
         static float *sets;
         static u32 sets_cap;
         u32 n = 0;
-        GROW(sets, sets_cap, (sc->ls_n + 1) * VIEW_GPU_LIGHTSET_FLOATS);
+        GROW(sets, sets_cap, (sc->ls_n + 1) * VIEW_GPU_LIGHTSET_FLOATS + VIEW_RT_FOG_FLOATS);
         for (u32 i = 0; i < sc->ls_n; i++) {
             const lightset *s = &sc->ls[i];
             sets[n++] = s->amb[0]; sets[n++] = s->amb[1]; sets[n++] = s->amb[2]; sets[n++] = 0;
@@ -3682,11 +3714,17 @@ static void gpu_export(scene *sc)
             f.lit = sc->gl_rec;
             f.nlit = sc->jobs_n * VIEW_GPU_LIT_FLOATS;
         }
+        if (rt && f.rt_mirror && n) {   /* recomp (traced water): the pass's fog, after the light sets */
+            f.rt_fog_at = n;
+            memcpy(sets + n, rt_mirror_fog, sizeof rt_mirror_fog);
+            n += VIEW_RT_FOG_FLOATS;
+        }
         f.lights = sets;
         f.nlights = n;
     }
     if (rt)
         rt_export(sc, &f);
+    memcpy(f.rt_mirror_bg, rt_mirror_bg, sizeof f.rt_mirror_bg);    /* recomp (traced water) */
     f.arena = gpu_arena;
     f.arena_texels = gpu_arena_top;
     f.dirty = gpu_dirty;
@@ -3967,8 +4005,21 @@ static void scene_draw(scene *sc, int to_texture)
     tables_once();
     /* recomp (section 78): the host draws a pass into a texture too, when it is of the kind it takes */
     gpu_tg_slot = -1;
-    if (to_texture && gpu_submit && __atomic_load_n(&gpu_passes_on, __ATOMIC_RELAXED))
+    if (to_texture && gpu_submit && __atomic_load_n(&gpu_passes_on, __ATOMIC_RELAXED)) {
         gpu_tg_slot = gpu_target_take(own_w, draw_ox);
+        if (gpu_tg_slot >= 0)
+            rt_mirror_note();           /* recomp (traced water): the host's rays may mirror over its picture */
+    } else if (to_texture && gpu_submit && __atomic_load_n(&rt_mirror_on, __ATOMIC_RELAXED)) {
+        /* recomp (traced water): the host's rays mirror the scene where this pass's picture would
+         * go. The pass is not drawn at all; its place is noted as a pass the host draws is (the
+         * states that use it get their target), and what it had behind everything */
+        int slot = gpu_target_take(own_w, draw_ox);
+        if (slot >= 0) {
+            rt_mirror_note();
+            gpu_tg[slot].mirror = 1;
+            return;
+        }
+    }
     int gpu = gpu_submit && (!to_texture || gpu_tg_slot >= 0);     /* recomp (M6): the GPU path draws it */
     if (!gpu)
         target_clear();

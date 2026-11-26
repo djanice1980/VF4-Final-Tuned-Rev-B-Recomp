@@ -47,8 +47,10 @@ enum { PICTURE_4_3, PICTURE_16_10, PICTURE_16_9, PICTURE_21_9, PICTURE_STRETCH, 
 enum { REGION_JAPAN, REGION_USA, REGION_EXPORT, REGION_KOREA, REGION_AUSTRALIA, REGIONS };
 enum { WINDOW_MAXIMIZED = -1, WINDOW_AUTO = 0, WINDOW_MIN = 240, WINDOW_MAX = 4320 };
 /* the settings file's layout: 2 since Window size's default is Maximized (a file
- * of layout 1 that says auto, its default then, is read as maximized) */
-#define SETTINGS_LAYOUT 2
+ * of layout 1 that says auto, its default then, is read as maximized); 3 since
+ * Lighting's default is the GPU (a file of an earlier layout that says cpu, its
+ * default then, is read as gpu: docs/design.md section 79) */
+#define SETTINGS_LAYOUT 3
 enum { FILTER_SMOOTH, FILTER_SHARP };
 enum { RENDERER_GPU, RENDERER_SOFTWARE };
 /* latency optimization in a two-PC game (rollback, docs/design.md section
@@ -61,9 +63,9 @@ enum { LATENCY_AUTO, LATENCY_ON, LATENCY_OFF, LATENCIES };
  * refresh, as before 0.5.12 */
 enum { PACING_GAME, PACING_SCREEN, PACING_OFF, PACINGS };
 /* Lighting (docs/design.md section 67): where the GPU renderer's lights are
- * worked out: by the processor as ever, or by the GPU's vertex shader, which
- * takes that work off a slow processor. The software renderer's are always
- * the processor's. */
+ * worked out: by the GPU's vertex shader, which takes that work off the
+ * processor (the default since section 79), or by the processor as before.
+ * The software renderer's are always the processor's. */
 enum { LIGHTING_CPU, LIGHTING_GPU, LIGHTINGS };
 /* Frame skip (docs/design.md section 71): the screen drawn for every frame, or for every second one */
 enum { SKIP_OFF, SKIP_HALF, SKIPS };
@@ -107,7 +109,7 @@ typedef struct settings {
     int region;             /* REGION_*: the board's region, Japan by default (the game reads it as it starts) */
     int latency;            /* LATENCY_*: Auto by default; this PC's own choice in a two-PC game */
     int pacing;             /* PACING_*: Game clock by default */
-    int lighting;           /* LIGHTING_*: the processor's by default */
+    int lighting;           /* LIGHTING_*: the GPU's by default */
     int skip;               /* SKIP_*: off by default */
     int occlusion;          /* OCCLUSION_*: off by default */
     int raytracing;         /* RAYTRACING_*: off by default */

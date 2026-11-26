@@ -342,6 +342,11 @@ static int rt_first;
 static int pass_want = 1;
 static SDL_GPUTexture *t_pass[VIEW_GPU_TARGETS], *t_pass_ds[VIEW_GPU_TARGETS], *t_none;
 static Uint32 t_pass_w[VIEW_GPU_TARGETS], t_pass_h[VIEW_GPU_TARGETS];
+static Uint8 t_pass_new[VIEW_GPU_TARGETS];      /* just made: nothing is known of what it holds */
+/* traced water in the picture's place (section 81): a black picture of t_pass's size, which the
+ * water of a traced frame is drawn over (mirror_under) */
+static SDL_GPUTexture *t_under[VIEW_GPU_TARGETS];
+static Uint32 t_under_w[VIEW_GPU_TARGETS], t_under_h[VIEW_GPU_TARGETS];
 static SDL_GPUBuffer *bp_vert, *bp_state, *bp_vol, *bp_lit, *bp_lights;
 static Uint32 bp_vert_size, bp_state_size, bp_vol_size, bp_lit_size, bp_lights_size;
 static SDL_GPUTransferBuffer *xfer_p;
@@ -784,6 +789,7 @@ void gpu_render_raytracing(const rt_backend *backend, int quality)
     rt_want = backend;
     rt_failed = 0;
     view_host_rt(backend != NULL);
+    view_host_rt_mirror(0);     /* traced water: on again with the first frame the new one traces */
     passes_follow();
 }
 
@@ -952,11 +958,25 @@ static void scene_shadows(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, cons
 
 /* ---- passes into textures (section 78) ---- */
 
+/* Traced water (docs/design.md section 81): with ray tracing through Vulkan, the scene mirrored by
+ * rays on the polygons the game gives its reflection pass's picture to. 1: in that picture's
+ * place, and the pass is not drawn at all (view_host_rt_mirror); 2: over that picture, by the
+ * angle's share, and the pass is drawn here as without ray tracing. Which of the two is the
+ * stage's matter (gpu_render_water, any thread); the window's thread takes it up with a frame. */
+static SDL_AtomicInt water_asked;
+static int water_mode = 2;
+
+void gpu_render_water(int mode)
+{
+    SDL_SetAtomicInt(&water_asked, mode == 1 ? 1 : 2);
+}
+
 /* the machine's thread hands them over when they are wanted, the device can, and no ray tracing
- * is wanted (its device has the arena's texels, not these pictures) */
+ * is wanted (its device has the arena's texels, not these pictures; with the water traced over
+ * the picture it needs none: rt_light.comp, water_seen) */
 static void passes_follow(void)
 {
-    view_host_gpu_passes(gpu && t_none && pass_want && !rt_want);
+    view_host_gpu_passes(gpu && t_none && pass_want && (!rt_want || (water_mode == 2 && rt_want == &rt_vulkan)));
 }
 
 /* A state names a target picture: it is there, at the size the state's texture says? If not (the
@@ -983,22 +1003,22 @@ static unsigned pass_states(view_gpu_state *states, Uint32 n, unsigned drawn, in
     return stale;
 }
 
-static void scene_pass_pictures(scene_bufs *b, int self)
+/* under: the pictures whose black twin stands in (mirror_under) */
+static void scene_pass_pictures(scene_bufs *b, int self, unsigned under)
 {
     for (int k = 0; k < VIEW_GPU_TARGETS; k++) {
-        b->pass[k].texture = t_pass[k] && k != self ? t_pass[k] : t_none;
+        b->pass[k].texture = (under >> k & 1) && t_under[k] ? t_under[k] : t_pass[k] && k != self ? t_pass[k] : t_none;
         b->pass[k].sampler = smp_texel;
     }
 }
 
-/* the target picture a pass into a texture is drawn into, made (again) when the pass's size is
- * another. Returns its bit, or 0: none */
-static unsigned pass_picture(const view_gpu_frame *f)
+/* target picture k at w x h, made (again) when it is not there at that size. Returns its bit, or
+ * 0: none */
+static unsigned pass_room(int k, Uint32 w, Uint32 h)
 {
-    int k = f->target - 1;
-    if (k < 0 || k >= VIEW_GPU_TARGETS || f->w < 1 || f->h < 1 || f->w > 4096 || f->h > 4096)
+    if (k < 0 || k >= VIEW_GPU_TARGETS || w < 1 || h < 1 || w > 4096 || h > 4096)
         return 0;
-    if (!t_pass[k] || t_pass_w[k] != (Uint32)f->w || t_pass_h[k] != (Uint32)f->h) {
+    if (!t_pass[k] || t_pass_w[k] != w || t_pass_h[k] != h) {
         if (t_pass[k])
             SDL_ReleaseGPUTexture(gpu, t_pass[k]);
         if (t_pass_ds[k])
@@ -1008,16 +1028,17 @@ static unsigned pass_picture(const view_gpu_frame *f)
         ti.type = SDL_GPU_TEXTURETYPE_2D;
         ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        ti.width = (Uint32)f->w;
-        ti.height = (Uint32)f->h;
+        ti.width = w;
+        ti.height = h;
         ti.layer_count_or_depth = 1;
         ti.num_levels = 1;
         t_pass[k] = SDL_CreateGPUTexture(gpu, &ti);
         ti.format = ds_format;
         ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
         t_pass_ds[k] = SDL_CreateGPUTexture(gpu, &ti);
-        t_pass_w[k] = (Uint32)f->w;
-        t_pass_h[k] = (Uint32)f->h;
+        t_pass_w[k] = w;
+        t_pass_h[k] = h;
+        t_pass_new[k] = 1;
         if (!t_pass[k] || !t_pass_ds[k]) {
             if (t_pass[k])
                 SDL_ReleaseGPUTexture(gpu, t_pass[k]);
@@ -1029,6 +1050,97 @@ static unsigned pass_picture(const view_gpu_frame *f)
         }
     }
     return 1u << k;
+}
+
+/* the target picture a pass into a texture is drawn into. Returns its bit, or 0: none */
+static unsigned pass_picture(const view_gpu_frame *f)
+{
+    return pass_room(f->target - 1, f->w > 0 ? (Uint32)f->w : 0, f->h > 0 ? (Uint32)f->h : 0);
+}
+
+/* Traced water in the picture's place (section 81). The game's reflection pass is not drawn any
+ * more, and its target picture keeps what the last pass left. That showed under the mirror
+ * wherever the mirror's share is not whole (along a waterline, where the traced pixels around a
+ * picture pixel are part water and part bank), and what it showed depended on how many passes
+ * had been drawn before the mirror took over. So the water of a traced frame is drawn over black
+ * instead: nothing of the game's picture is under the mirror. The game's picture itself is left
+ * alone: the frames that still come without a pass after ray tracing is switched off show it.
+ *
+ * mirror_named: the pictures the frame's states name that no pass was drawn into for it.
+ * mirror_rooms: before the states are checked, those are made where there is none (a state whose
+ * picture is not there is drawn without a texture, which would be the polygon's bare color).
+ * mirror_under: for a frame that was traced, their black twins made and cleared where needed, and
+ * a picture that was just made cleared too; returns the pictures to draw the twin for. */
+static unsigned mirror_named(const view_gpu_frame *f, unsigned drawn)
+{
+    unsigned named = 0;
+    for (Uint32 i = 0; i < f->nst; i++)
+        if (f->st[i].target && f->st[i].target <= VIEW_GPU_TARGETS)
+            named |= 1u << (f->st[i].target - 1);
+    return named & ~drawn;
+}
+
+static void mirror_rooms(const view_gpu_frame *f, unsigned drawn)
+{
+    unsigned named = mirror_named(f, drawn);
+    for (Uint32 i = 0; i < f->nst && named; i++) {
+        const view_gpu_state *st = &f->st[i];
+        if (st->target && st->target <= VIEW_GPU_TARGETS && (named >> (st->target - 1) & 1)) {
+            pass_room((int)st->target - 1, st->tex_w + 2 * st->target_ox, st->tex_h);
+            named &= ~(1u << (st->target - 1));
+        }
+    }
+}
+
+static int clear_black(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *t)
+{
+    SDL_GPUColorTargetInfo ct;
+    SDL_zero(ct);
+    ct.texture = t;
+    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.clear_color = (SDL_FColor){ 0, 0, 0, 1 };
+    SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+    if (!rp)
+        return -1;
+    SDL_EndGPURenderPass(rp);
+    return 0;
+}
+
+static unsigned mirror_under(SDL_GPUCommandBuffer *cmd, const view_gpu_frame *f, unsigned drawn, int traced)
+{
+    unsigned named = mirror_named(f, drawn), under = 0;
+    for (int k = 0; k < VIEW_GPU_TARGETS; k++) {
+        if (!(named >> k & 1) || !t_pass[k])
+            continue;
+        if (t_pass_new[k] && clear_black(cmd, t_pass[k]) == 0)
+            t_pass_new[k] = 0;
+        if (!traced)
+            continue;
+        if (!t_under[k] || t_under_w[k] != t_pass_w[k] || t_under_h[k] != t_pass_h[k]) {
+            if (t_under[k])
+                SDL_ReleaseGPUTexture(gpu, t_under[k]);
+            SDL_GPUTextureCreateInfo ti;
+            SDL_zero(ti);
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            ti.width = t_pass_w[k];
+            ti.height = t_pass_h[k];
+            ti.layer_count_or_depth = 1;
+            ti.num_levels = 1;
+            t_under[k] = SDL_CreateGPUTexture(gpu, &ti);
+            t_under_w[k] = t_pass_w[k];
+            t_under_h[k] = t_pass_h[k];
+            if (t_under[k] && clear_black(cmd, t_under[k])) {
+                SDL_ReleaseGPUTexture(gpu, t_under[k]);
+                t_under[k] = NULL;
+            }
+        }
+        if (t_under[k])
+            under |= 1u << k;
+    }
+    return under;
 }
 
 /* one pass into a texture: into its target picture, at one pixel a pixel. drawn: the pictures
@@ -1107,7 +1219,7 @@ static unsigned draw_pass(SDL_GPUCommandBuffer *cmd, const held *h, unsigned dra
     float zs = f->zmax > 0 ? 1.0f / (f->zmax * 1.0001f) : 1.0f;
     float vu[4] = { (float)f->w, (float)f->h, zs, 0 };
     scene_bufs b = { bp_vert, bp_state, bp_vol, bp_lit, bp_lights, { { NULL, NULL } }, 1.0f };
-    scene_pass_pictures(&b, k);
+    scene_pass_pictures(&b, k, 0);
     scene_fu fu;
     scene_fu_set(&fu, f, 1.0f);
     scene_background(cmd, rp, f, 1.0f);
@@ -1117,6 +1229,7 @@ static unsigned draw_pass(SDL_GPUCommandBuffer *cmd, const held *h, unsigned dra
     scene_lists(cmd, rp, f, 1, &b, &fu, vu);
     SDL_EndGPURenderPass(rp);
     stat_passes++;
+    t_pass_new[k] = 0;
     return 1u << k;
 }
 
@@ -1190,8 +1303,10 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     unsigned pass_bits = 0;
     for (int i = 0; i < pkt->npass; i++)
         pass_bits |= pass_picture(&pkt->pass[i].f);
-    if (pass_states((view_gpu_state *)(void *)(m + o_s), f->nst, pass_bits, -1))
-        stat_pass_stale++;
+    if (f->rt_mirror == 1)
+        mirror_rooms(f, pass_bits);
+    if (pass_states((view_gpu_state *)(void *)(m + o_s), f->nst, pass_bits, -1) && f->rt_mirror != 1)
+        stat_pass_stale++;      /* (traced water: the rays draw over those polygons) */
     SDL_memcpy(m + o_vol, f->vol_xyz, volb);
     if (litb)
         SDL_memcpy(m + o_lit, f->lit, litb);
@@ -1318,6 +1433,15 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
         rt_run->stop();
         rt_run = NULL;
     }
+    /* traced water: while frames are traced through Vulkan (the only shader that mirrors), the
+     * machine's thread draws no reflection pass and marks the water for the rays instead */
+    int asked = SDL_GetAtomicInt(&water_asked);
+    if (asked && asked != water_mode) {
+        water_mode = asked;
+        passes_follow();
+    }
+    view_host_rt_mirror(water_mode == 1 && rt && rt_run == &rt_vulkan && pass_want);
+    unsigned under = f->rt_mirror == 1 ? mirror_under(cmd, f, pass_done, rt) : 0;
     if (rt)
         ao = 0;
     SDL_GPUColorTargetInfo ct;
@@ -1346,7 +1470,7 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
     scene_fu fu;
     scene_fu_set(&fu, f, (float)scale);
     scene_bufs sb_ = { b_vert, b_state, b_vol, b_lit, b_lights, { { NULL, NULL } }, (float)scale };
-    scene_pass_pictures(&sb_, -1);
+    scene_pass_pictures(&sb_, -1, under);
 
     /* 2. opaque and punch-through; 4. translucent (after the volumes) */
     for (int phase = 0; phase < 2; phase++) {
@@ -1525,6 +1649,7 @@ void gpu_render_quit(void)
         SDL_ReleaseGPUSampler(gpu, smp_texel);
     /* the passes into textures: the machine's thread draws them itself until a renderer is there again */
     view_host_gpu_passes(0);
+    view_host_rt_mirror(0);
     for (int k = 0; k < VIEW_GPU_TARGETS; k++) {
         if (t_pass[k])
             SDL_ReleaseGPUTexture(gpu, t_pass[k]);
@@ -1532,6 +1657,10 @@ void gpu_render_quit(void)
             SDL_ReleaseGPUTexture(gpu, t_pass_ds[k]);
         t_pass[k] = t_pass_ds[k] = NULL;
         t_pass_w[k] = t_pass_h[k] = 0;
+        if (t_under[k])
+            SDL_ReleaseGPUTexture(gpu, t_under[k]);
+        t_under[k] = NULL;
+        t_under_w[k] = t_under_h[k] = 0;
     }
     if (t_none)
         SDL_ReleaseGPUTexture(gpu, t_none);

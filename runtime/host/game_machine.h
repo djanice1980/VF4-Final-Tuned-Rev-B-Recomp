@@ -153,6 +153,9 @@ void game_machine_clock_get(int date[6]);
  * start of each (the game's mode has become GAME MODE.GAME_LOAD), with its
  * stage and both players' characters as the game numbers them; else 0. */
 int game_machine_match(int *stage, int chara[2]);
+/* The stage the game has in its match record now, as the game numbers them, from the frame
+ * function; -1 while the main program is not running or the record is not found. */
+int game_machine_stage(void);
 
 /* after init: a card goes into player side's unit (0 or 1) and stays; card
  * NULL is a card never used. 0, or -1 (no units, or a card in already) */

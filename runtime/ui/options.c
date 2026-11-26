@@ -117,10 +117,10 @@ const option_info options[OPT_COUNT] = {
                          "shadows' edges a little softer. Low: that with fewer rays, for a slow chip. A change "
                          "applies at once. Internal resolution counts too: the lower, the less to trace.", 0 },
     [OPT_LIGHTING] = { "Lighting",
-                       "Which chip works out the lights with the GPU renderer. CPU: the processor, as always. "
-                       "GPU: the graphics chip, which takes that work off the processor: try it if the game "
-                       "runs in slow motion on a PC with a slow processor. The picture is the same. The "
-                       "software renderer always uses the processor.", 0 },
+                       "Which chip works out the lights with the GPU renderer. GPU: the graphics chip, which "
+                       "takes that work off the processor. CPU: the processor, as before 0.5.24: choose it "
+                       "if the picture looks wrong with GPU. The picture is the same. The software renderer "
+                       "always uses the processor.", 0 },
 };
 
 static int wrap(int v, int d, int n)

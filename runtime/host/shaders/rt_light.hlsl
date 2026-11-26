@@ -44,13 +44,25 @@ RWStructuredBuffer<float> depthpix : register(u2);   // how far the eye's ray we
 
 static const uint ALL = 3, FIGHTERS = 1;
 
-static uint rng;
-float rnd()
+// A pixel's rays are not drawn by chance (docs/design.md section 80). The n rays of one use lie
+// on a spiral over the disk, one in each ring of equal area. Each pixel turns its spiral by an
+// angle of its own and shifts its rings by an offset of its own, and those two are spread evenly
+// among the pixels of any small neighborhood (interleaved gradient noise): what the filter then
+// averages is rays that cover the disk evenly, where chance leaves clumps and gaps, which is grain.
+static float2 pix_shift;        // the pixel's own turn and its rings' offset, each 0..1
+static int ray_use0;            // the first use of lights_sum's rays (each light its own)
+static int bounces;             // radiance() calls so far in this pixel: each has uses of its own
+
+float ign(float2 q)
 {
-    rng = rng * 747796405u + 2891336453u;
-    uint w = ((rng >> ((rng >> 28u) + 4u)) ^ rng) * 277803737u;
-    w = (w >> 22u) ^ w;
-    return float(w >> 8) * (1.0 / 16777216.0);
+    return frac(52.9829189 * frac(dot(q, float2(0.06711056, 0.00583715))));
+}
+
+// ray i of n of a use: x where in the disk's area (the radius squared, 0..1), y the angle in turns
+float2 ray_at(int i, int n, int use)
+{
+    return float2((float(i) + frac(pix_shift.y + float(use) * 0.7548777)) / float(n),
+                  frac(pix_shift.x + float(use) * 0.6180340 + float(i) * 0.3819660));
 }
 
 float3 safe_norm(float3 v)
@@ -66,18 +78,18 @@ void basis(float3 n, out float3 a, out float3 b)
     b = cross(n, a);
 }
 
-float3 cos_dir(float3 n)
+float3 cos_dir(float3 n, float2 u)
 {
-    float u1 = rnd(), u2 = rnd() * 6.2831853;
+    float u1 = u.x, u2 = u.y * 6.2831853;
     float rr = sqrt(u1), z = sqrt(1.0 - u1);
     float3 a, b;
     basis(n, a, b);
     return normalize(a * (rr * cos(u2)) + b * (rr * sin(u2)) + n * z);
 }
 
-float3 disk_jitter(float3 d, float radius)
+float3 disk_jitter(float3 d, float radius, float2 u)
 {
-    float u1 = sqrt(rnd()) * radius, u2 = rnd() * 6.2831853;
+    float u1 = sqrt(u.x) * radius, u2 = u.y * 6.2831853;
     float3 a, b;
     basis(d, a, b);
     return normalize(d + a * (u1 * cos(u2)) + b * (u1 * sin(u2)));
@@ -325,7 +337,14 @@ float game_shadow(float3 O)
     int n = max(p_size.w, 1);
     float vis = 0.0;
     for (int i = 0; i < n; i++)
-        vis += transmit(O, disk_jitter(-p_shadow_dir.xyz, p_dist.z), 1e-4, p_dist.y);
+        vis += transmit(O, disk_jitter(-p_shadow_dir.xyz, p_dist.z, ray_at(i, n, 1)), 1e-4, p_dist.y);
+    // a soft edge (some of the rays pass, some do not): twice as many again, where they tell something
+    if (n > 1 && vis > 0.0 && vis < float(n)) {
+        int m = 2 * n;
+        for (int j = 0; j < m; j++)
+            vis += transmit(O, disk_jitter(-p_shadow_dir.xyz, p_dist.z, ray_at(j, m, 2)), 1e-4, p_dist.y);
+        n += m;
+    }
     vis /= float(n);
     return p_misc.w + (1.0 - p_misc.w) * vis;
 }
@@ -349,17 +368,26 @@ float3 lights_sum(uint ls, float3 P, float3 N, float3 O, int n, float3 amb)
         bool point_light = (l.flags & 2) != 0;
         if (n > 0 && (!point_light || p_opt.z != 0)) {
             vis = 0.0;
-            for (int i = 0; i < n; i++) {
-                if (point_light) {
-                    float r0 = rnd(), r1 = rnd(), r2 = rnd();
-                    float3 target = l.pos + (float3(r0, r1, r2) - 0.5) * (2.0 * p_dist.w);
-                    float3 dd = target - O;
-                    float dl = length(dd);
-                    vis += transmit(O, dd / dl, 1e-4, min(dl, p_dist.y));
-                } else
-                    vis += transmit(O, disk_jitter(t, p_dist.z), 1e-4, p_dist.y);
+            // n rays; where some pass and some do not (a shadow's soft edge), twice as many again
+            int m = n, first = 0, use = ray_use0 + k;
+            for (int turn = 0; turn < 2; turn++) {
+                for (int i = 0; i < m; i++) {
+                    float2 u = ray_at(i, m, use);
+                    if (point_light) {
+                        float3 target = l.pos + (float3(u, frac(u.x * 7.0 + u.y * 13.0 + pix_shift.y)) - 0.5) * (2.0 * p_dist.w);
+                        float3 dd = target - O;
+                        float dl = length(dd);
+                        vis += transmit(O, dd / dl, 1e-4, min(dl, p_dist.y));
+                    } else
+                        vis += transmit(O, disk_jitter(t, p_dist.z, u), 1e-4, p_dist.y);
+                }
+                first += m;
+                if (turn == 1 || n < 2 || vis <= 0.0 || vis >= float(n))
+                    break;
+                m = 2 * n;
+                use += 100;
             }
-            vis /= float(n);
+            vis /= float(first);
         }
         sum += l.col * (d * vis);
     }
@@ -391,7 +419,11 @@ float3 radiance(Hit h, float3 o, float3 d)
     float3 nf = dot(ng, d) < 0.0 ? ng : -ng;
     float3 O = ray_origin(h.tri, h.b, P, nf);
     uint ls = job[tri[h.tri].job].ls;
-    return c * min(lights_sum(ls, P, N, O, 1, ambient_of(ls)), float3(1, 1, 1));
+    int was = ray_use0;
+    ray_use0 = 32 + 16 * bounces++;
+    float3 sum = lights_sum(ls, P, N, O, 1, ambient_of(ls));
+    ray_use0 = was;
+    return c * min(sum, float3(1, 1, 1));
 }
 
 [numthreads(8, 8, 1)]
@@ -401,8 +433,11 @@ void main(uint3 id : SV_DispatchThreadID)
     if (px.x >= p_size.x || px.y >= p_size.y)
         return;
     uint at = uint(px.y * p_size.x + px.x);
-    rng = (at * 9781u + uint(p_opt.w) * 6271u) | 1u;
-    rnd();
+    // p_opt.w: the frame's number among those whose rays differ (1: the same rays every frame)
+    float2 pq = float2(px) + 5.588238 * float(p_opt.w - 1);
+    pix_shift = float2(ign(pq), ign(pq.yx + float2(47.0, 17.0)));
+    ray_use0 = 16;
+    bounces = 0;
     float2 g = (float2(px) + 0.5) / p_misc.y;
     float3 d = normalize(float3(-(g.x - p_proj.y) / p_proj.x, (g.y - p_proj.w) / p_proj.z, -1.0));
     float3 o0 = float3(0, 0, 0);
@@ -419,18 +454,24 @@ void main(uint3 id : SV_DispatchThreadID)
         float3 la = ambient_of(ls), amb = float3(0, 0, 0);
         float open = 0.0;
         bool baked = (fl & 4u) != 0u;
-        int nao = p_size.z;
+        bool takes = (st[s].pcw >> 7 & 1u) != 0u && p_shadow_dir.w != 0.0;
+        // A surface with painted light takes nothing from the rays around it but how open it is to
+        // the fighters, and that only where the game's shadow falls on it (below): three times the
+        // rays there, none of them shaded, and none at all on the others.
+        int nao = baked ? (takes ? 3 * p_size.z : 0) : p_size.z;
         for (int i = 0; i < nao; i++) {
-            float3 rd = cos_dir(Nh);
+            float3 rd = cos_dir(Nh, ray_at(i, nao, 0));
             Hit q = closest(O, rd, 1e-4, p_dist.x, 0, ALL);
             if (q.ok) {
                 float f = q.t / p_dist.x;
                 float w = f < 0.5 ? 1.0 : 1.0 - (f - 0.5) * 2.0;
                 w = w * w * (3.0 - 2.0 * w);
-                float3 L = float3(0, 0, 0);
-                if (p_opt.y != 0)
-                    L = radiance(q, O, rd);
-                amb += w * L + (1.0 - w) * la;
+                if (!baked) {
+                    float3 L = float3(0, 0, 0);
+                    if (p_opt.y != 0)
+                        L = radiance(q, O, rd);
+                    amb += w * L + (1.0 - w) * la;
+                }
                 open += (tri[q.tri].flags & 8u) != 0u || !baked ? 1.0 - w : 1.0;
             } else {
                 amb += la;
@@ -444,7 +485,6 @@ void main(uint3 id : SV_DispatchThreadID)
             amb = la;
             open = 1.0;
         }
-        bool takes = (st[s].pcw >> 7 & 1u) != 0u && p_shadow_dir.w != 0.0;
         if (!baked) {
             float gs = 1.0;
             if (takes)
@@ -479,7 +519,7 @@ void main(uint3 id : SV_DispatchThreadID)
                 F = min((0.04 + 0.96 * pow(1.0 - cs, 5.0)) * p_tune.w, 1.0);
                 float3 Og = Pg + nfg * p_tune.x;
                 for (int i = 0; i < p_opt.x; i++) {
-                    float3 nn = disk_jitter(Ng, p_opt.x > 1 ? p_tune2.x : 0.0);
+                    float3 nn = disk_jitter(Ng, p_opt.x > 1 ? p_tune2.x : 0.0, ray_at(i, p_opt.x, 3));
                     float3 R = normalize(d - nn * (2.0 * dot(d, nn)));
                     if (dot(R, nfg) > 0.0) {
                         Hit q = closest(Og, R, 1e-4, 1e9, 0, ALL);

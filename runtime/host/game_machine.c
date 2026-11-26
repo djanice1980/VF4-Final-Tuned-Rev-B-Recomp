@@ -491,6 +491,14 @@ int game_machine_match(int *stage, int chara[2])
     return 1;
 }
 
+int game_machine_stage(void)
+{
+    if (rt_native_program() != PROGRAM_MAIN)
+        return -1;
+    u32 s = global_addr("match_stage");
+    return s ? (int)g_r32(s) : -1;
+}
+
 int game_machine_init(const char *image, const char *dimm, const char *dimm_key, int sound_chip, game_frame_fn fn)
 {
     memset(&cfg, 0, sizeof cfg);

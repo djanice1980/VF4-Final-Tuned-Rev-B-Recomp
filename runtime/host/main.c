@@ -1291,6 +1291,10 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
     }
     {
         int stage, chara[2];
+        /* traced water (section 81): the Shrine's reflection is a mirror of its scenery in the game
+         * too, and the rays take its place; the other stages' are pictures of the game's own making,
+         * which stay, with the mirror over them */
+        gpu_render_water(game_machine_stage() == 21 ? 1 : 2);
         if (game_machine_match(&stage, chara))
             logf_("match: stage %d; player 1's character %d, player 2's %d (the game's own numbers), loading at "
                   "vertical blank %u", stage, chara[0], chara[1], frame);
