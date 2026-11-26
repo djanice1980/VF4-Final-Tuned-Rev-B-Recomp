@@ -7780,6 +7780,10 @@ freeze go away, whose cause is not known.
   every minute, and once more when the thread goes on, with how long it
   stood. It only reports: a thread cannot be got out of a driver's call,
   and the watch asks nothing of SDL or of the window.
+  Between looks it waits on a semaphore, which the closing gives: the
+  game does not wait a quarter of a second for it at its end (a first
+  version slept the time out, and the release check's quit under Proton
+  took 0.29 s where it had taken 0.10).
 - The log now has the window's events it lacked: in front, no longer in
   front, minimized, covered by others, and a display whose mode changed.
 - And the graphics driver's name, version and description as SDL has them

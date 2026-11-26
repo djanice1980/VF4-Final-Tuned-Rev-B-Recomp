@@ -1731,6 +1731,7 @@ static SDL_AtomicInt win_step_at;       /* since when (SDL_GetTicks) */
 static SDL_AtomicInt win_turn;          /* turns of its loop */
 static SDL_AtomicInt win_flags_now;     /* the window's flags at the turn's start (SDL_WINDOW_*, the low 32 bits) */
 static SDL_AtomicInt win_watch_on;
+static SDL_Semaphore *win_watch_wake;   /* given once, as the game closes: the watch does not sleep its time out */
 static int win_stall_turn, win_stall_ms;    /* --stall-window */
 
 static void win_at(int step)
@@ -1745,7 +1746,10 @@ static int win_watch(void *arg)
     Uint32 held_at = (Uint32)SDL_GetAtomicInt(&win_step_at), next_ms = WIN_STUCK_MS;
     int held_step = SDL_GetAtomicInt(&win_step), told = 0;
     while (SDL_GetAtomicInt(&win_watch_on)) {
-        SDL_Delay(250);
+        if (!win_watch_wake)
+            SDL_Delay(250);
+        else if (SDL_WaitSemaphoreTimeout(win_watch_wake, 250))
+            break;                      /* the game is closing */
         Uint32 at = (Uint32)SDL_GetAtomicInt(&win_step_at), now = (Uint32)SDL_GetTicks();
         int step = SDL_GetAtomicInt(&win_step);
         if (step < 0 || step >= WIN_STEPS)
@@ -3971,6 +3975,7 @@ int main(int argc, char **argv)
     compositor_watch_start(logf_, window_stuck);    /* section 54 */
     win_at(WIN_LOOP);
     SDL_SetAtomicInt(&win_watch_on, 1);
+    win_watch_wake = SDL_CreateSemaphore(0);
     SDL_Thread *win_watcher = SDL_CreateThread(win_watch, "window watch", NULL);    /* section 83 */
     while (running) {
         const char *window_shot = NULL;
@@ -4688,8 +4693,13 @@ int main(int argc, char **argv)
     compositor_busy(0);
     compositor_watch_end();
     SDL_SetAtomicInt(&win_watch_on, 0);
+    if (win_watch_wake)
+        SDL_SignalSemaphore(win_watch_wake);
     if (win_watcher)
         SDL_WaitThread(win_watcher, NULL);
+    if (win_watch_wake)
+        SDL_DestroySemaphore(win_watch_wake);
+    win_watch_wake = NULL;
     SDL_DestroyMutex(shared.lock);
     gu_quit();      /* the records are saved: an update asked for in the menu goes to the launcher */
     if (to_launcher) {
