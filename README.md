@@ -772,8 +772,11 @@ vertical blank on, as `6400:Insert,Down,shot=menu.bmp,pad:guide`, with
 frames `vf4ft.log` (beside the program) records how long the machine took
 per frame, on average and at most, how much audio is queued, how many
 frames the game drew and how many of them were never shown, and what
-paces the game (the screen's refresh or its own timer, and why). Sound
-plays from the warning screen on.
+paces the game (the screen's refresh or its own timer, and why). When the
+window's thread has not gone on for two seconds (a picture that freezes),
+the log says which step it is in, and again when it goes on
+([design.md s83](docs/design.md#83-a-watch-on-the-windows-thread-2026-11-26)).
+Sound plays from the warning screen on.
 
 The shaders' SPIR-V is committed (`runtime/host/gpu_shaders.h`), so
 building needs no shader compiler. After changing a shader in

@@ -7745,3 +7745,71 @@ alive; everywhere else exactly section 80. That would clean the picture in
 a pause, a win pose or an intro, and nowhere else. The old corners belong
 on the graphics chip (last frame's own buffer and one index a triangle),
 not written by the processor.
+
+## 83. A watch on the window's thread (2026-11-26)
+
+**Why.** Issue 3, after frame skip was put right for its reporter: on his
+PC (Intel HD Graphics 620, Windows, a television as its screen) the
+picture sometimes freezes in a fight while the sound goes on. His log
+shows it: within ten seconds the window's presents stop, and the machine's
+lines go on as before, with no error. Asked, he says nothing brings the
+picture back (the menu's key, Alt+Enter; Alt+Tab reaches the desktop only
+after many tries), that it has happened in full screen only, and that the
+PC is on mains power. Here it has never happened: three runs of twenty
+minutes with his settings (the Windows game under Proton on one graphics
+chip, the Linux game on two; 34 matches) showed every ten seconds with
+their full count of presents.
+
+So the window's thread does not come back from one of its steps, and the
+log did not say which. This section makes it say; it does not make the
+freeze go away, whose cause is not known.
+
+**What is done** (`runtime/host/main.c`):
+
+- The window's thread marks each step of its loop (`win_at`): between
+  frames (events, the menu), starting the renderer again, waiting for the
+  screen's next buffer (`SDL_WaitAndAcquireGPUSwapchainTexture`), drawing
+  the frame, handing the frame to the graphics driver
+  (`SDL_SubmitGPUCommandBuffer`), after the frame, ending, closing the
+  window.
+- A thread of its own (`win_watch`) looks four times a second. When the
+  step has stood for two seconds it writes a line: the step, the turn of
+  the loop, the presents so far, what the window was at the turn's start
+  (fullscreen, minimized, covered, in front) and the machine's vertical
+  blank and whether it runs. It writes again at 10 and 30 seconds and then
+  every minute, and once more when the thread goes on, with how long it
+  stood. It only reports: a thread cannot be got out of a driver's call,
+  and the watch asks nothing of SDL or of the window.
+- The log now has the window's events it lacked: in front, no longer in
+  front, minimized, covered by others, and a display whose mode changed.
+- And the graphics driver's name, version and description as SDL has them
+  (`graphics driver:`): the log had only "Intel driver".
+- `--stall-window T:MS` holds the window's thread for a test, where it
+  waits for the screen's next buffer.
+
+**Reading its lines.** A line of the watch is not always a fault. A
+renderer that starts again, a window that is slow to close (section 60's
+driver), a PC that slept, and on Windows a window held by its title bar
+(the system's own loop may keep the thread) can each stand for more than
+two seconds; the step's name tells them apart, and each ends with a "went
+on" line. The freeze of issue 3 would be "waiting for the screen's next
+buffer" or "handing the frame to the graphics driver" with no such line
+after it.
+
+**Checked** (the dev build at the game's own pace in a headless desktop,
+stage 22 from its snapshot):
+
+- Held for 5 s: the line after 2 s, naming the wait for the screen's next
+  buffer, turn 120, the window in front and not fullscreen, the machine
+  running; then "went on after 5.2 s". Held for 12.5 s: also the line at
+  10 s.
+- Not held: no line of the watch.
+- The picture at the end is the same to the pixel in all three as before
+  this section.
+- The Windows game under Proton, held for 5 s: the same two lines, the
+  driver's line, and the Linux game's picture to the pixel.
+
+**Not covered.** A thread that really does not come back (the lines while
+it lasts are checked, the end is the same code); Windows itself; the
+reporter's PC, where the freeze has to happen once more with this build
+for the log to say where.

@@ -76,6 +76,9 @@
  *   --clock WHEN      for tests: what the board's clock shows as the machine starts, in place of
  *                     this PC's date and time (docs/design.md section 77): "fixed" (2004-11-10
  *                     07:18:24, with which every run is the same run) or YYYY-MM-DDThh:mm:ss
+ *   --stall-window T:MS  for tests: at turn T of the window's loop its thread sleeps MS
+ *                     milliseconds where it waits for the screen's next buffer, as a graphics
+ *                     driver that does not come back would hold it (docs/design.md section 83)
  *   --rollback N      for tests: once the game has booted, the machine keeps its last N frames for
  *                     going back to (docs/design.md section 55); nothing goes back by itself
  *   --synctest N[,P]  for tests: rollback, and every P vertical blanks (default 120) the machine
@@ -1704,6 +1707,82 @@ static void gone_close(int code)
     logf_("the compositor has gone: the game ends without closing its window (exit code %d)", code);
 }
 
+/* The window's thread, watched (docs/design.md section 83). A picture that freezes while the
+ * game runs on underneath is the window's thread not coming back from one of its steps (issue 3:
+ * on one PC, in full screen; never seen here). The thread says which step it is at (win_at). A
+ * thread of its own (win_watch) looks four times a second, and when the step has stood for
+ * WIN_STUCK_MS it says so in the log, with what the window and the machine were last known to
+ * be; again while it lasts; and when the thread goes on. It only reports: nothing is done about
+ * the wait, and nothing is asked of SDL or the window from the watch's thread. */
+enum { WIN_LOOP, WIN_SWITCH, WIN_ACQUIRE, WIN_DRAW, WIN_SUBMIT, WIN_AFTER, WIN_STOP, WIN_CLOSE, WIN_STEPS };
+static const char *const win_step_name[WIN_STEPS] = {
+    "between frames (events, the menu)",
+    "starting the renderer again",
+    "waiting for the screen's next buffer (SDL_WaitAndAcquireGPUSwapchainTexture)",
+    "drawing the frame",
+    "handing the frame to the graphics driver (SDL_SubmitGPUCommandBuffer)",
+    "after the frame (pictures read back)",
+    "ending (the machine stops, its records are saved)",
+    "closing the window",
+};
+#define WIN_STUCK_MS 2000
+static SDL_AtomicInt win_step;          /* WIN_*: what the window's thread is doing */
+static SDL_AtomicInt win_step_at;       /* since when (SDL_GetTicks) */
+static SDL_AtomicInt win_turn;          /* turns of its loop */
+static SDL_AtomicInt win_flags_now;     /* the window's flags at the turn's start (SDL_WINDOW_*, the low 32 bits) */
+static SDL_AtomicInt win_watch_on;
+static int win_stall_turn, win_stall_ms;    /* --stall-window */
+
+static void win_at(int step)
+{
+    SDL_SetAtomicInt(&win_step, step);
+    SDL_SetAtomicInt(&win_step_at, (int)(Uint32)SDL_GetTicks());
+}
+
+static int win_watch(void *arg)
+{
+    (void)arg;
+    Uint32 held_at = (Uint32)SDL_GetAtomicInt(&win_step_at), next_ms = WIN_STUCK_MS;
+    int held_step = SDL_GetAtomicInt(&win_step), told = 0;
+    while (SDL_GetAtomicInt(&win_watch_on)) {
+        SDL_Delay(250);
+        Uint32 at = (Uint32)SDL_GetAtomicInt(&win_step_at), now = (Uint32)SDL_GetTicks();
+        int step = SDL_GetAtomicInt(&win_step);
+        if (step < 0 || step >= WIN_STEPS)
+            step = WIN_LOOP;
+        if (at != held_at || step != held_step) {
+            if (told)
+                logf_("window: its thread went on after %.1f s (it was %s)", (double)(at - held_at) / 1000.0,
+                      win_step_name[held_step]);
+            held_at = at;
+            held_step = step;
+            told = 0;
+            next_ms = WIN_STUCK_MS;
+            continue;
+        }
+        Uint32 held = now - at;
+        if (held < next_ms)
+            continue;
+        if (!told) {
+            Uint32 fl = (Uint32)SDL_GetAtomicInt(&win_flags_now);
+            int st = SDL_GetAtomicInt(&machine_state);
+            logf_("window: its thread has not gone on for %.0f s: it is %s (turn %d of its loop, %d presents so far; "
+                  "the window: %s%s%s%s; the machine: vertical blank %d, %s)", (double)held / 1000.0, win_step_name[step],
+                  SDL_GetAtomicInt(&win_turn), SDL_GetAtomicInt(&presents_n),
+                  fl & SDL_WINDOW_FULLSCREEN ? "fullscreen" : "not fullscreen", fl & SDL_WINDOW_MINIMIZED ? ", minimized" : "",
+                  fl & SDL_WINDOW_OCCLUDED ? ", covered" : "", fl & SDL_WINDOW_INPUT_FOCUS ? ", in front" : ", not in front",
+                  SDL_GetAtomicInt(&frame_now),
+                  st != 1 ? "not running" : SDL_GetAtomicInt(&menu_pause) ? "held by the menu" : "running");
+        } else {
+            logf_("window: its thread is still %s after %.0f s (the machine: vertical blank %d)", win_step_name[step],
+                  (double)held / 1000.0, SDL_GetAtomicInt(&frame_now));
+        }
+        told = 1;
+        next_ms = held < 10000 ? 10000 : held < 30000 ? 30000 : (held / 60000 + 1) * 60000;
+    }
+    return 0;
+}
+
 /* the watch's thread (compositor.c): the compositor has gone and the main
  * thread's frame has not finished in COMPOSITOR_STUCK_MS. The machine
  * stops and saves as on any quit, then the game ends: the exit code. The
@@ -2331,6 +2410,15 @@ static int video_open(void)
     if (!gpu)
         return -1;
     logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
+    {
+        /* which graphics driver, and its version: a fault of one driver's shows only on its PCs (section 83) */
+        SDL_PropertiesID gp = SDL_GetGPUDeviceProperties(gpu);
+        const char *dn = SDL_GetStringProperty(gp, SDL_PROP_GPU_DEVICE_DRIVER_NAME_STRING, NULL);
+        const char *dv = SDL_GetStringProperty(gp, SDL_PROP_GPU_DEVICE_DRIVER_VERSION_STRING, NULL);
+        const char *di = SDL_GetStringProperty(gp, SDL_PROP_GPU_DEVICE_DRIVER_INFO_STRING, NULL);
+        if (dn || dv || di)
+            logf_("graphics driver: %s%s%s%s%s", dn ? dn : "?", dv ? ", version " : "", dv ? dv : "", di ? ", " : "", di ? di : "");
+    }
     int shown_w = art_dir ? PIC_W : settings_picture_width(cfg_.picture);
     if (use_gpu) {
         gpu_name_of(gpu, gpu_now, sizeof gpu_now);
@@ -3455,6 +3543,12 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--pace-ppm") && v)
             frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
         else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");
+        else if (!strcmp(a, "--stall-window") && v) {
+            if (sscanf(argv[++i], "%d:%d", &win_stall_turn, &win_stall_ms) != 2 || win_stall_turn < 1 || win_stall_ms < 1) {
+                fprintf(stderr, "vf4ft: --stall-window: TURN:MILLISECONDS\n");
+                return 2;
+            }
+        }
         else if (!strcmp(a, "--hash-every") && v) hash_every = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--snapshot-at") && v && i + 2 < argc) {
             snap_at = (unsigned)strtoul(argv[++i], NULL, 10);
@@ -3875,8 +3969,14 @@ int main(int argc, char **argv)
     int have_picture = 0, running = 1, reported_start = 0;
     int chord_used = 0, last_dir = -1, last_program = 0, key_turns = 0;
     compositor_watch_start(logf_, window_stuck);    /* section 54 */
+    win_at(WIN_LOOP);
+    SDL_SetAtomicInt(&win_watch_on, 1);
+    SDL_Thread *win_watcher = SDL_CreateThread(win_watch, "window watch", NULL);    /* section 83 */
     while (running) {
         const char *window_shot = NULL;
+        win_at(WIN_LOOP);
+        SDL_AddAtomicInt(&win_turn, 1);
+        SDL_SetAtomicInt(&win_flags_now, (int)(Uint32)SDL_GetWindowFlags(win));
         if (gu_poll() && menu_on)
             ov_dirty = 1;           /* the Updates row's check answered */
         SDL_Event ev;
@@ -3924,8 +4024,27 @@ int main(int argc, char **argv)
                 break;
             }
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                logf_("window: in front (it has the keyboard)");
                 vsync_rate_forget();            /* what its presents did behind others says nothing (section 61) */
                 break;
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                logf_("window: no longer in front");
+                break;
+            case SDL_EVENT_WINDOW_MINIMIZED:
+                logf_("window: minimized");
+                break;
+            case SDL_EVENT_WINDOW_OCCLUDED:
+                logf_("window: covered by others");
+                break;
+            case SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED:
+            case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED: {
+                const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(ev.display.displayID);
+                const char *dn = SDL_GetDisplayName(ev.display.displayID);
+                if (dm)
+                    logf_("display: %s is now at %d x %d, %.2f Hz (%s)", dn ? dn : "?", dm->w, dm->h, (double)dm->refresh_rate,
+                          ev.type == SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED ? "its mode changed" : "the desktop's mode changed");
+                break;
+            }
             case SDL_EVENT_WINDOW_DISPLAY_CHANGED: {
                 /* where it is now (moved, shown by Wayland, fullscreen on
                  * Display's screen), and Window size's sizes for that screen */
@@ -4234,7 +4353,9 @@ int main(int argc, char **argv)
         if (video_redo && running) {
             video_redo = 0;
             compositor_busy(1);         /* it gives the window back and claims it again */
+            win_at(WIN_SWITCH);
             int bad = video_switch();
+            win_at(WIN_LOOP);
             compositor_busy(0);
             if (bad) {
                 running = 0;
@@ -4409,11 +4530,15 @@ int main(int argc, char **argv)
         SDL_GPUTexture *sc = NULL;
         Uint32 w = 0, h = 0;
         compositor_busy(1);     /* the frame, to its end: it may never finish once the compositor has gone */
+        win_at(WIN_ACQUIRE);
+        if (win_stall_ms && SDL_GetAtomicInt(&win_turn) == win_stall_turn)
+            SDL_Delay((Uint32)win_stall_ms);    /* --stall-window */
         if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &sc, &w, &h)) {
             logf_("acquire swapchain failed: %s", SDL_GetError());
             SDL_CancelGPUCommandBuffer(cmd);
             break;
         }
+        win_at(WIN_DRAW);
         last_sc = sc != NULL;
         SDL_GPUTexture *src_tex = pic_tex;
         Uint32 src_w = (Uint32)rgb_w, src_h = PIC_H;
@@ -4469,7 +4594,9 @@ int main(int argc, char **argv)
                     compose(cmd, shot_tex, w, h, src_tex, src_w, src_h, have_picture, grab ? 0 : ov);
             }
         }
+        win_at(WIN_SUBMIT);
         SDL_SubmitGPUCommandBuffer(cmd);
+        win_at(WIN_AFTER);
         if (grab && sc) {
             if (ovl.grab)
                 read_back(gpu, ovl.grab, ovl.grab_w, ovl.grab_h, ovl_backdrop, NULL);
@@ -4500,6 +4627,7 @@ int main(int argc, char **argv)
             running = 0;
     }
     compositor_busy(0);                     /* the loop left in a frame (its acquire failed) */
+    win_at(WIN_STOP);
 
     machine_stop_ask();
     SDL_WaitThread(machine, NULL);
@@ -4545,6 +4673,7 @@ int main(int argc, char **argv)
         _Exit(failed);
     }
     compositor_busy(1);     /* closing the window: it may never finish if the compositor goes now */
+    win_at(WIN_CLOSE);
     ovl_free(gpu);
     for (int w = 0; w < 2; w++)
         if (vpad[w]) {
@@ -4558,6 +4687,9 @@ int main(int argc, char **argv)
     close_step("closing the window", NULL);
     compositor_busy(0);
     compositor_watch_end();
+    SDL_SetAtomicInt(&win_watch_on, 0);
+    if (win_watcher)
+        SDL_WaitThread(win_watcher, NULL);
     SDL_DestroyMutex(shared.lock);
     gu_quit();      /* the records are saved: an update asked for in the menu goes to the launcher */
     if (to_launcher) {
