@@ -82,20 +82,26 @@ void light(out vec4 col, out vec4 ofs)
             } else {
                 t = -dir;
             }
+            // a spot light's cone, for a light that goes to the colour as for one that goes to the
+            // alpha (section 89)
+            float cone = 1.0;
+            float ck = lights[o + 12u], cb = lights[o + 13u];
+            if (point && ck != 0.0) {
+                float cs = -dot(t, dir);
+                cone = clamp(ck > 0.0 ? ck * cs + cb : ck * (1.0 - cs) + cb, 0.0, 1.0);
+            }
             uint route = uint(lights[o + 15u]);
             if ((route & 6u) == 4u) {
                 // a light that goes to the alpha (section 64)
                 float amt = lc.r * at;
-                float ck = lights[o + 12u], cb = lights[o + 13u];
-                if (point && ck != 0.0) {
-                    float cs = -dot(t, dir);
-                    amt *= clamp(ck > 0.0 ? ck * cs + cb : ck * (1.0 - cs) + cb, 0.0, 1.0);
-                }
+                if (point && ck != 0.0)
+                    amt *= cone;
                 if (uint(lights[o + 14u]) != 3u && (route & 1u) == 0u)
                     amt *= max(dot(g, t), 0.0);
                 la += (route & 8u) != 0u ? -amt : amt;
                 continue;
             }
+            at *= cone;
             float d = dot(g, t) * at;
             if (d > 0.0) {
                 l += lc * d;

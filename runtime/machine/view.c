@@ -1594,6 +1594,17 @@ static void strip_job(scene *sc, sjob *j)
                     } else {
                         tx = -l->dir[0]; ty = -l->dir[1]; tz = -l->dir[2];     /* dir: the way the light travels */
                     }
+                    /* recomp: a spot light's cone: full inside it, nothing outside, as section 64
+                     * read the two numbers for the light that goes to the alpha. It holds for a
+                     * light that goes to the colour as well (docs/design.md section 89): a
+                     * light's amount is one sum, and its routing says only where the amount
+                     * goes. Before, such a spot lit all round itself like a point light */
+                    float cone = 1;
+                    if (l->point && l->ck != 0) {
+                        float cs = -(tx * l->dir[0] + ty * l->dir[1] + tz * l->dir[2]);
+                        cone = l->ck > 0 ? l->ck * cs + l->cb : l->ck * (1 - cs) + l->cb;
+                        cone = cone < 0 ? 0 : cone > 1 ? 1 : cone;
+                    }
                     if ((l->route & 6) == 4) {
                         /* recomp: a light whose amount goes to the alpha and not to the colour
                          * (routing 4 and 5 add it, 12 and 13 take it away). The game's extra
@@ -1609,11 +1620,8 @@ static void strip_job(scene *sc, sjob *j)
                          * added to the material's alpha or taken from it, as the routings are
                          * named. docs/design.md section 64 */
                         float amt = l->col[0] * at;
-                        if (l->point && l->ck != 0) {
-                            float cs = -(tx * l->dir[0] + ty * l->dir[1] + tz * l->dir[2]);
-                            float cone = l->ck > 0 ? l->ck * cs + l->cb : l->ck * (1 - cs) + l->cb;
-                            amt *= cone < 0 ? 0 : cone > 1 ? 1 : cone;
-                        }
+                        if (l->point && l->ck != 0)
+                            amt *= cone;
                         if (l->dmode != 3 && !(l->route & 1)) {
                             float nl = gx * tx + gy * ty + gz * tz;
                             amt *= nl > 0 ? nl : 0;
@@ -1621,6 +1629,7 @@ static void strip_job(scene *sc, sjob *j)
                         la += l->route & 8 ? -amt : amt;
                         continue;
                     }
+                    at *= cone;                 /* the colour's light and its highlight: inside the cone only */
                     d = (gx * tx + gy * ty + gz * tz) * at;
                     if (d > 0) {
                         lr += l->col[0] * d;

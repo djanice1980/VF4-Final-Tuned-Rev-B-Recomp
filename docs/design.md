@@ -5771,7 +5771,7 @@ habit of summing and then holding to the range is the one followed here.
 
 **Not covered.** A comparison with the real board. An ordinary spot
 light's cone: lights that go to the colour are still lit as point lights,
-as before. The fog routings. The translucent list's modifier volumes are
+as before (section 89 gives them their cone). The fog routings. The translucent list's modifier volumes are
 still not drawn by the GPU renderer (section 20): that is another thing.
 
 ## 65. Wide screens: a reflection goes on past the game's sides (2026-11-23)
@@ -8264,3 +8264,60 @@ vertical blank 7300):
 PC, and Frame skip, where the numbers matter most: the headless desktop
 gave a steady 60. The numbers were read from pictures, not compared with
 another counter.
+
+## 89. A spot light's cone, for a light that goes to the color (2026-11-26)
+
+**Why.** Players say some stages' lighting looks flat and their colors
+muted. The rooftop, which they pointed to, turned out to be as the game
+draws it: a traced run (the headless game on its interpreter, the object
+and light routines logged) shows a daylight stage by the game's own
+numbers, with four helicopters, the red lights on the fence and no beam,
+and the picture has all of it. The dusk rooftop in their screenshots is
+another version of the game.
+
+A reading of the decompilation beside the renderer found a gap that is
+real, on other stages. Section 64 worked out a spot light's cone for the
+one light that goes to the alpha, and left the lights that go to the color
+lit all round themselves, like point lights. The cage stage sends three
+spot lights of that kind every frame, and the scaffold stage has them
+too.
+
+**What is done.** A light's amount is one sum: its color, times its fall
+with distance, times its cone. The routing says only where the amount
+goes. So the cone section 64 read (full inside, nothing outside, by the
+light's two numbers) now holds for every point light that has one, in the
+four places that work a light out:
+
+- `runtime/machine/view.c`, the processor's lighting;
+- `runtime/host/shaders/scene.vert`, the graphics chip's;
+- `runtime/host/shaders/rt_light.comp` and `rt_light.hlsl`, the two ray
+  tracers' sum of the game's light (`light_cone`).
+
+The light that goes to the alpha keeps its sums as they were, in the same
+order.
+
+**A second reading.** The Flycast emulator's code for this chip was read
+(not copied) for how it takes the same numbers: it scales a point light's
+color by the distance's fall and then by the angle's, before it looks at
+the routing. That is the same order.
+
+**Checked** (the Linux game in a headless desktop, every stage from its
+snapshot, one picture in a fight, before and after):
+
+- 22 of the 24 stages are the same to the pixel with the processor's
+  lights, and the three looked at with the graphics chip's lights are too.
+- The cage (stage 22): the picture changes all over. Before, the three
+  spots lit everything evenly; now the ring's floor is lit and the crowd,
+  the walls and the signs away from it are dim. The scaffold stage (3):
+  the floor and the background are a little darker away from the lamps.
+  Two more pictures later in a fight on each show the same.
+- The graphics chip's lights against the processor's on the cage: one
+  color step at most, as before the change; on the other four stages
+  compared, the same to the pixel.
+- With Vulkan ray tracing the two stages change in the same way.
+
+**Not covered.** A comparison with the real board or with an emulator's
+picture: that the cage is meant to look like this rests on the game's
+own numbers and the second reading. DirectX 12 ray tracing (its shader
+has the same change; it was not run). The other things section 64 lists:
+the fog routings, the diffuse modes, the lights' second ambient.

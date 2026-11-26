@@ -187,6 +187,15 @@ bool light_dir(Light l, vec3 P, out vec3 t, out float at, out float dist)
     return true;
 }
 
+// a spot light's cone at a point that sees the light along t: 1 inside, 0 outside (sections 64, 89)
+float light_cone(Light l, vec3 t)
+{
+    if ((l.flags & 2) == 0 || l.ck == 0.0)
+        return 1.0;
+    float cs = -dot(t, l.dir);
+    return clamp(l.ck > 0.0 ? l.ck * cs + l.cb : l.ck * (1.0 - cs) + l.cb, 0.0, 1.0);
+}
+
 float alpha_light(uint ls, vec3 P, vec3 N)
 {
     float la = 0.0;
@@ -199,10 +208,8 @@ float alpha_light(uint ls, vec3 P, vec3 N)
         if (!light_dir(l, P, t, at, dist))
             continue;
         float amt = l.col.x * at;
-        if ((l.flags & 2) != 0 && l.ck != 0.0) {
-            float cs = -dot(t, l.dir);
-            amt *= clamp(l.ck > 0.0 ? l.ck * cs + l.cb : l.ck * (1.0 - cs) + l.cb, 0.0, 1.0);
-        }
+        if ((l.flags & 2) != 0 && l.ck != 0.0)
+            amt *= light_cone(l, t);
         if (l.dmode != 3 && (l.route & 1) == 0)
             amt *= max(dot(N, t), 0.0);
         la += (l.route & 8) != 0 ? -amt : amt;
@@ -366,6 +373,7 @@ vec3 lights_sum(uint ls, vec3 P, vec3 N, vec3 O, int n, vec3 amb)
         float at, dist;
         if (!light_dir(l, P, t, at, dist))
             continue;
+        at *= light_cone(l, t);     // a spot that goes to the colour lights inside its cone only (section 89)
         float d = dot(N, t) * at;
         if (d <= 0.0)
             continue;
