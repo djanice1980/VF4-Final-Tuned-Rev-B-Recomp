@@ -100,6 +100,28 @@ void menu_kofi(int opened)
     kofi_said = opened != 0;
 }
 
+static char mode_what[96];      /* "Keep this screen mode?": the mode in words, and the seconds left */
+static int mode_left;
+
+void menu_mode_ask(const char *what, int seconds)
+{
+    SDL_strlcpy(mode_what, what ? what : "", sizeof mode_what);
+    mode_left = seconds;
+    notice = MENU_NOTICE_MODE;
+    notice_focus = 1;           /* Go back: a key pressed blind does not keep a mode that shows nothing */
+}
+
+void menu_mode_left(int seconds)
+{
+    mode_left = seconds;
+}
+
+void menu_mode_done(void)
+{
+    if (notice == MENU_NOTICE_MODE)
+        notice = 0;
+}
+
 int menu_changed(void)
 {
     return s && memcmp(s, &before, sizeof before) != 0;
@@ -333,6 +355,19 @@ int menu_command(int cmd)
         default: return MENU_STAY;
         }
     }
+    if (notice == MENU_NOTICE_MODE) {       /* Keep, Go back (section 87) */
+        switch (cmd) {
+        case MENU_UP:
+        case MENU_DOWN:
+        case MENU_LEFT:
+        case MENU_RIGHT: notice_focus ^= 1; return MENU_STAY;
+        case MENU_OK: return notice_focus == 0 ? MENU_MODE_KEEP : MENU_MODE_BACK;
+        case MENU_BACK:
+        case MENU_ESCAPE:
+        case MENU_ERASE: return MENU_MODE_BACK;
+        default: return MENU_STAY;
+        }
+    }
     if (notice) {
         switch (cmd) {
         case MENU_UP:
@@ -438,6 +473,18 @@ int menu_mouse(int what, float px, float py, int d)
         switch (what) {
         case MENU_MOUSE_LEFT: return b ? MENU_RESUME : -1;
         case MENU_MOUSE_RIGHT: return MENU_RESUME;
+        default: return -1;
+        }
+    }
+    if (notice == MENU_NOTICE_MODE) {
+        int b = inside(&notice_btn[0], x, y) ? 0 : inside(&notice_btn[1], x, y) ? 1 : -1;
+        switch (what) {
+        case MENU_MOUSE_MOVE:
+            if (b < 0 || b == notice_focus)
+                return -1;
+            notice_focus = b;
+            return MENU_STAY;
+        case MENU_MOUSE_LEFT: return b == 0 ? MENU_MODE_KEEP : b == 1 ? MENU_MODE_BACK : -1;
         default: return -1;
         }
     }
@@ -681,11 +728,44 @@ static void draw_refresh_notice(void)
     ui_hints(X + W - 32, Y + H - 31, 26, hints, (int)SDL_arraysize(hints), 2);
 }
 
+/* "Keep this screen mode?" (menu_mode_ask), with Keep and Go back and the seconds left */
+static void draw_mode_notice(void)
+{
+    char t[400];
+    SDL_snprintf(t, sizeof t, "The screen is now at %s, for Fullscreen Exclusive. Keep it if the picture is "
+                 "right. Without an answer the game goes back to what it had in %d second%s.", mode_what,
+                 mode_left, mode_left == 1 ? "" : "s");
+    const float W = 620, P = 34;
+    /* the text's lines from 84 down, then the buttons and the hints (128 at the foot) */
+    const float H = 84 + 23 * (float)ui_wrap_lines(UI_REGULAR, 15.5f, W - 2 * P, t) + 34 + 128;
+    const float X = (1180 - W) / 2, Y = (680 - H) / 2;
+    ui_round_line(X, Y, W, H, 20, 1, UI_LINE, UI_PANEL);
+    ui_text(UI_BOLD, 21, X + P, Y + 44, UI_TEXT, "Keep this screen mode?");
+    ui_wrap(UI_REGULAR, 15.5f, X + P, Y + 84, W - 2 * P, 23, UI_MUTED, t);
+    const char *l0 = "Keep", *l1 = "Go back";
+    float w0 = ui_text_w(UI_MEDIUM, 16, l0) + 52, w1 = ui_text_w(UI_MEDIUM, 16, l1) + 52;
+    float bx = X + (W - w0 - 14 - w1) / 2, by = Y + H - 62 - 66;
+    notice_btn[0] = (SDL_FRect){ bx, by, w0, 46 };
+    notice_btn[1] = (SDL_FRect){ bx + w0 + 14, by, w1, 46 };
+    bx += notice_button(bx, by, l0, notice_focus == 0) + 14;
+    notice_button(bx, by, l1, notice_focus == 1);
+    ui_fill(X + 30, Y + H - 62, W - 60, 1, UI_LINE);
+    static const ui_hint hints[] = {
+        { "Choose", { UI_IN_LEFTRIGHT, UI_IN_NONE } }, { "Select", { UI_IN_OK, UI_IN_NONE } },
+        { "Go back", { UI_IN_BACK, UI_IN_NONE } },
+    };
+    ui_hints(X + W - 32, Y + H - 31, 26, hints, (int)SDL_arraysize(hints), 2);
+}
+
 /* the first start's notice (menu_open_notice), like the author's pcbview's */
 static void draw_notice(void)
 {
     if (notice == MENU_NOTICE_REFRESH) {
         draw_refresh_notice();
+        return;
+    }
+    if (notice == MENU_NOTICE_MODE) {
+        draw_mode_notice();
         return;
     }
     const float W = 620, H = 512, X = (1180 - W) / 2, Y = (680 - H) / 2, P = 34;

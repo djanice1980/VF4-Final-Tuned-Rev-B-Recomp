@@ -548,13 +548,14 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
                     to[0] = 0;
                 else
                     settings_name_clean(to, size, v);
-            } else if (!strcmp(name, "screenmode")) {
+            } else if (!strcmp(name, "screenmode") || !strcmp(name, "screenkept")) {
+                char *to = name[6] == 'm' ? s->screenmode : s->screenkept;
                 int mw, mh;
                 float mhz;
-                if (!SDL_strcasecmp(v, "auto"))
-                    ok = 1, s->screenmode[0] = 0;
+                if (!SDL_strcasecmp(v, name[6] == 'm' ? "auto" : "none"))
+                    ok = 1, to[0] = 0;
                 else if ((ok = settings_screenmode_parse(v, &mw, &mh, &mhz)))
-                    settings_screenmode_text(s->screenmode, sizeof s->screenmode, mw, mh, mhz);
+                    settings_screenmode_text(to, SCREENMODE_MAX, mw, mh, mhz);
             } else if (!strcmp(name, "scale")) {
                 x = atoi(v);
                 if ((ok = x >= 1 && x <= 4))
@@ -678,6 +679,9 @@ int settings_save(const settings *s, const char *path)
     PUT("screenmode = %s       # exclusive's display mode: auto (the desktop's own) or WIDTHxHEIGHT@HZ,\n"
         "                         # as 1920x1080@60 (the display's nearest to it is taken)\n",
         s->screenmode[0] ? s->screenmode : "auto");
+    PUT("screenkept = %s       # the screenmode kept when the game last asked \"Keep this screen mode?\"\n"
+        "                         # (none: it asks before it keeps another; the game writes this)\n",
+        s->screenkept[0] ? s->screenkept : "none");
     if (s->window == WINDOW_MAXIMIZED)
         PUT("window = maximized      # maximized (the default), or the window's height: auto (the largest of\n");
     else if (s->window == WINDOW_AUTO)

@@ -53,6 +53,8 @@ enum {
     MENU_KOFI,              /* open MENU_KOFI_URL in the browser, then menu_kofi() */
     MENU_KOFI_CLOSE,        /* the same, and close it (the notice's Support on Ko-fi) */
     MENU_LAUNCHER,          /* quit, and the launcher opens (updates.h: gu_open_launcher) */
+    MENU_MODE_KEEP,         /* "Keep this screen mode?": Keep */
+    MENU_MODE_BACK,         /* the same: Go back (its button, Back or Esc) */
 };
 
 /* how this run started: settings that change only at the next start are
@@ -93,10 +95,20 @@ void menu_open(settings *s, const menu_run *run);
 /* opens it as a notice instead: MENU_NOTICE_KOFI, the first start's, with
  * Support on Ko-fi and Close; MENU_NOTICE_REFRESH, the screen's refresh
  * rate (docs/design.md section 44), with OK */
-enum { MENU_NOTICE_KOFI = 1, MENU_NOTICE_REFRESH };
+enum { MENU_NOTICE_KOFI = 1, MENU_NOTICE_REFRESH, MENU_NOTICE_MODE };
 void menu_open_notice(settings *s, const menu_run *run, int kind);
 /* what opening the Ko-fi page did (1 opened, 0 not), for the menu to say */
 void menu_kofi(int opened);
+
+/* "Keep this screen mode?" (docs/design.md section 87), asked after Fullscreen Exclusive took a
+ * screen mode the player has not kept before, with Keep and Go back (the choice it starts on, so
+ * that a key pressed blind goes back). It lies over the open menu's page, which is the menu's
+ * again after menu_mode_done; opened by menu_open_notice (MENU_NOTICE_MODE) it is all there is.
+ * what: the mode in words; seconds: what is left before the game goes back by itself
+ * (menu_mode_left as they pass). The answer comes as MENU_MODE_KEEP or MENU_MODE_BACK */
+void menu_mode_ask(const char *what, int seconds);
+void menu_mode_left(int seconds);
+void menu_mode_done(void);
 
 /* a command; returns MENU_* */
 int menu_command(int cmd);

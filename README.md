@@ -592,9 +592,13 @@ and a refresh rate from the display's own list; Auto is the desktop's)
 while the game is fullscreen, and gives it back when the game leaves
 fullscreen or another window takes over. The game shows 60 frames a
 second, so a mode at 60 or 120 Hz shows them evenly on a screen that
-otherwise runs at 144. The launcher's own window is never Exclusive: if a
-mode leaves the screen dark, close the game (Alt+F4) and set Fullscreen
-back in the launcher
+otherwise runs at 144. The first time Exclusive takes a screen mode, the
+game asks "Keep this screen mode?": Keep remembers it; Go back, Esc, or
+no answer in 15 seconds puts Fullscreen back as it was, so a mode that
+shows nothing undoes itself
+([design.md s87](docs/design.md#87-keep-this-screen-mode-2026-11-26)).
+The launcher's own window is never Exclusive, and Fullscreen can always
+be set back there
 ([design.md s86](docs/design.md#86-fullscreens-two-kinds-borderless-window-and-exclusive-2026-11-26)).
 Picture, window size,
 scaling, fullscreen, screen mode, display, renderer, GPU, internal resolution and volume
@@ -682,7 +686,8 @@ with only a gamepad, the menu's Operator test menu does the same.
   arcade), `fullscreen` (auto | off | borderless | exclusive; auto is borderless on the Steam Deck and in
   Big Picture; older files say on for borderless; the launcher's window follows it, as a borderless one
   always), `screenmode` (auto | WIDTHxHEIGHT@HZ, as 1920x1080@60: the display mode Exclusive sets; auto is
-  the desktop's own), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
+  the desktop's own), `screenkept` (the screenmode kept when the game last asked, which it writes itself;
+  none: it asks before keeping another), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
   ones keep the cabinet's screen in the middle, unstretched, and draw what
   the camera sees past its sides; default 4:3, and 16:10 on a Steam
   Deck), `window` (maximized | auto | the window's height in pixels;

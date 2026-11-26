@@ -8048,8 +8048,8 @@ shows them evenly.
 **The way back from a mode that fails.** Alt+Enter or F11 leaves
 fullscreen, Alt+Tab minimizes the window, and closing the game (Alt+F4)
 ends it: SDL gives the display its mode back in each case. Fullscreen is
-then set back in the launcher. There is no "keep this mode?" question
-that takes a change back by itself after some seconds.
+then set back in the launcher. Section 87 adds the question that takes a
+mode back by itself after some seconds.
 
 **Two faults found by looking at the pictures.** The launcher's page kept
 its rows in buffers for 14, and the Picture tab now has 15: the first
@@ -8097,3 +8097,84 @@ the Linux game, Wine's own mode setting on that screen for the Windows
 game). Two displays. A Steam Deck. The window minimized when another
 takes over. The Windows launcher's page (the Linux launcher's was looked
 at; the code is the same). The reporter's PC.
+
+## 87. "Keep this screen mode?" (2026-11-26)
+
+**Why.** Section 86 left a player whose screen shows nothing at an
+exclusive mode with Alt+Enter, Alt+F4 and the launcher, which he has to
+know of. The maintainer asked for what other programs do: a question
+that undoes the change when nobody answers.
+
+**What is done.**
+
+- When Fullscreen Exclusive takes a Screen mode the player has not kept
+  before, the game asks "Keep this screen mode?", naming the mode, with
+  Keep and Go back and the seconds left (15). It starts on Go back, so
+  that a key pressed blind does not keep a mode that shows nothing.
+  Keep remembers the mode in the settings (`screenkept`), and it is not
+  asked about again. Go back, Esc, a pad's B, or no answer in time puts
+  Fullscreen and Screen mode back as they were, in the settings file too:
+  the next start does not take the mode again.
+- "As they were" is what the menu's rows had before the change, when the
+  change was made in the menu. At the game's start (the launcher chose
+  the mode) and on F11 it is the borderless window, with the mode kept
+  last.
+- Screen mode Auto, the desktop's own mode, is never asked about.
+- The question is one of the menu's notices (`menu.c`,
+  `MENU_NOTICE_MODE`). Asked while the menu is open, it lies over the
+  page and gives the page back after the answer; at the start it opens
+  the menu for itself and closes it. The game is held while it shows, as
+  for the menu. The window's loop counts the seconds (`main.c`,
+  `mode_ask_turn`).
+- Leaving fullscreen while it asks (F11) is taken as Go back, and the
+  window stays a window.
+- `--mode-ask N` gives the question N seconds, for the tests.
+
+**A fault found by the first run.** `--mode-ask` read its number through
+`SDL_max`, a macro that names its argument twice, and so stepped over two
+command-line words: the next option was taken for an unknown one. It
+reads the number first now.
+
+**Checked** (the development builds in a headless desktop; Exclusive at
+1280x720@60, a mode not kept before, unless said):
+
+- At the Linux game's start the question comes up, naming 1280 x 720,
+  60 Hz (its picture was looked at). Left and Enter keep it: the settings
+  then have `screenkept = 1280x720@60`, and the game goes on at that mode.
+- Enter on the choice it starts on, and Esc: back to the borderless
+  window, and the settings have `fullscreen = borderless` and Screen mode
+  Auto. No answer in 3 seconds (`--mode-ask 3`): the same, 3.0 s after it
+  asked. F11 while it asks: taken as Go back, and the window stays a
+  window.
+- A mode the settings say was kept, and Screen mode Auto: no question.
+- In the menu, from a window: Fullscreen to Exclusive (no question: its
+  mode is the desktop's own), then Screen mode one step: the question
+  over the menu. Keep: the menu's page again, the mode kept in the
+  settings. Go back: the page again with Screen mode at Auto and
+  Fullscreen still Exclusive, as before the step (its picture was looked
+  at).
+- A mode no display has (9000x9000@60), not answered in 2 seconds: back
+  to the borderless window.
+- The game's picture at the end is a window's to the pixel in every one
+  of these.
+- The Windows game under Proton: the question at the start, kept by the
+  same keys; and not answered in 3 seconds, where the display went to
+  1280 x 720 and back to 1920 x 1080 and the game went on as the
+  borderless window to a clean exit. The picture is the Linux game's to
+  the pixel in both.
+- Section 86's cases once more with this build (ten with the Linux game,
+  the launcher's page, four under Proton): as they were.
+
+**Known.**
+
+- The question's seconds are not shown counting in any picture taken:
+  the log has the time it gave and what happened at its end.
+- A mode the display does not have is asked about under the name of the
+  nearest mode the display took for it.
+- Stepping through the Fullscreen row past Exclusive with a Screen mode
+  not kept brings the question up on the way.
+
+**Not covered.** Windows itself and a real screen, as section 86. A
+gamepad's buttons on the question (the keys and the menu's commands are
+the same ones the rest of the menu takes). The mouse on its buttons. A
+screen that really shows nothing.

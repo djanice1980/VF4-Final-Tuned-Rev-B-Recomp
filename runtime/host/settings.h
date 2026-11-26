@@ -105,6 +105,8 @@ typedef struct settings {
                                      * where the system puts it. One not connected: Auto, kept as for gpu */
     char screenmode[SCREENMODE_MAX]; /* Fullscreen Exclusive's display mode, "WIDTHxHEIGHT@HZ" (the
                                       * display's nearest is taken); "" Auto: the desktop's own */
+    char screenkept[SCREENMODE_MAX]; /* the screenmode the player kept when the game asked (section
+                                      * 87); "" none: the game asks before it keeps another */
     int scale;              /* the GPU renderer's resolution: 1..4 times 640 x 480 */
     int sound;              /* 1 on */
     int volume;             /* 0..100 (%), the game's menu changes it while it plays */

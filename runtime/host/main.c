@@ -76,6 +76,8 @@
  *   --clock WHEN      for tests: what the board's clock shows as the machine starts, in place of
  *                     this PC's date and time (docs/design.md section 77): "fixed" (2004-11-10
  *                     07:18:24, with which every run is the same run) or YYYY-MM-DDThh:mm:ss
+ *   --mode-ask N      for tests: "Keep this screen mode?" waits N seconds for its answer, not 15
+ *                     (docs/design.md section 87)
  *   --stall-window T:MS[:PART]  for tests: at turn T of the window's loop its thread sleeps MS
  *                     milliseconds where it waits for the screen's next buffer, as a graphics
  *                     driver that does not come back would hold it (docs/design.md section 83);
@@ -2109,6 +2111,19 @@ static Uint64 bar_until;                /* the bar is drawn until then (ms); its
 static unsigned pad_hold;               /* buttons held as the menu closed: not the game's until let go */
 static int live_fullscreen;
 static char live_screenmode[SCREENMODE_MAX];    /* the Screen mode the window was given (section 86) */
+
+/* "Keep this screen mode?" (docs/design.md section 87). Exclusive took a screen mode the player has
+ * not kept before (the settings' screenkept): the game asks, in its menu's place, and goes back to
+ * what it had when the answer is Go back or does not come in mode_ask_seconds. The desktop's own
+ * mode (Screen mode Auto) is never asked about */
+static int mode_ask_seconds = 15;           /* --mode-ask */
+static int mode_ask_due;                    /* such a mode was taken: ask at the next turn */
+static Uint64 mode_ask_until;               /* asking, to this time (ms); 0: not asking */
+static int mode_ask_alone, mode_ask_shown;  /* the menu was opened for it alone; the seconds it shows */
+static char mode_ask_what[96];              /* the mode in words */
+static int mode_back_given;                 /* what to go back to was set by the caller (the menu's change) */
+static int mode_back_fullscreen;            /* Fullscreen and Screen mode to go back to */
+static char mode_back_screenmode[SCREENMODE_MAX];
 static int live_window, live_picture;   /* the Window size and Picture the window has */
 static int window_later;                /* Window size changed in fullscreen: it applies as that ends */
 static int to_launcher;                 /* the menu's Open the launcher: the game quits for it */
@@ -2618,6 +2633,8 @@ static void fullscreen_to(SDL_Window *w, bool on)
         SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want));
     if (on)
         fullscreen_kind(w);     /* before the switch, or in place when it is fullscreen already */
+    else
+        mode_ask_due = 0;       /* a window: no mode to ask about (section 87) */
     SDL_SetWindowFullscreen(w, on);
 }
 
@@ -2652,6 +2669,20 @@ static void fullscreen_kind(SDL_Window *w)
     } else {
         logf_("fullscreen: exclusive, %d x %d at %.2f Hz on %s (Screen mode %s)", mode.w, mode.h, mode.refresh_rate,
               dn ? dn : "?", asked);
+        if (cfg_.screenmode[0] && SDL_strcmp(cfg_.screenmode, cfg_.screenkept)) {
+            /* a mode not kept before: the game asks (section 87). Back, unless the caller said: the
+             * borderless window, with the mode kept last */
+            char hz[SCREENMODE_MAX];
+            const char *at;
+            settings_screenmode_text(hz, sizeof hz, mode.w, mode.h, mode.refresh_rate);
+            at = SDL_strchr(hz, '@');
+            SDL_snprintf(mode_ask_what, sizeof mode_ask_what, "%d x %d, %s Hz", mode.w, mode.h, at ? at + 1 : "?");
+            if (!mode_back_given) {
+                mode_back_fullscreen = FULLSCREEN_ON;
+                SDL_strlcpy(mode_back_screenmode, cfg_.screenkept, sizeof mode_back_screenmode);
+            }
+            mode_ask_due = 1;
+        }
     }
 }
 
@@ -2922,7 +2953,8 @@ static void menu_show_as(int notice)
     if (audio)
         SDL_PauseAudioStreamDevice(audio);
     logf_("menu: %s at vertical blank %d",
-          notice == MENU_NOTICE_KOFI ? "the Ko-fi notice" : notice == MENU_NOTICE_REFRESH ? "the refresh notice" : "open",
+          notice == MENU_NOTICE_KOFI ? "the Ko-fi notice" : notice == MENU_NOTICE_REFRESH ? "the refresh notice"
+          : notice == MENU_NOTICE_MODE ? "the screen mode's question" : "open",
           SDL_GetAtomicInt(&frame_now));
 }
 
@@ -3158,6 +3190,68 @@ static const rt_backend *raytracing_wanted(void)
     }
 }
 
+/* "Keep this screen mode?" answered (keep 1), or not in its time (section 87). Kept: the settings
+ * remember the mode, and it is not asked about again. Not kept: Fullscreen and Screen mode go back to
+ * what they were, in the settings too, so that the next start does not take the mode again */
+static void mode_answer(int keep, const char *why)
+{
+    mode_ask_until = 0;
+    menu_mode_done();
+    if (keep) {
+        SDL_strlcpy(cfg_.screenkept, cfg_.screenmode, sizeof cfg_.screenkept);
+        logf_("fullscreen: %s kept (%s)", mode_ask_what, why);
+    } else {
+        cfg_.fullscreen = mode_back_fullscreen;
+        SDL_strlcpy(cfg_.screenmode, mode_back_screenmode, sizeof cfg_.screenmode);
+        logf_("fullscreen: %s not kept (%s): back to %s%s", mode_ask_what, why,
+              cfg_.fullscreen == FULLSCREEN_EXCLUSIVE ? "Exclusive at " : cfg_.fullscreen == FULLSCREEN_ON ? "the borderless window"
+              : "what Fullscreen was before",
+              cfg_.fullscreen == FULLSCREEN_EXCLUSIVE ? (cfg_.screenmode[0] ? cfg_.screenmode : "the desktop's own mode") : "");
+        live_fullscreen = cfg_.fullscreen;
+        /* the window too, unless the player has left fullscreen meanwhile (F11): it stays a window then */
+        if (main_win && (SDL_GetWindowFlags(main_win) & SDL_WINDOW_FULLSCREEN))
+            fullscreen_to(main_win, fullscreen_wanted());
+        mode_ask_due = 0;       /* what it goes back to is not asked about */
+    }
+    if (mode_ask_alone)
+        menu_hide();            /* the menu was opened for the question alone (and the settings are saved) */
+    ov_dirty = 1;
+}
+
+/* each turn of the window's loop: the question comes up once such a mode is on the screen, its
+ * seconds pass, and without an answer the game goes back */
+static void mode_ask_turn(void)
+{
+    Uint64 now = SDL_GetTicks();
+    if (mode_ask_due && !mode_ask_until && main_win && (SDL_GetWindowFlags(main_win) & SDL_WINDOW_FULLSCREEN)) {
+        mode_ask_due = 0;
+        mode_ask_alone = !menu_on;
+        if (!menu_on)
+            menu_show_as(MENU_NOTICE_MODE);
+        menu_mode_ask(mode_ask_what, mode_ask_seconds);
+        mode_ask_until = now + (Uint64)mode_ask_seconds * 1000;
+        mode_ask_shown = mode_ask_seconds;
+        ov_dirty = 1;
+        logf_("fullscreen: \"Keep this screen mode?\" for %s: %d s to answer", mode_ask_what, mode_ask_seconds);
+    }
+    if (!mode_ask_until)
+        return;
+    if (main_win && !(SDL_GetWindowFlags(main_win) & SDL_WINDOW_FULLSCREEN)) {
+        mode_answer(0, "fullscreen was left");
+        return;
+    }
+    if (now >= mode_ask_until) {
+        mode_answer(0, "no answer");
+        return;
+    }
+    int left = (int)((mode_ask_until - now + 999) / 1000);
+    if (left != mode_ask_shown) {
+        mode_ask_shown = left;
+        menu_mode_left(left);
+        ov_dirty = 1;
+    }
+}
+
 /* what the menu asked for; 0 to quit */
 static int menu_do(int a)
 {
@@ -3181,9 +3275,13 @@ static int menu_do(int a)
             window_to_setting(main_win, 1);     /* the size, or the new picture's shape */
         live_picture = cfg_.picture;
         if (cfg_.fullscreen != live_fullscreen || SDL_strcmp(cfg_.screenmode, live_screenmode)) {
+            mode_back_given = 1;                /* "Keep this screen mode?" goes back to what it was (section 87) */
+            mode_back_fullscreen = live_fullscreen;
+            SDL_strlcpy(mode_back_screenmode, live_screenmode, sizeof mode_back_screenmode);
             live_fullscreen = cfg_.fullscreen;  /* the kind too, and Exclusive's mode (section 86) */
             SDL_strlcpy(live_screenmode, cfg_.screenmode, sizeof live_screenmode);
             fullscreen_to(main_win, fullscreen_wanted());
+            mode_back_given = 0;
         }
         if (audio)
             SDL_SetAudioStreamGain(audio, cfg_.volume / 100.0f);
@@ -3229,6 +3327,12 @@ static int menu_do(int a)
     case MENU_KOFI:
         kofi_open();
         ov_dirty = 1;
+        return 1;
+    case MENU_MODE_KEEP:
+        mode_answer(1, "the player's answer");
+        return 1;
+    case MENU_MODE_BACK:
+        mode_answer(0, "the player's answer");
         return 1;
     case MENU_KOFI_CLOSE:
         kofi_open();
@@ -3614,6 +3718,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--pace-ppm") && v)
             frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
         else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");
+        else if (!strcmp(a, "--mode-ask") && v) {
+            mode_ask_seconds = atoi(argv[++i]);
+            if (mode_ask_seconds < 1)
+                mode_ask_seconds = 1;
+        }
         else if (!strcmp(a, "--stall-window") && v) {
             if (sscanf(argv[++i], "%d:%d:%d", &win_stall_turn, &win_stall_ms, &win_stall_part) < 2 || win_stall_turn < 1 ||
                 win_stall_ms < 1) {
@@ -4390,6 +4499,8 @@ int main(int argc, char **argv)
         } else {
             last_dir = -1;
         }
+
+        mode_ask_turn();        /* "Keep this screen mode?" (section 87) */
 
         /* --keys */
         vpad_turn();
