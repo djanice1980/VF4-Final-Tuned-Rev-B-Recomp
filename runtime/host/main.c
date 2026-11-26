@@ -76,9 +76,11 @@
  *   --clock WHEN      for tests: what the board's clock shows as the machine starts, in place of
  *                     this PC's date and time (docs/design.md section 77): "fixed" (2004-11-10
  *                     07:18:24, with which every run is the same run) or YYYY-MM-DDThh:mm:ss
- *   --stall-window T:MS  for tests: at turn T of the window's loop its thread sleeps MS
+ *   --stall-window T:MS[:PART]  for tests: at turn T of the window's loop its thread sleeps MS
  *                     milliseconds where it waits for the screen's next buffer, as a graphics
- *                     driver that does not come back would hold it (docs/design.md section 83)
+ *                     driver that does not come back would hold it (docs/design.md section 83);
+ *                     PART 1: in the first of that wait's two steps, the wait for an earlier
+ *                     frame (section 85), else in the second
  *   --rollback N      for tests: once the game has booted, the machine keeps its last N frames for
  *                     going back to (docs/design.md section 55); nothing goes back by itself
  *   --synctest N[,P]  for tests: rollback, and every P vertical blanks (default 120) the machine
@@ -142,6 +144,7 @@
 #include "options.h"
 #include "session.h"
 #include "snap_patch.h"
+#include "sysidle.h"
 #include "ui.h"
 #include "updates.h"
 #include "view.h"
@@ -1714,11 +1717,12 @@ static void gone_close(int code)
  * WIN_STUCK_MS it says so in the log, with what the window and the machine were last known to
  * be; again while it lasts; and when the thread goes on. It only reports: nothing is done about
  * the wait, and nothing is asked of SDL or the window from the watch's thread. */
-enum { WIN_LOOP, WIN_SWITCH, WIN_ACQUIRE, WIN_DRAW, WIN_SUBMIT, WIN_AFTER, WIN_STOP, WIN_CLOSE, WIN_STEPS };
+enum { WIN_LOOP, WIN_SWITCH, WIN_EARLIER, WIN_ACQUIRE, WIN_DRAW, WIN_SUBMIT, WIN_AFTER, WIN_STOP, WIN_CLOSE, WIN_STEPS };
 static const char *const win_step_name[WIN_STEPS] = {
     "between frames (events, the menu)",
     "starting the renderer again",
-    "waiting for the screen's next buffer (SDL_WaitAndAcquireGPUSwapchainTexture)",
+    "waiting for the graphics chip to finish an earlier frame (SDL_WaitForGPUSwapchain)",
+    "waiting for the screen's next buffer (SDL_AcquireGPUSwapchainTexture)",
     "drawing the frame",
     "handing the frame to the graphics driver (SDL_SubmitGPUCommandBuffer)",
     "after the frame (pictures read back)",
@@ -1732,7 +1736,7 @@ static SDL_AtomicInt win_turn;          /* turns of its loop */
 static SDL_AtomicInt win_flags_now;     /* the window's flags at the turn's start (SDL_WINDOW_*, the low 32 bits) */
 static SDL_AtomicInt win_watch_on;
 static SDL_Semaphore *win_watch_wake;   /* given once, as the game closes: the watch does not sleep its time out */
-static int win_stall_turn, win_stall_ms;    /* --stall-window */
+static int win_stall_turn, win_stall_ms, win_stall_part;   /* --stall-window */
 
 static void win_at(int step)
 {
@@ -1767,19 +1771,23 @@ static int win_watch(void *arg)
         Uint32 held = now - at;
         if (held < next_ms)
             continue;
+        char idle[80] = "";             /* section 85: Windows' own count, where there is one */
+        int idle_s = sys_idle_seconds();
+        if (idle_s >= 0)
+            SDL_snprintf(idle, sizeof idle, "; the system's last key or mouse input: %d s ago", idle_s);
         if (!told) {
             Uint32 fl = (Uint32)SDL_GetAtomicInt(&win_flags_now);
             int st = SDL_GetAtomicInt(&machine_state);
             logf_("window: its thread has not gone on for %.0f s: it is %s (turn %d of its loop, %d presents so far; "
-                  "the window: %s%s%s%s; the machine: vertical blank %d, %s)", (double)held / 1000.0, win_step_name[step],
+                  "the window: %s%s%s%s; the machine: vertical blank %d, %s%s)", (double)held / 1000.0, win_step_name[step],
                   SDL_GetAtomicInt(&win_turn), SDL_GetAtomicInt(&presents_n),
                   fl & SDL_WINDOW_FULLSCREEN ? "fullscreen" : "not fullscreen", fl & SDL_WINDOW_MINIMIZED ? ", minimized" : "",
                   fl & SDL_WINDOW_OCCLUDED ? ", covered" : "", fl & SDL_WINDOW_INPUT_FOCUS ? ", in front" : ", not in front",
                   SDL_GetAtomicInt(&frame_now),
-                  st != 1 ? "not running" : SDL_GetAtomicInt(&menu_pause) ? "held by the menu" : "running");
+                  st != 1 ? "not running" : SDL_GetAtomicInt(&menu_pause) ? "held by the menu" : "running", idle);
         } else {
-            logf_("window: its thread is still %s after %.0f s (the machine: vertical blank %d)", win_step_name[step],
-                  (double)held / 1000.0, SDL_GetAtomicInt(&frame_now));
+            logf_("window: its thread is still %s after %.0f s (the machine: vertical blank %d%s)", win_step_name[step],
+                  (double)held / 1000.0, SDL_GetAtomicInt(&frame_now), idle);
         }
         told = 1;
         next_ms = held < 10000 ? 10000 : held < 30000 ? 30000 : (held / 60000 + 1) * 60000;
@@ -3548,8 +3556,9 @@ int main(int argc, char **argv)
             frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
         else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");
         else if (!strcmp(a, "--stall-window") && v) {
-            if (sscanf(argv[++i], "%d:%d", &win_stall_turn, &win_stall_ms) != 2 || win_stall_turn < 1 || win_stall_ms < 1) {
-                fprintf(stderr, "vf4ft: --stall-window: TURN:MILLISECONDS\n");
+            if (sscanf(argv[++i], "%d:%d:%d", &win_stall_turn, &win_stall_ms, &win_stall_part) < 2 || win_stall_turn < 1 ||
+                win_stall_ms < 1) {
+                fprintf(stderr, "vf4ft: --stall-window: TURN:MILLISECONDS[:PART]\n");
                 return 2;
             }
         }
@@ -4535,10 +4544,25 @@ int main(int argc, char **argv)
         SDL_GPUTexture *sc = NULL;
         Uint32 w = 0, h = 0;
         compositor_busy(1);     /* the frame, to its end: it may never finish once the compositor has gone */
+        /* The wait for the screen's next buffer, in its two parts (section 85), each a step the
+         * watch can name: SDL_WaitAndAcquireGPUSwapchainTexture is these two in one call. First
+         * the frame handed over a few turns before must be finished by the graphics chip (SDL
+         * keeps no more than that many in flight); then the driver gives the next buffer, and SDL
+         * waits for it without an end. The second call would give no buffer where the first
+         * frame was not finished: after the first it is */
+        int stall = win_stall_ms && SDL_GetAtomicInt(&win_turn) == win_stall_turn;
+        win_at(WIN_EARLIER);
+        if (stall && win_stall_part == 1)
+            SDL_Delay((Uint32)win_stall_ms);    /* --stall-window T:MS:1 */
+        if (!SDL_WaitForGPUSwapchain(gpu, win)) {
+            logf_("wait for the swapchain failed: %s", SDL_GetError());
+            SDL_CancelGPUCommandBuffer(cmd);
+            break;
+        }
         win_at(WIN_ACQUIRE);
-        if (win_stall_ms && SDL_GetAtomicInt(&win_turn) == win_stall_turn)
+        if (stall && win_stall_part != 1)
             SDL_Delay((Uint32)win_stall_ms);    /* --stall-window */
-        if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &sc, &w, &h)) {
+        if (!SDL_AcquireGPUSwapchainTexture(cmd, win, &sc, &w, &h)) {
             logf_("acquire swapchain failed: %s", SDL_GetError());
             SDL_CancelGPUCommandBuffer(cmd);
             break;

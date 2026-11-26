@@ -7866,3 +7866,91 @@ launcher builds.
 
 **Not covered.** A real wheel turned by hand (the events were scripted),
 the Windows launcher run, a Cards tab with cards, the card editor.
+
+## 85. The wait for the screen's next buffer, in two steps (2026-11-26)
+
+**Why.** Section 83's watch did what it was made for. The reporter of
+issue 3 ran 0.5.24, in full screen from the start this time, and the
+picture froze again. His log says where: the window's thread stood
+"waiting for the screen's next buffer
+(`SDL_WaitAndAcquireGPUSwapchainTexture`)", the window in full screen and
+in front, the machine running. After 25.6 seconds it went on, at the
+moment the window lost the keyboard; it put one more picture on the
+screen and stood in the same call again, to the log's end.
+
+Beside the log before it, the two stops look like this:
+
+| | 0.5.23's log | 0.5.24's log |
+|---|---|---|
+| Full screen from | 3.9 s (Alt+Enter) | 0.6 s (the setting) |
+| The picture stopped at | 332 s | 337 s |
+| Presents by then | 19,890 | 20,180 |
+| The game was | in the middle of a round | at the attract mode's first logo |
+
+So it comes about five and a half minutes, or about 20,000 presents, into
+full screen, whatever the game is drawing. What happens then is not
+known, and this section does not make the freeze go away. It makes the
+next log say more.
+
+**What the call holds.** SDL's Vulkan code (SDL 3.4.20,
+`VULKAN_INTERNAL_AcquireSwapchainTexture`) waits twice in that one call,
+each time without an end: first for the frame handed over two presents
+before to be finished by the graphics chip (SDL keeps two frames in
+flight, a fence for each), then in `vkAcquireNextImageKHR` for the driver
+to give the next of the swapchain's images. The first is the chip not
+finishing a frame; the second is the screen's side not giving a buffer
+back. One step in the watch could not tell them apart.
+
+**What is done.**
+
+- `runtime/host/main.c`: the call is made as its two parts,
+  `SDL_WaitForGPUSwapchain` (the first wait) and
+  `SDL_AcquireGPUSwapchainTexture` (which finds the earlier frame
+  finished and goes on to the driver). Each is a step the watch names:
+  "waiting for the graphics chip to finish an earlier frame" and "waiting
+  for the screen's next buffer". The waits and their order are SDL's own,
+  as before.
+- `runtime/host/sysidle.c`: on Windows the watch's lines end with how
+  long the system has seen no key and no mouse (`GetLastInputInfo`).
+  Windows keeps that time for its own idle timers, and the reporter plays
+  with a gamepad: in the first log his last key was Alt+Enter, 328
+  seconds before the stop, and the second log has no key at all. That is
+  a guess to be tested and no more. SDL asks Windows to keep the display
+  on, and he sees a frozen picture, not a dark screen.
+- `--stall-window T:MS:1` holds the first of the two steps for a test
+  (without the `:1`, the second, as before).
+
+**The full screen itself.** The maintainer asked whether a windowed full
+screen could be made as a way round. The game's full screen is one
+already: it never sets a display mode, and SDL on Windows
+(`WIN_SetWindowFullscreen`) makes the window a borderless one on the
+monitor's own rectangle. SDL's Vulkan code neither asks for nor forbids
+the driver's exclusive full screen, so what a driver does with a window
+that covers the screen exactly is the driver's choice. A borderless
+window that is not the screen's exact size (a row taller, which other
+programs have used to stay an ordinary window to the system) was looked
+at and turned down: it makes no sense as a mode of a game. What is to
+follow is an exclusive full screen as a mode of its own, with the present
+one named for what it is, a borderless window.
+
+**Checked** (stage 22 from its snapshot at the game's own pace, in a
+headless desktop):
+
+- The Linux game held 5 s in the second step: the watch names the
+  screen's next buffer (`SDL_AcquireGPUSwapchainTexture`), and "went on
+  after 5.2 s". Held in the first step: it names the earlier frame
+  (`SDL_WaitForGPUSwapchain`), and "went on after 5.0 s". Not held: no
+  line of the watch, 607 presents in the ten seconds and the same line of
+  the pace as before the change.
+- The picture at the end is section 80's to the pixel in all three.
+- The Windows game under Proton, held in each step: the same lines, each
+  ending with the system's idle time, and the Linux game's picture to the
+  pixel.
+- The Windows game with SDL's Direct3D 12 driver (`--gpu d3d12`, the
+  software renderer's picture): held and gone on the same way, 60
+  presents a second after it, a clean exit.
+
+**Not covered.** Windows itself (the idle time under Wine is Wine's);
+the reporter's PC, where the freeze has to happen once more with this
+build for the log to say which of the two waits it is; a thread that
+really never comes back.
