@@ -36,8 +36,17 @@ const option_info options[OPT_COUNT] = {
                     "two cards. They change as the menu closes; a card in use in a game leaves once the game has "
                     "written it.", 0 },
     [OPT_FULLSCREEN] = { "Fullscreen",
-                         "Auto is fullscreen on the Steam Deck and in Steam's Big Picture, and a window "
-                         "elsewhere. F11 or Alt+Enter switches while the game runs.", 0 },
+                         "Borderless window covers the screen and leaves its resolution and refresh rate "
+                         "alone. Exclusive sets the screen to Screen mode while the game is fullscreen. "
+                         "Auto is Borderless window on the Steam Deck and in Big Picture, a window "
+                         "elsewhere. F11 or Alt+Enter switches in the game. The launcher is never "
+                         "Exclusive, so a mode that fails can be set back there.", 0 },
+    [OPT_SCREENMODE] = { "Screen mode",
+                         "For Fullscreen Exclusive: the resolution and refresh rate the game sets the "
+                         "screen to, from the display's own list. Auto is the desktop's. The game shows "
+                         "60 frames a second, which a mode at 60 or 120" NB "Hz shows evenly. On Linux "
+                         "with Wayland the screen keeps its mode, and the picture is scaled to "
+                         "it.", 0 },
     [OPT_WINDOW] = { "Window size",
                      "The game's window, at the picture's shape, in the usual screens' sizes (1366" NB "x" NB "768, "
                      "1920" NB "x" NB "1080, 2560" NB "x" NB "1080 at 21:9 and so on), smallest first. "
@@ -172,7 +181,14 @@ void options_screen(const window_room *room)
 
 static const char *const *gpu_names;
 static const char *const *display_names;
-static int gpu_n, display_n;
+static const char *const *mode_names;
+static int gpu_n, display_n, mode_n;
+
+void options_screen_modes(const char *const *names, int n)
+{
+    mode_names = names;
+    mode_n = n;
+}
 
 void options_gpu_names(const char *const *names, int n)
 {
@@ -300,7 +316,7 @@ static void card_change(settings *s, int side, int d)
 
 void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
 {
-    static const char *const fs[] = { "Auto", "Off", "On" };
+    static const char *const fs[] = { "Auto", "Off", "Borderless window", "Exclusive" };
     SDL_zerop(row);
     row->label = options[o].label;
     row->kind = UI_ROW_CHOICE;
@@ -357,6 +373,17 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         break;
     }
     case OPT_FULLSCREEN: SDL_strlcpy(buf, fs[s->fullscreen + 1], n); break;
+    case OPT_SCREENMODE: {
+        int w, h;
+        const char *at = SDL_strchr(s->screenmode, '@');
+        if (!s->screenmode[0] || !at || !settings_screenmode_parse(s->screenmode, &w, &h, NULL))
+            SDL_strlcpy(buf, "Auto", n);
+        else        /* one the display does not list: its nearest is taken, and the row says so */
+            SDL_snprintf(buf, n, "%d x %d, %s Hz%s", w, h, at + 1,
+                         !mode_n || name_in(mode_names, mode_n, s->screenmode) >= 0 ? "" : " (nearest)");
+        row->off = s->fullscreen != FULLSCREEN_EXCLUSIVE;
+        break;
+    }
     case OPT_WINDOW: {
         int w, h;
         settings_window_size(s, &screen, &w, &h);
@@ -438,7 +465,8 @@ void option_change(settings *s, int o, int d)
     case OPT_RAYQUALITY: s->rayquality = wrap(s->rayquality, d, RAYQUALITIES); break;
     case OPT_CARD1:
     case OPT_CARD2: card_change(s, o - OPT_CARD1, d); break;
-    case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 3) - 1; break;
+    case OPT_FULLSCREEN: s->fullscreen = wrap(s->fullscreen + 1, d, 4) - 1; break;
+    case OPT_SCREENMODE: name_change(s->screenmode, sizeof s->screenmode, mode_names, mode_n, d); break;
     case OPT_WINDOW: s->window = window_step(s, d); break;
     case OPT_PICTURE: s->picture = wrap(s->picture, d, PICTURES); break;
     case OPT_FILTER: s->filter = wrap(s->filter, d, 2); break;

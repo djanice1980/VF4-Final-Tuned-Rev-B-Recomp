@@ -106,9 +106,49 @@ int settings_steam_deck(void)
 int settings_fullscreen_wanted(const settings *s)
 {
     const char *tenfoot = SDL_getenv("SteamTenfoot");
-    return s->fullscreen == FULLSCREEN_ON ||
+    return s->fullscreen == FULLSCREEN_ON || s->fullscreen == FULLSCREEN_EXCLUSIVE ||
            (s->fullscreen == FULLSCREEN_AUTO &&
             (settings_steam_deck() != STEAM_DECK_NONE || (tenfoot && atoi(tenfoot))));
+}
+
+void settings_screenmode_text(char *buf, size_t n, int w, int h, float hz)
+{
+    char r[24];
+    size_t k;
+    SDL_snprintf(r, sizeof r, "%.2f", (double)hz);
+    k = strlen(r);
+    while (k && r[k - 1] == '0')        /* 60.00 is 60, 59.940 is 59.94 */
+        r[--k] = 0;
+    if (k && r[k - 1] == '.')
+        r[--k] = 0;
+    SDL_snprintf(buf, n, "%dx%d@%s", w, h, r);
+}
+
+int settings_screenmode_parse(const char *text, int *w, int *h, float *hz)
+{
+    char *end;
+    long a, b;
+    double c;
+    if (!text)
+        return 0;
+    a = strtol(text, &end, 10);
+    if (end == text || (*end != 'x' && *end != 'X'))
+        return 0;
+    text = end + 1;
+    b = strtol(text, &end, 10);
+    if (end == text || *end != '@')
+        return 0;
+    text = end + 1;
+    c = SDL_strtod(text, &end);
+    if (end == text || *end || a < 320 || b < 200 || a > 16384 || b > 16384 || c < 1 || c > 1000)
+        return 0;
+    if (w)
+        *w = (int)a;
+    if (h)
+        *h = (int)b;
+    if (hz)
+        *hz = (float)c;
+    return 1;
 }
 
 int settings_refresh_uneven(float hz)
@@ -473,8 +513,12 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "fullscreen")) {
                 if (!SDL_strcasecmp(v, "auto"))
                     ok = 1, s->fullscreen = FULLSCREEN_AUTO;
+                else if (!SDL_strcasecmp(v, "borderless"))
+                    ok = 1, s->fullscreen = FULLSCREEN_ON;
+                else if (!SDL_strcasecmp(v, "exclusive"))
+                    ok = 1, s->fullscreen = FULLSCREEN_EXCLUSIVE;
                 else if ((ok = choice(v, onoff_names, 2, &x)))
-                    s->fullscreen = x;
+                    s->fullscreen = x;      /* on: the borderless window, the only kind there was */
             } else if (!strcmp(name, "layout")) {
                 layout = atoi(v);
                 ok = layout >= 1;
@@ -504,6 +548,13 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
                     to[0] = 0;
                 else
                     settings_name_clean(to, size, v);
+            } else if (!strcmp(name, "screenmode")) {
+                int mw, mh;
+                float mhz;
+                if (!SDL_strcasecmp(v, "auto"))
+                    ok = 1, s->screenmode[0] = 0;
+                else if ((ok = settings_screenmode_parse(v, &mw, &mh, &mhz)))
+                    settings_screenmode_text(s->screenmode, sizeof s->screenmode, mw, mh, mhz);
             } else if (!strcmp(name, "scale")) {
                 x = atoi(v);
                 if ((ok = x >= 1 && x <= 4))
@@ -618,8 +669,15 @@ int settings_save(const settings *s, const char *path)
         SETTINGS_LAYOUT);
     PUT("coins = %s            # free play | arcade (coins; an operator's own coin setting is kept)\n",
         coins_names[s->coins]);
-    PUT("fullscreen = %s       # auto (on for the Steam Deck and Big Picture) | on | off\n",
-        s->fullscreen == FULLSCREEN_AUTO ? "auto" : onoff_names[s->fullscreen]);
+    PUT("fullscreen = %s       # auto (borderless on the Steam Deck and in Big Picture) | off | borderless\n"
+        "                         # (the game's window over the whole screen, the display as it is; \"on\"\n"
+        "                         # in older files) | exclusive (the game sets the display to screenmode\n"
+        "                         # while it is fullscreen; the launcher's own window never does)\n",
+        s->fullscreen == FULLSCREEN_AUTO ? "auto" : s->fullscreen == FULLSCREEN_EXCLUSIVE ? "exclusive"
+        : s->fullscreen == FULLSCREEN_ON ? "borderless" : "off");
+    PUT("screenmode = %s       # exclusive's display mode: auto (the desktop's own) or WIDTHxHEIGHT@HZ,\n"
+        "                         # as 1920x1080@60 (the display's nearest to it is taken)\n",
+        s->screenmode[0] ? s->screenmode : "auto");
     if (s->window == WINDOW_MAXIMIZED)
         PUT("window = maximized      # maximized (the default), or the window's height: auto (the largest of\n");
     else if (s->window == WINDOW_AUTO)

@@ -361,3 +361,43 @@ SDL_DisplayID displays_find(const char *name)
             return ids[i];
     return 0;
 }
+
+int screen_modes_list(SDL_DisplayID d, char names[][SCREENMODE_MAX], int max)
+{
+    int count = 0, n = 0;
+    if (!d)
+        d = SDL_GetPrimaryDisplay();
+    SDL_DisplayMode **modes = d ? SDL_GetFullscreenDisplayModes(d, &count) : NULL;
+    for (int i = 0; modes && i < count && n < max; i++) {
+        char t[SCREENMODE_MAX];
+        int seen = 0;
+        if (modes[i]->w < 640 || modes[i]->h < 480)
+            continue;
+        settings_screenmode_text(t, sizeof t, modes[i]->w, modes[i]->h, modes[i]->refresh_rate);
+        for (int k = 0; k < n; k++)     /* the same size and rate in another pixel format or density */
+            seen |= !SDL_strcmp(names[k], t);
+        if (!seen)
+            SDL_strlcpy(names[n++], t, SCREENMODE_MAX);
+    }
+    SDL_free(modes);
+    return n;
+}
+
+int screen_mode_find(SDL_DisplayID d, const char *text, SDL_DisplayMode *mode)
+{
+    int w, h;
+    float hz;
+    const SDL_DisplayMode *desk;
+    if (!d)
+        d = SDL_GetPrimaryDisplay();
+    if (!d)
+        return 0;
+    if (text && settings_screenmode_parse(text, &w, &h, &hz) &&
+        SDL_GetClosestFullscreenDisplayMode(d, w, h, hz, false, mode))
+        return 1;
+    desk = SDL_GetDesktopDisplayMode(d);
+    if (!desk)
+        return 0;
+    *mode = *desk;
+    return 1;
+}

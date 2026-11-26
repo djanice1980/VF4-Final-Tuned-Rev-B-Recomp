@@ -12,7 +12,7 @@
 enum {
     OPT_CREDITS, OPT_CARDS, OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE,
     OPT_SOUND, OPT_VOLUME, OPT_NETWORK, OPT_REGION, OPT_CARD1, OPT_CARD2, OPT_DISPLAY, OPT_GPU, OPT_LATENCY,
-    OPT_PACING, OPT_LIGHTING, OPT_SKIP, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY,
+    OPT_PACING, OPT_LIGHTING, OPT_SKIP, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_SCREENMODE,
     OPT_COUNT
 };
 
@@ -42,6 +42,10 @@ void options_screen(const window_room *room);
 /* the GPUs GPU goes through (Auto, then these; devices.h gpus_list's
  * names). The names stay the caller's */
 void options_gpu_names(const char *const *names, int n);
+
+/* the display modes Screen mode goes through (Auto, then these: devices.h screen_modes_list's, the
+ * chosen display's). The names stay the caller's */
+void options_screen_modes(const char *const *names, int n);
 
 /* GPU and Display: the whole name of the choice (a row cuts a long one
  * short), for the description panel's note: "NAME." (with "not found" or

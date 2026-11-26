@@ -7989,3 +7989,111 @@ the power plan's values have not been read anywhere yet);
 the reporter's PC, where the freeze has to happen once more with this
 build for the log to say which of the two waits it is; a thread that
 really never comes back.
+
+## 86. Fullscreen's two kinds: borderless window and exclusive (2026-11-26)
+
+**Why.** Issue 3's freeze comes in full screen only, and section 85 found
+what the game's full screen is: a borderless window on the monitor's own
+rectangle, with no display mode set. The maintainer decided three things.
+That kind is named for what it is, Borderless window. An exclusive full
+screen is added as a kind of its own. And the launcher never goes
+exclusive, so that a setting that breaks things can always be changed
+back there.
+
+**What exclusive is here.** SDL's: the game hands SDL a display mode
+(`SDL_SetWindowFullscreenMode`), and SDL sets the display to it while the
+window is fullscreen and has the keyboard, minimizes the window when
+another takes over, and gives the display its own mode back then and when
+the game leaves fullscreen or ends. It is not a promise about how the
+graphics driver presents. SDL's Vulkan code neither asks for nor forbids
+a driver's own exclusive presentation (section 85), and asking would mean
+changing SDL's source and shipping a build of it. So for issue 3 this is
+one more thing its reporter can try, not a known cure.
+
+What it gives every player is the screen at a mode of his choosing. The
+game shows 60 frames a second, and a screen that runs at 144 Hz shows
+them unevenly (section 62's notice); set to 120 or 60 Hz for the game, it
+shows them evenly.
+
+**What is done.**
+
+- Settings (`settings.c`): `fullscreen` is `auto`, `off`, `borderless` or
+  `exclusive`. `on`, which older files have, is read as `borderless`.
+  `screenmode` is `auto` (the desktop's own mode) or a mode as text,
+  `WIDTHxHEIGHT@HZ` (`1920x1080@60`, `1280x720@59.94`).
+- The rows (`options.c`), in the launcher and in the game's menu:
+  Fullscreen goes through Auto, Off, Borderless window, Exclusive. Under
+  it, Screen mode goes through Auto and the modes of the chosen display
+  (`devices.c`: `screen_modes_list`, from SDL's list, one of a kind, none
+  under 640 x 480); it is grayed unless Fullscreen is Exclusive.
+- The game (`main.c`, `fullscreen_kind`): before the window goes
+  fullscreen, or in place when it is, Exclusive gives SDL the display's
+  nearest mode to Screen mode (`screen_mode_find`; the desktop's own for
+  Auto and for a mode the display has nothing near), and anything else
+  gives it none. A mode SDL does not take ends as the borderless window,
+  and the log says why. It is done as the window is made, on F11 and
+  Alt+Enter (which switch between the window and the kind the setting
+  names), when the menu changes either row, and when Display moves a
+  fullscreen window to another display (the old display's mode is let go
+  first).
+- The log: the settings line says `fullscreen off`, `borderless` or
+  `exclusive` and the screen mode, and each switch to Exclusive says the
+  mode it took and on which display.
+- The launcher (`launcher.c`): its own window follows the game's
+  Fullscreen as before, as a borderless window for either kind. It lists
+  the display's modes for the row and never hands SDL one: the file has no
+  call of `SDL_SetWindowFullscreenMode`, and the checks count that. A
+  note under the Screen mode row says so.
+
+**The way back from a mode that fails.** Alt+Enter or F11 leaves
+fullscreen, Alt+Tab minimizes the window, and closing the game (Alt+F4)
+ends it: SDL gives the display its mode back in each case. Fullscreen is
+then set back in the launcher. There is no "keep this mode?" question
+that takes a change back by itself after some seconds.
+
+**Two faults found by looking at the pictures.** The launcher's page kept
+its rows in buffers for 14, and the Picture tab now has 15: the first
+row's value came out as garbage. They hold 16 now, by one constant with
+the table of rows. And the two texts with a note under them ran over the
+foot of the launcher's panel, which is smaller than the menu's: the texts
+are shorter, and the launcher's note stays with Screen mode alone.
+
+**Checked** (the development builds, each in a headless desktop, so that
+no real screen's mode is touched; stage 22 from its snapshot):
+
+- The Linux game: a window; `borderless`, and `on` as older files say it;
+  Exclusive with Screen mode Auto (1920 x 1080 at 60 Hz, the desktop's
+  own); Exclusive at 1280x720@60 (the swapchain is 1280 x 720); a mode no
+  display has (9000x9000@60: the desktop's own); a line that is no mode
+  (refused with the settings' usual message, Auto). All run to their end,
+  and the game's picture at the end is the window's to the pixel in each.
+- F11 out of Exclusive and back: the window, then the same mode again.
+- In the menu, from a window: Fullscreen to Borderless window, to
+  Exclusive, then Screen mode one step. Each took at once, and the
+  settings file afterwards has `fullscreen = exclusive` and the mode.
+- The launcher's Picture page, as pictures: both rows with their values,
+  Screen mode grayed for a window, the notes inside the panel.
+- The Windows game under Proton: a window, Borderless window, Exclusive
+  at the desktop's own mode and at 1280x720@60. There the display's mode
+  did change ("Display1 is now at 1280 x 720, 60.00 Hz"), the swapchain is
+  1280 x 720, the game ends cleanly, and the picture is the Linux game's
+  to the pixel in all four.
+
+**Known.**
+
+- On a Linux desktop with Wayland a program cannot set the screen's mode:
+  SDL draws the picture at the mode's size and the desktop scales it, and
+  the refresh rate stays the screen's. The row's text says so.
+- A settings file written by this build says `borderless` where older
+  builds wrote `on`. An older build that reads it does not know the word
+  and takes its default (Auto).
+- Stepping through the Fullscreen row in the game's menu passes
+  Exclusive on its way round, and the display's mode changes at that
+  step when Screen mode is not the desktop's.
+
+**Not covered.** Windows itself, and a real screen's mode really set: the
+checks ran on a headless desktop's virtual screen (Wayland's scaling for
+the Linux game, Wine's own mode setting on that screen for the Windows
+game). Two displays. A Steam Deck. The window minimized when another
+takes over. The Windows launcher's page (the Linux launcher's was looked
+at; the code is the same). The reporter's PC.

@@ -33,6 +33,7 @@ enum {
 #define PAD_WISH_MAX 160    /* the controller a player asks for (ui.h, ui_pad_wish_of), with its 0 */
 #define GPU_NAME_MAX 128    /* a GPU's name (Vulkan's), with its 0: a longer one is cut */
 #define DISPLAY_NAME_MAX 128    /* a display's name (SDL's), with its 0 */
+#define SCREENMODE_MAX 24       /* a display mode as text, "WIDTHxHEIGHT@HZ", with its 0 */
 
 typedef struct binding {
     char name[BIND_MAX][BIND_NAME];     /* SDL_GetScancodeName / SDL_GetGamepadStringForButton (or a
@@ -40,7 +41,11 @@ typedef struct binding {
 } binding;
 
 enum { COINS_FREE_PLAY, COINS_ARCADE };
-enum { FULLSCREEN_AUTO = -1, FULLSCREEN_OFF = 0, FULLSCREEN_ON = 1 };
+/* Fullscreen (docs/design.md section 86). ON is the borderless window: the game's window over the
+ * whole screen, the display left as it is ("on" in files older than the two kinds, "borderless"
+ * since). EXCLUSIVE: the game sets the display's mode (screenmode) while it is fullscreen. The
+ * launcher's own window is a borderless one for either */
+enum { FULLSCREEN_AUTO = -1, FULLSCREEN_OFF = 0, FULLSCREEN_ON = 1, FULLSCREEN_EXCLUSIVE = 2 };
 enum { PICTURE_4_3, PICTURE_16_10, PICTURE_16_9, PICTURE_21_9, PICTURE_STRETCH, PICTURES };
 /* the board's region: the country number the BIOS gives the game (its board
  * settings, docs/design.md section 41) */
@@ -98,6 +103,8 @@ typedef struct settings {
                              * choice. One not there at the start: Auto for that run, kept for the next */
     char display[DISPLAY_NAME_MAX]; /* the display the game opens on, by its name (devices.h); "" Auto:
                                      * where the system puts it. One not connected: Auto, kept as for gpu */
+    char screenmode[SCREENMODE_MAX]; /* Fullscreen Exclusive's display mode, "WIDTHxHEIGHT@HZ" (the
+                                      * display's nearest is taken); "" Auto: the desktop's own */
     int scale;              /* the GPU renderer's resolution: 1..4 times 640 x 480 */
     int sound;              /* 1 on */
     int volume;             /* 0..100 (%), the game's menu changes it while it plays */
@@ -138,10 +145,17 @@ extern const char *const settings_steam_deck_name[4];  /* "", "Steam Deck", "Ste
  * settings_steam_deck) */
 void settings_steam_deck_test(const char *product_file);
 
-/* 1 when the window is to be fullscreen: Fullscreen on, or auto on a Steam
+/* 1 when the window is to be fullscreen: Fullscreen at either of its kinds, or auto on a Steam
  * Deck or in Steam's Big Picture (SteamTenfoot=1). The game's window and the
- * launcher's both follow it */
+ * launcher's both follow it (the launcher's as a borderless window always) */
 int settings_fullscreen_wanted(const settings *s);
+
+/* A display mode as the settings write it, "WIDTHxHEIGHT@HZ" (1920x1080@60, 1280x720@59.94: HZ
+ * with at most two decimals). settings_screenmode_text writes one into buf (n bytes);
+ * settings_screenmode_parse reads one: 1 and its three numbers (each may be NULL), or 0 when
+ * the text is not one */
+void settings_screenmode_text(char *buf, size_t n, int w, int h, float hz);
+int settings_screenmode_parse(const char *text, int *w, int *h, float *hz);
 
 /* 1 when a screen refreshing hz times a second shows the game's 60
  * pictures a second unevenly: hz known and not within 1 Hz of a multiple of

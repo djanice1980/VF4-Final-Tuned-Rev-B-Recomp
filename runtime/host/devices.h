@@ -79,4 +79,16 @@ int displays_list(char names[][DISPLAY_NAME_MAX], SDL_DisplayID *ids, int max);
 /* the display of that name now, or 0 (not connected, or "": Auto) */
 SDL_DisplayID displays_find(const char *name);
 
+#define SCREEN_MODES_MAX 96
+/* The display modes an exclusive fullscreen can set on display d (0: the primary one), as
+ * SDL lists them, the largest first (docs/design.md section 86): their number (at most max),
+ * each as the settings write it ("WIDTHxHEIGHT@HZ", settings.h), one of a kind, none under
+ * 640 x 480 */
+int screen_modes_list(SDL_DisplayID d, char names[][SCREENMODE_MAX], int max);
+
+/* the display mode an exclusive fullscreen on d (0: the primary one) takes for the settings'
+ * text: the display's nearest to it; for "" (Auto), for a text that is no mode and for one
+ * the display has nothing near, the desktop's own. 0 when SDL cannot say (mode is not set) */
+int screen_mode_find(SDL_DisplayID d, const char *text, SDL_DisplayMode *mode);
+
 #endif

@@ -2108,6 +2108,7 @@ static int menu_on, bar_on, ov_dirty;   /* bar_on: the operator bar's buttons (A
 static Uint64 bar_until;                /* the bar is drawn until then (ms); its buttons work until it closes */
 static unsigned pad_hold;               /* buttons held as the menu closed: not the game's until let go */
 static int live_fullscreen;
+static char live_screenmode[SCREENMODE_MAX];    /* the Screen mode the window was given (section 86) */
 static int live_window, live_picture;   /* the Window size and Picture the window has */
 static int window_later;                /* Window size changed in fullscreen: it applies as that ends */
 static int to_launcher;                 /* the menu's Open the launcher: the game quits for it */
@@ -2608,12 +2609,65 @@ static SDL_DisplayID display_wanted(void)
 /* fullscreen on or off: on goes to Display's display when it is connected
  * (SDL takes a window centered on a display as one for its fullscreen,
  * Wayland's too), else to the one the window is on */
+static void fullscreen_kind(SDL_Window *w);
+
 static void fullscreen_to(SDL_Window *w, bool on)
 {
     SDL_DisplayID want = on ? display_wanted() : 0;
     if (want)
         SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want));
+    if (on)
+        fullscreen_kind(w);     /* before the switch, or in place when it is fullscreen already */
     SDL_SetWindowFullscreen(w, on);
+}
+
+/* Fullscreen's kind (docs/design.md section 86), given to SDL before the window goes fullscreen or
+ * while it is. Exclusive: the display mode the game wants (Screen mode: the display's nearest to
+ * it, or the desktop's own for Auto), which SDL sets the display to while the window is fullscreen
+ * and has the keyboard, and takes back when it leaves or is minimized. Anything else: no mode,
+ * the borderless window, which leaves the display as it is. A mode SDL does not take: the
+ * borderless window, and the log says why. The game's window only: the launcher never asks for a
+ * mode, so that one that leaves the screen dark can be set back there */
+static void fullscreen_kind(SDL_Window *w)
+{
+    SDL_DisplayMode mode;
+    SDL_DisplayID d = display_wanted();
+    SDL_strlcpy(live_screenmode, cfg_.screenmode, sizeof live_screenmode);
+    if (cfg_.fullscreen != FULLSCREEN_EXCLUSIVE) {
+        SDL_SetWindowFullscreenMode(w, NULL);
+        return;
+    }
+    if (!d)
+        d = SDL_GetDisplayForWindow(w);
+    const char *dn = d ? SDL_GetDisplayName(d) : NULL;
+    const char *asked = cfg_.screenmode[0] ? cfg_.screenmode : "Auto, the desktop's own";
+    if (!screen_mode_find(d, cfg_.screenmode, &mode)) {
+        logf_("fullscreen: exclusive: no display mode for %s (%s): a borderless window instead", dn ? dn : "the display",
+              SDL_GetError());
+        SDL_SetWindowFullscreenMode(w, NULL);
+    } else if (!SDL_SetWindowFullscreenMode(w, &mode)) {
+        logf_("fullscreen: exclusive: %d x %d at %.2f Hz is not taken (%s): a borderless window instead", mode.w, mode.h,
+              mode.refresh_rate, SDL_GetError());
+        SDL_SetWindowFullscreenMode(w, NULL);
+    } else {
+        logf_("fullscreen: exclusive, %d x %d at %.2f Hz on %s (Screen mode %s)", mode.w, mode.h, mode.refresh_rate,
+              dn ? dn : "?", asked);
+    }
+}
+
+/* Screen mode's list for the menu: the display modes of Display's display (Auto, or one not
+ * connected: the one the window is on) */
+static void modes_refresh(void)
+{
+    static char names[SCREEN_MODES_MAX][SCREENMODE_MAX];
+    static const char *list[SCREEN_MODES_MAX];
+    SDL_DisplayID d = display_wanted();
+    if (!d && main_win)
+        d = SDL_GetDisplayForWindow(main_win);
+    int n = screen_modes_list(d, names, SCREEN_MODES_MAX);
+    for (int i = 0; i < n; i++)
+        list[i] = names[i];
+    options_screen_modes(list, n);
 }
 
 /* the room for the window's picture on w's screen (before there is a
@@ -2718,8 +2772,10 @@ static void display_to_setting(SDL_Window *w)
     }
     if (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN) {
         SDL_strlcpy(live_display, cfg_.display, sizeof live_display);
+        SDL_SetWindowFullscreenMode(w, NULL);   /* an exclusive mode is the display's it left: the new one's below */
         SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(want));
         SDL_SyncWindow(w);
+        fullscreen_kind(w);
         logf_("display: fullscreen on %s", cfg_.display);
         return;
     }
@@ -2840,6 +2896,7 @@ static void menu_show_as(int notice)
     options_gpu_names(gpu_names, gpus_n);
     displays_refresh(0);
     options_display_names(disp_list, disp_n);
+    modes_refresh();
     menu_run r;
     r.start = start_cfg;
     r.sound = audio != NULL;
@@ -3117,13 +3174,15 @@ static int menu_do(int a)
             display_to_setting(main_win);       /* another screen: its room for Window size too */
             window_room room = screen_room(main_win);
             options_screen(&room);
+            modes_refresh();                    /* and its modes for Screen mode */
         }
         if (cfg_.window != live_window ||
             settings_window_width(cfg_.picture, PIC_H) != settings_window_width(live_picture, PIC_H))
             window_to_setting(main_win, 1);     /* the size, or the new picture's shape */
         live_picture = cfg_.picture;
-        if (cfg_.fullscreen != live_fullscreen) {
-            live_fullscreen = cfg_.fullscreen;
+        if (cfg_.fullscreen != live_fullscreen || SDL_strcmp(cfg_.screenmode, live_screenmode)) {
+            live_fullscreen = cfg_.fullscreen;  /* the kind too, and Exclusive's mode (section 86) */
+            SDL_strlcpy(live_screenmode, cfg_.screenmode, sizeof live_screenmode);
             fullscreen_to(main_win, fullscreen_wanted());
         }
         if (audio)
@@ -3789,6 +3848,7 @@ int main(int argc, char **argv)
         SDL_snprintf(backup_path, sizeof backup_path, "%sbackup.bin", user_dir);
         start_cfg = cfg_;
         live_fullscreen = cfg_.fullscreen;
+        SDL_strlcpy(live_screenmode, cfg_.screenmode, sizeof live_screenmode);
         SDL_memcpy(card_chosen, cfg_.card, sizeof card_chosen);
     }
     }
@@ -3799,13 +3859,15 @@ int main(int argc, char **argv)
     logf_("settings: renderer %s x%d, coins %s, fullscreen %s, picture %s, filter %s, sound %s (volume %d%%), cards %s, "
           "network %s, region %s, lighting %s, frame skip %s, ambient occlusion %s, ray tracing %s (quality %s)",
           cfg_.renderer == RENDERER_GPU ? "gpu" : "software", cfg_.scale,
-          cfg_.coins == COINS_ARCADE ? "arcade" : "free play", fullscreen ? "on" : "off",
+          cfg_.coins == COINS_ARCADE ? "arcade" : "free play",
+          !fullscreen ? "off" : cfg_.fullscreen == FULLSCREEN_EXCLUSIVE ? "exclusive" : "borderless",
           settings_picture_name(cfg_.picture), cfg_.filter == FILTER_SHARP ? "sharp" : "smooth",
           silent ? "off" : "on", cfg_.volume, cfg_.cards ? "on" : "off", cfg_.network ? "on" : "off",
           settings_region_text[cfg_.region], settings_lighting_name[cfg_.lighting], settings_skip_name[cfg_.skip],
           settings_occlusion_name[cfg_.occlusion], settings_raytracing_name[cfg_.raytracing],
           settings_rayquality_name[cfg_.rayquality]);
-    logf_("settings: gpu %s, display %s", cfg_.gpu[0] ? cfg_.gpu : "auto", cfg_.display[0] ? cfg_.display : "auto");
+    logf_("settings: gpu %s, display %s, screen mode %s", cfg_.gpu[0] ? cfg_.gpu : "auto",
+          cfg_.display[0] ? cfg_.display : "auto", cfg_.screenmode[0] ? cfg_.screenmode : "auto");
     /* the board's clock (section 77): this PC's, but for --clock and the artwork's run (art.h:
      * its scenes are found by their vertical blanks, in the run the fixed date gives) */
     if (clock_arg) {
@@ -3918,6 +3980,8 @@ int main(int argc, char **argv)
         if (!win) { logf_("SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
         main_win = win;
         SDL_SetWindowMinimumSize(win, MENU_MIN_W, MENU_MIN_H);  /* the menu always fits */
+        if (fullscreen)
+            fullscreen_kind(win);   /* Exclusive's display mode (section 86); borderless: nothing to do */
         logf_("window: %d x %d pixels (Window size %s, %s screen %d x %d)%s", ww, wh,
               cfg_.window == WINDOW_MAXIMIZED ? "Maximized" : cfg_.window == WINDOW_AUTO ? "Auto" : "set",
               want ? "Display's" : "primary", room.w, room.h,
@@ -4093,6 +4157,7 @@ int main(int argc, char **argv)
                     window_room room = screen_room(win);
                     options_display_names(disp_list, disp_n);
                     options_screen(&room);
+                    modes_refresh();
                     ov_dirty = 1;
                 }
                 break;

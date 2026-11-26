@@ -1745,11 +1745,13 @@ enum { T_GAME, T_CARDS, T_PICTURE, T_SOUND, T_PAD, T_KEYS, T_COUNT };
 static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
-static const int tab_rows[T_COUNT][15] = {
+#define ST_ROWS 16      /* a tab's rows at most, with the -1 that ends them */
+static const int tab_rows[T_COUNT][ST_ROWS] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, OPT_LATENCY, -1 },
     [T_CARDS] = { -1 },
-    [T_PICTURE] = { OPT_FULLSCREEN, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_GPU,
-                    OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_LIGHTING, OPT_SKIP, OPT_PACING, -1 },
+    [T_PICTURE] = { OPT_FULLSCREEN, OPT_SCREENMODE, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER,
+                    OPT_GPU, OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_LIGHTING, OPT_SKIP,
+                    OPT_PACING, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEYS] = { -1 },
 };
@@ -2390,9 +2392,13 @@ static void follow_fullscreen(const char *when)
     if (want == now)
         return;
     now = want;
-    say("window: %s (%s; the game's Fullscreen is %s)", want ? "fullscreen" : "a window", when,
-        s.fullscreen == FULLSCREEN_AUTO ? "auto" : s.fullscreen == FULLSCREEN_ON ? "on" : "off");
+    say("window: %s (%s; the game's Fullscreen is %s)", want ? "fullscreen, a borderless window" : "a window", when,
+        s.fullscreen == FULLSCREEN_AUTO ? "auto" : s.fullscreen == FULLSCREEN_ON ? "borderless"
+        : s.fullscreen == FULLSCREEN_EXCLUSIVE ? "exclusive, which is the game's alone" : "off");
     win_full = want;
+    /* Never with a display mode (SDL_SetWindowFullscreenMode is not called anywhere in this file):
+     * the launcher's fullscreen is the borderless window whatever the game's is, so that an
+     * exclusive mode that leaves the screen dark can be set back here (docs/design.md section 86) */
     SDL_SetWindowFullscreen(win, want);
 }
 
@@ -2545,10 +2551,27 @@ static const char *renderer_note(int o, char *buf, size_t n)
     return buf;
 }
 
+/* Screen mode's list: the display modes of the display Display names (Auto, or one not connected:
+ * the one this window is on), for the row. Listed only: this window never takes one */
+static void modes_refresh(void)
+{
+    static char names[SCREEN_MODES_MAX][SCREENMODE_MAX];
+    static const char *list[SCREEN_MODES_MAX];
+    SDL_DisplayID d = displays_find(st.display);
+    if (!d && win)
+        d = SDL_GetDisplayForWindow(win);
+    int n = screen_modes_list(d, names, SCREEN_MODES_MAX);
+    for (int i = 0; i < n; i++)
+        list[i] = names[i];
+    options_screen_modes(list, n);
+}
+
 /* Left or Right on a Settings row; Renderer and GPU apply to this window at once */
 static void st_change(int o, int d)
 {
     option_change(&st, o, d);
+    if (o == OPT_DISPLAY)
+        modes_refresh();        /* another display's modes */
     if (o == OPT_RENDERER || o == OPT_GPU)
         renderer_follow(&st, "Settings");
 }
@@ -3554,6 +3577,7 @@ static void devices_for_options(void)
     for (int i = 0; i < n; i++)
         list[i] = names[i];
     options_display_names(list, n);
+    modes_refresh();
 }
 
 static void draw_settings(void)
@@ -3602,8 +3626,8 @@ static void draw_settings(void)
         /* eight rows show under the heads; the rest scroll */
         ctl_draw(&st, &ctl, 40, ry, LW - 80, rh, 33);
     } else {
-        ui_row rows[14];
-        char vals[14][160];
+        ui_row rows[ST_ROWS];
+        char vals[ST_ROWS][160];
         int n = tab_count();
         for (int i = 0; i < n; i++)
             option_row(&st, tab_rows[st_tab][i], &rows[i], vals[i], sizeof vals[i]);
@@ -3615,6 +3639,10 @@ static void draw_settings(void)
         if ((o == OPT_GPU || o == OPT_SCALE || o == OPT_OCCLUSION || o == OPT_RAYTRACING || o == OPT_RAYQUALITY) &&
             st.renderer != RENDERER_GPU)
             note = "The Software renderer does not use it.";     /* as the game's menu says */
+        else if (o == OPT_SCREENMODE && st.fullscreen != FULLSCREEN_EXCLUSIVE)
+            note = "Only Fullscreen Exclusive uses it.";
+        else if (o == OPT_SCREENMODE && st.fullscreen == FULLSCREEN_EXCLUSIVE)
+            note = "The game's alone: the launcher stays borderless.";
         else if (renderer_note(o, whole, sizeof whole))
             note = whole;           /* what this window draws with now (section 53) */
         else if (option_note(&st, o, whole, sizeof whole))

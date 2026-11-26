@@ -242,7 +242,8 @@ game's menu has **Open the launcher** ([details](docs/design.md#29-start-the-gam
 (its wheel moves through a list's rows),
 the keyboard (arrows, Enter, Esc; Q and E switch tabs) and a gamepad
 (D-pad, A, B; LB and RB switch tabs) all work it. Its window starts
-maximized (and fullscreen when the game's Fullscreen setting says so);
+maximized (and fullscreen, as a borderless window always, when the game's
+Fullscreen setting says so);
 take it out of maximized and it starts as a plain window from then on.
 The game's window starts maximized too, unless Fullscreen is on or Window
 size names a size
@@ -584,8 +585,19 @@ frame (the game keeps its full speed and 30 pictures a second are drawn).
 With the GPU renderer the graphics chip also draws the reflection a stage
 with water has, which the processor drew before
 ([design.md s78](docs/design.md#78-a-stages-reflection-drawn-by-the-graphics-chip-2026-11-25)).
+Fullscreen has two kinds. Borderless window is the game's window over the
+whole screen, with the screen left at its own resolution and refresh rate.
+Exclusive sets the screen to the Screen mode chosen under it (a resolution
+and a refresh rate from the display's own list; Auto is the desktop's)
+while the game is fullscreen, and gives it back when the game leaves
+fullscreen or another window takes over. The game shows 60 frames a
+second, so a mode at 60 or 120 Hz shows them evenly on a screen that
+otherwise runs at 144. The launcher's own window is never Exclusive: if a
+mode leaves the screen dark, close the game (Alt+F4) and set Fullscreen
+back in the launcher
+([design.md s86](docs/design.md#86-fullscreens-two-kinds-borderless-window-and-exclusive-2026-11-26)).
 Picture, window size,
-scaling, fullscreen, display, renderer, GPU, internal resolution and volume
+scaling, fullscreen, screen mode, display, renderer, GPU, internal resolution and volume
 change at once (the launcher's window follows Renderer and GPU too). A GPU
 the game has drawn on stays open in the game until it quits, also after
 you choose another
@@ -667,8 +679,10 @@ with only a gamepad, the menu's Operator test menu does the same.
 
 - `settings.txt`: what the launcher's Settings page writes, and the game
   reads when it starts. One "name = value" a line: `coins` (free play |
-  arcade), `fullscreen` (auto | on | off; auto is on for the Steam Deck and
-  Big Picture; the launcher's window follows it too), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
+  arcade), `fullscreen` (auto | off | borderless | exclusive; auto is borderless on the Steam Deck and in
+  Big Picture; older files say on for borderless; the launcher's window follows it, as a borderless one
+  always), `screenmode` (auto | WIDTHxHEIGHT@HZ, as 1920x1080@60: the display mode Exclusive sets; auto is
+  the desktop's own), `picture` (4:3 | 16:10 | 16:9 | 21:9 | stretch; the wide
   ones keep the cabinet's screen in the middle, unstretched, and draw what
   the camera sees past its sides; default 4:3, and 16:10 on a Steam
   Deck), `window` (maximized | auto | the window's height in pixels;
