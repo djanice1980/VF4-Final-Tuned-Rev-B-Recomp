@@ -3838,6 +3838,16 @@ int main(int argc, char **argv)
         return 1;
     }
     logf_("video driver: %s", SDL_GetCurrentVideoDriver());
+    {
+        /* section 85: what this PC does when left alone, which a player with a gamepad alone is
+         * to Windows. SDL asks the system to keep the screen saver and the display's switching
+         * off away while the game runs (SDL_DisableScreenSaver, its default): said here too */
+        char alone[320];
+        sys_idle_describe(alone, sizeof alone);
+        if (alone[0])
+            logf_("this PC left alone: %s; kept away by the game while it runs (SDL): %s", alone,
+                  SDL_ScreenSaverEnabled() ? "no" : "yes");
+    }
     ui_pad_logger(log_line);
     bindings_compile();     /* key names need the video subsystem */
     for (int w = 0; w < 2; w++)         /* the first before the second: the order they connect in */

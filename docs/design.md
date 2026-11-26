@@ -7917,8 +7917,38 @@ back. One step in the watch could not tell them apart.
   seconds before the stop, and the second log has no key at all. That is
   a guess to be tested and no more. SDL asks Windows to keep the display
   on, and he sees a frozen picture, not a dark screen.
+- The log's start has what Windows does with a PC left alone (`this PC
+  left alone:`): mains or battery, the screen saver and its wait, the
+  power plan's time to switch the display off (read through
+  `powrprof.dll`, loaded for it), and whether the game keeps them away.
+  It does: SDL asks for that by default when its video starts
+  (`SDL_DisableScreenSaver`, which on Windows is
+  `SetThreadExecutionState` with `ES_DISPLAY_REQUIRED` on the window's
+  own thread), and the line says what SDL answers.
 - `--stall-window T:MS:1` holds the first of the two steps for a test
   (without the `:1`, the second, as before).
+
+**A second opinion, looked into.** The maintainer passed on an analysis
+that reads the time as Windows' five-minute idle timers and names four
+things to do. Against the code and the two logs:
+
+- *Keep the screen saver and display sleep away through SDL.* Done
+  already, by SDL's default (above). The new line shows whether it holds
+  on the reporter's PC and what his timers are.
+- *Intel's panel self refresh; another present mode.* Panel self refresh
+  is the laptop's own panel's, and he plays on a television with the
+  laptop's screen off. The game always presents with vertical sync
+  (SDL's default); another mode would be a trial, not made here.
+- *A counter wrapping or a store running out at some frame count.* The
+  two stops are not at one count (19,890 and 20,180 presents), and
+  neither is near a switch to full screen (3.9 s into one run, the
+  setting in the other). A graphics driver's reset in Windows' own
+  record (Event Viewer, event 4101) at that time would say much: asked
+  of the reporter.
+- *An end to the wait, and a new swapchain when it passes.* SDL's Vulkan
+  code gives `vkAcquireNextImageKHR` no end and has no setting for one,
+  so this needs SDL's own source changed and a build of it shipped. Left
+  until the next log says which wait it is.
 
 **The full screen itself.** The maintainer asked whether a windowed full
 screen could be made as a way round. The game's full screen is one
@@ -7949,8 +7979,13 @@ headless desktop):
 - The Windows game with SDL's Direct3D 12 driver (`--gpu d3d12`, the
   software renderer's picture): held and gone on the same way, 60
   presents a second after it, a clean exit.
+- The line about the PC left alone, under Proton: "on mains; no screen
+  saver set; the display's switching off not known; kept away by the
+  game while it runs (SDL): yes". Wine does not give a power plan's
+  values. The Linux game writes no such line.
 
-**Not covered.** Windows itself (the idle time under Wine is Wine's);
+**Not covered.** Windows itself (the idle time under Wine is Wine's, and
+the power plan's values have not been read anywhere yet);
 the reporter's PC, where the freeze has to happen once more with this
 build for the log to say which of the two waits it is; a thread that
 really never comes back.
