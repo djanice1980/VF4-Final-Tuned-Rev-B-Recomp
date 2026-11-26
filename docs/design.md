@@ -8359,3 +8359,53 @@ without a picture of the arcade game beside it.
 
 **Not covered.** The cave from other camera angles and in its intro.
 The Windows game.
+
+## 91. A fence behind the fighters fades too: the game's own numbers (2026-11-26)
+
+**The question.** The maintainer saw the foreground fence turn
+transparent with the fighters in a corner, as it should, and the fence
+behind them on the corner's far side turn transparent as well. It may
+have been the cage. If the arcade game does the same, it is to stay.
+
+**What the fade is.** Section 64's light: the game's light 14
+(`extra_light_spot_set` in the decompilation), a spot that stands behind
+the camera and looks along the view, whose amount is taken from the alpha
+of a stage's fences and near objects while they are drawn. Nothing in it
+knows where the fighters stand. It fades what is near the camera and near
+the middle of the view.
+
+**Its numbers on the cage** (read from the game's memory in the headless
+game, with two fighters walked to the ring's edge and along it, at six
+moments; they were the same at all six):
+
+- The light stands 5.00 units behind the eye and 0.21 above it.
+- Its amount is full up to 8.40 units from itself and gone at 8.80: on
+  the view's axis, from 3.40 to 3.80 units in front of the eye.
+- Its cone is full within 14.1 degrees of the axis and gone beyond 22.5
+  (on Sarah's stage section 64 found 7.6 and 19.2).
+- The camera stood 3.45 units from its target, the point between the
+  fighters, each time: its closest.
+
+So the zone that fades ends a third of a unit behind the middle of the
+fighters. A fence they stand against is partly inside it, and in a corner
+the fence at their side, which runs towards the camera, is inside it for
+all of its near part. That is what was seen.
+
+**Why this is taken for the arcade's own behavior.** The numbers are the
+game's, sent to the graphics hardware as they are; the renderer here
+works the amount out for each corner of a polygon, as that hardware's
+transform and lighting chip does. The Flycast emulator's code for the
+chip, read for section 89, takes the same record the same way: the fall
+with distance, then the cone, then the amount off the alpha. No picture
+of the real game in a corner was at hand to lay beside it.
+
+**Checked.** Pictures of those six moments (the software picture): the
+far fence is whole behind fighters who stand in the ring, and thins a
+little in the middle of the view where they stand right against it.
+Translucent polygons do not write depth in the GPU renderer and are
+sorted from the back by triangle, so a faded fence in front cannot hide
+one behind it.
+
+**Nothing is changed.** A fade that only took what stands in front of
+the nearer fighter would be a departure from the game, to be made only if
+it is wanted.
