@@ -1,3 +1,3 @@
 """The builder: from the player's MAME set to an installed game (docs/design.md, section 8)."""
 
-VERSION = "0.5.24-dev"
+VERSION = "0.5.24"
