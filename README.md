@@ -238,7 +238,8 @@ Update card when the builder is newer than the game it built, and **Start
 the game directly**: with it on, the launcher starts hidden, opens the
 game and closes with it, so its Steam entry plays the game; it still shows
 itself when it is needed (nothing built, an update, an error), and the
-game's menu has **Open the launcher** ([details](docs/design.md#29-start-the-game-directly-2026-11-13)). The mouse,
+game's menu has **Open the launcher** ([details](docs/design.md#29-start-the-game-directly-2026-11-13)). The mouse
+(its wheel moves through a list's rows),
 the keyboard (arrows, Enter, Esc; Q and E switch tabs) and a gamepad
 (D-pad, A, B; LB and RB switch tabs) all work it. Its window starts
 maximized (and fullscreen when the game's Fullscreen setting says so);

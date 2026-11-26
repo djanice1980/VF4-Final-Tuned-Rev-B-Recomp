@@ -4021,10 +4021,37 @@ static void mouse_event(SDL_Event *e)
     }
 }
 
+/* A step of the mouse wheel moves the choice of the list on show one row, as in the game's menu
+ * (menu.c's MENU_MOUSE_WHEEL), and the list scrolls with its choice: Settings' rows, a controls
+ * tab's, the cards, the card editor's. It does not wrap, as the keys do: a wheel turned on stops
+ * at the list's end. Nothing while a note is up or a controls cell waits for its key. The steps
+ * are SDL's whole ones (integer_y): a touchpad's many small moves add up to a row, not a row each. */
+static void wheel_event(const SDL_Event *e)
+{
+    int steps = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.integer_y : e->wheel.integer_y;
+    int d = -steps;                             /* up the list for a turn away */
+    if (!d || pop)
+        return;
+    if (page == P_SETTINGS && controls_tab()) {
+        if (!ctl.capturing)
+            ctl_move(&ctl, d, 0);
+    } else if (page == P_SETTINGS) {
+        int n = cards_tab() ? cp_n : tab_count();
+        if (n > 0)
+            st_row = SDL_clamp(st_row + d, 0, n - 1);
+        if (cards_tab())
+            cp_focus_fix();
+    } else if (page == P_EDIT && ced_rows(&ed) > 0) {
+        ed.row = SDL_clamp(ed.row + d, 0, ced_rows(&ed) - 1);
+    }
+}
+
 /* an event to the page (or the note over it) */
 static void route_event(SDL_Event *e)
 {
-    if (e->type == SDL_EVENT_MOUSE_MOTION || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+    if (e->type == SDL_EVENT_MOUSE_WHEEL)
+        wheel_event(e);
+    else if (e->type == SDL_EVENT_MOUSE_MOTION || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
         mouse_event(e);
     else if (pop && text_pop())
         text_event(e);
@@ -4039,8 +4066,9 @@ static void route_event(SDL_Event *e)
 }
 
 /* --shot-keys: keys (SDL's names, as "Down" or "Return"), text:WORDS (typed;
- * "_" a space) and click:X,Y (the page's units), one after another, each
- * after a frame is drawn, before the picture */
+ * "_" a space), click:X,Y (the page's units) and wheel:up or wheel:down (one
+ * step of the mouse wheel), one after another, each after a frame is drawn,
+ * before the picture */
 static void shot_keys_run(const char *list)
 {
     static char buf[2048];
@@ -4072,6 +4100,14 @@ static void shot_keys_run(const char *list)
             e.button.y = ly;
             e.button.windowID = SDL_GetWindowID(win);
             mouse_event(&e);
+        } else if (!SDL_strcmp(tok, "wheel:up") || !SDL_strcmp(tok, "wheel:down")) {
+            say("--shot-keys: the wheel, a step %s", tok + 6);
+            e.type = SDL_EVENT_MOUSE_WHEEL;
+            e.wheel.windowID = SDL_GetWindowID(win);
+            e.wheel.y = tok[6] == 'u' ? 1.0f : -1.0f;       /* away from the hand is up */
+            e.wheel.integer_y = (Sint32)e.wheel.y;
+            e.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+            route_event(&e);
         } else {
             SDL_Keycode k = SDL_GetKeyFromName(tok);
             if (k == SDLK_UNKNOWN) {

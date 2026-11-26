@@ -7817,3 +7817,52 @@ stage 22 from its snapshot):
 it lasts are checked, the end is the same code); Windows itself; the
 reporter's PC, where the freeze has to happen once more with this build
 for the log to say where.
+
+## 84. The mouse wheel in the launcher (2026-11-26)
+
+**Why.** The maintainer noticed that the scroll wheel does not scroll in
+the launcher. Its Settings have lists longer than their panel: the Picture
+tab, and the two controls tabs.
+
+**The cause.** The game's menu takes the wheel (a turn moves the choice,
+`menu.c`); the launcher never did. Its router handed the mouse's moves and
+clicks to the page's mouse handling and everything else to the keys'
+handlers, which drop what is not a key or a button. Shown by a test before
+anything was changed: three steps of the wheel left the Picture tab and
+the Gamepad tab as they were, where three presses of Down moved the
+choice.
+
+**What is done** (`runtime/launcher/launcher.c`):
+
+- `wheel_event`: a step of the wheel moves the choice of the list on show
+  one row, as in the game's menu, and the list scrolls with its choice:
+  Settings' rows, a controls tab's, the cards, the card editor's. It does
+  not wrap as the keys do: a wheel turned on stops at the list's end.
+  Nothing while a note is up or a controls cell waits for its key.
+- The steps are SDL's whole ones (`integer_y`), so a touchpad's many small
+  moves add up to a row and are not a row each.
+- `--shot-keys` takes `wheel:up` and `wheel:down`, for the test.
+
+**Checked** (the Linux launcher in a headless desktop, on the Picture tab
+and the Gamepad tab): three steps down give the picture of three presses
+of Down, to the pixel; 40 steps and 41 give one picture, the list's end;
+40 down and 40 up, and a step up at the start, give the page as it was.
+The Cards tab without cards takes a step and nothing happens. The Windows
+launcher builds.
+
+**Known.**
+
+- The game's menu takes one row for every wheel event, whatever its size:
+  on a touchpad its choice moves fast. Not changed here.
+- These test pictures are drawn by SDL's software renderer
+  (`SDL_RENDER_DRIVER=software`): with SDL's OpenGL renderer, which a test
+  picture uses otherwise, the Picture tab's picture comes out black on the
+  development PC, perhaps because that tab asks Vulkan for the graphics
+  chips. Section 79's check of the launcher's page had such a black
+  picture and rested on the file the launcher saved. It was made again
+  with the software renderer: for a settings file of an earlier layout
+  that says `cpu` the Lighting row shows GPU, and for one of layout 3,
+  CPU.
+
+**Not covered.** A real wheel turned by hand (the events were scripted),
+the Windows launcher run, a Cards tab with cards, the card editor.
