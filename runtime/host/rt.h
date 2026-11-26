@@ -69,6 +69,10 @@ void rt_scene_count(const struct view_gpu_frame *f, rt_scene *s);
  * constants for a picture w x h pixels (texels: the arena's size) */
 void rt_scene_fill(const struct view_gpu_frame *f, rt_scene *s, rt_tri *tris, float *pos, int w, int h, Uint32 texels,
                    const rt_quality *q);
+/* traced water over the game's own picture of it (docs/design.md sections 81 and 90): the mirror
+ * takes percent of the share the eye's angle gives it (100: all of it, the start's; 0: none: the
+ * game's water as it is). Any thread; rt_scene_fill takes it up with the next frame */
+void rt_scene_water_over(int percent);
 
 typedef struct rt_backend {
     const char *name;

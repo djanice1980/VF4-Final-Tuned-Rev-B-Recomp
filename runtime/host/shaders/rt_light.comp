@@ -33,7 +33,8 @@ layout(std140, set = 0, binding = 1) uniform P {
     vec4 dist;          // ambient rays' reach, shadow rays' reach, the sun's radius, a bulb's radius
     vec4 tune;          // eps, baked surfaces' share of the occlusion, the most a pixel is brightened, the glass's gain
     ivec4 opt;          // reflection rays, bounce on, point lights' shadows on, seed
-    vec4 tune2;         // the glass's roughness, 0, 0, 0
+    vec4 tune2;         // the glass's roughness; how much of its angle's share the water's mirror takes
+                        // over the game's picture (1: all of it; section 90); 0, 0
     ivec4 counts;       // texels; the filter's neighborhood (rt_filter.comp)
     vec4 mirror;        // the water's plane: its normal towards the eye; w: 0 no water, 1 the mirror in the
                         // place of the game's picture, 2 over that picture (which the renderer has drawn)
@@ -580,7 +581,7 @@ void main()
         // the light's ratio on it: the shadow the game lets fall on some stages' water
         if (p.mirror.w > 1.5) {
             wr = (seen * tint + add) * min(ratio, vec3(1.0));
-            wF = clamp(angle * WATER_OVER, 0.0, 1.0);
+            wF = clamp(angle * WATER_OVER * p.tune2.y, 0.0, 1.0);
         } else {
             float share = mix(1.0, angle, WATER_ANGLE);
             wr = ((seen * share + WATER_BODY * (1.0 - share)) * tint + add) * min(ratio, vec3(1.0));

@@ -971,9 +971,10 @@ static void scene_shadows(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, cons
 static SDL_AtomicInt water_asked;
 static int water_mode = 2;
 
-void gpu_render_water(int mode)
+void gpu_render_water(int mode, int over_percent)
 {
     SDL_SetAtomicInt(&water_asked, mode == 1 ? 1 : 2);
+    rt_scene_water_over(over_percent);
 }
 
 /* the machine's thread hands them over when they are wanted, the device can, and no ray tracing

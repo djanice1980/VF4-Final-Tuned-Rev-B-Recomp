@@ -37,6 +37,13 @@ static int classify(const view_gpu_frame *f, const view_rt_tri *t, Uint32 *flags
     return (fighter ? 0 : 2) + (blend ? 1 : 0);
 }
 
+static SDL_AtomicInt water_over = { 100 };
+
+void rt_scene_water_over(int percent)
+{
+    SDL_SetAtomicInt(&water_over, percent < 0 ? 0 : percent > 100 ? 100 : percent);
+}
+
 void rt_scene_count(const view_gpu_frame *f, rt_scene *s)
 {
     SDL_zerop(s);
@@ -268,6 +275,7 @@ void rt_scene_fill(const view_gpu_frame *f, rt_scene *s, rt_tri *tris, float *po
     u->opt[2] = 1;
     u->opt[3] = 1;              /* the same rays every frame: what is still does not flicker */
     u->tune2[0] = 0.01f;
+    u->tune2[1] = (float)SDL_GetAtomicInt(&water_over) / 100.0f;    /* section 90 */
     u->counts[0] = (Sint32)texels;
     u->counts[1] = q->smooth;
     double ml = sqrt(mirror_n[0] * mirror_n[0] + mirror_n[1] * mirror_n[1] + mirror_n[2] * mirror_n[2]);

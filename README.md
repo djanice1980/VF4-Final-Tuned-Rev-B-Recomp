@@ -567,7 +567,8 @@ the picture's light: the fighters' shadows get soft edges, the fighters
 shade themselves and each other, and glass mirrors the scene, and so does
 the water of the stages that have it (the Shrine's pond is a mirror of the
 scene around it; on the other stages the mirror lies over the game's own
-water, most where the eye looks along it:
+water, most where the eye looks along it, and only faintly in the cave,
+whose water is clear:
 [design.md s81](docs/design.md#81-traced-water-2026-11-25)); DirectX 12,
 in the Windows game (on Windows or under Proton), traces the same picture
 through DirectX instead, without the water's mirror so far. It needs a

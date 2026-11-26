@@ -8321,3 +8321,41 @@ picture: that the cage is meant to look like this rests on the game's
 own numbers and the second reading. DirectX 12 ray tracing (its shader
 has the same change; it was not run). The other things section 64 lists:
 the fog routings, the diffuse modes, the lights' second ambient.
+
+## 90. The cave's traced water: less of a mirror (2026-11-26)
+
+**Why.** The maintainer, playing with ray tracing on: the reflection in
+the cave stage is too much, and the original has clear water there.
+
+**The cause.** Section 81 lays a traced mirror over the game's own water
+by the share an eye's angle gives a mirror on real water (2 % straight
+down, most of it along the surface). In the cave (stage 20) the fight is
+on a raft of poles over the water, and the camera looks along it: between
+the far poles the mirror's share is a half and more, and what it mirrors
+is the raft's own underside. The clear blue water with its stones, which
+the game draws there, was filled with brown poles.
+
+**What is done.** How much of that share the mirror takes is the stage's
+matter (`gpu_render_water`'s second number, to `rt_light.comp` through
+`tune2.y`): 25 % in the cave, all of it elsewhere, and the Shrine's pond,
+which is a mirror in the game too, as it was. `--water-over N` sets it on
+every stage, for the tests.
+
+**Checked** (the Linux game in a headless desktop, stage 20 in a fight,
+Vulkan ray tracing at Medium):
+
+- At 100, 50, 25, 10 and 0 % and without ray tracing, side by side: at 50
+  and 100 the far water is poles; at 25 it is blue water with a faint
+  mirror; at 0 it is the game's water alone.
+- The build's own picture of the cave is the 25 % one to the pixel.
+- The earlier check of the water and the traced pictures (section 81's)
+  with this build: 12 of its pictures are the same to the pixel, the
+  harbor's and the Shrine's among them; those that changed are the
+  cave's with ray tracing on (this section) and the cage's and the
+  scaffold stage's (section 89).
+
+**Known.** 25 % is by eye, from pictures of one moment of one fight, and
+without a picture of the arcade game beside it.
+
+**Not covered.** The cave from other camera angles and in its intro.
+The Windows game.

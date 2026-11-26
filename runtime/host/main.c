@@ -76,6 +76,8 @@
  *   --clock WHEN      for tests: what the board's clock shows as the machine starts, in place of
  *                     this PC's date and time (docs/design.md section 77): "fixed" (2004-11-10
  *                     07:18:24, with which every run is the same run) or YYYY-MM-DDThh:mm:ss
+ *   --water-over N    for tests: the traced water's mirror takes N percent of its angle's share over
+ *                     the game's own water, on every stage (docs/design.md section 90)
  *   --mode-ask N      for tests: "Keep this screen mode?" waits N seconds for its answer, not 15
  *                     (docs/design.md section 87)
  *   --stall-window T:MS[:PART]  for tests: at turn T of the window's loop its thread sleeps MS
@@ -236,6 +238,8 @@ static int net_first;                   /* a blank backup with the network wante
                                          * game has made its settings record (on_frame) */
 static SDL_AtomicInt frame_now;         /* the machine's vertical blank */
 static SDL_AtomicInt perf_game_us;      /* what the machine took for its last frame, in microseconds (perf.h) */
+#define WATER_OVER_CAVE 25              /* the cave's traced mirror: percent of the angle's share (section 90) */
+static int water_over_test = -1;        /* --water-over: that percent on every stage */
 static SDL_AtomicInt program_now;       /* 1 while the test program runs */
 
 /* The board's clock (docs/design.md section 77): this PC's date and time as the game starts, so
@@ -1303,8 +1307,13 @@ static void on_frame(unsigned frame, const unsigned char *rgb, int w, int bootin
         int stage, chara[2];
         /* traced water (section 81): the Shrine's reflection is a mirror of its scenery in the game
          * too, and the rays take its place; the other stages' are pictures of the game's own making,
-         * which stay, with the mirror over them */
-        gpu_render_water(game_machine_stage() == 21 ? 1 : 2);
+         * which stay, with the mirror over them. How much of a mirror is the stage's matter too
+         * (section 90): the cave's water (stage 20) is clear in the game, down to its stones, and
+         * a mirror by the angle's full share filled it with the raft's underside */
+        {
+            int st_now = game_machine_stage();
+            gpu_render_water(st_now == 21 ? 1 : 2, water_over_test >= 0 ? water_over_test : st_now == 20 ? WATER_OVER_CAVE : 100);
+        }
         if (game_machine_match(&stage, chara))
             logf_("match: stage %d; player 1's character %d, player 2's %d (the game's own numbers), loading at "
                   "vertical blank %u", stage, chara[0], chara[1], frame);
@@ -3753,6 +3762,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--pace-ppm") && v)
             frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
         else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");
+        else if (!strcmp(a, "--water-over") && v) water_over_test = atoi(argv[++i]);
         else if (!strcmp(a, "--mode-ask") && v) {
             mode_ask_seconds = atoi(argv[++i]);
             if (mode_ask_seconds < 1)
