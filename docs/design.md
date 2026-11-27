@@ -9789,7 +9789,9 @@ wait for the next start are; GPU or Software still changes at once.
 With DirectX 12 the whole run is shown through that one device, the
 software picture too.
 
-*Which chip.* SDL opens Windows' own choice of adapter. The GPU row,
+*Which chip.* SDL asks Windows for the adapter it ranks as high
+performance (with two graphics chips in a PC, the separate one); the
+game has no say in it. The GPU row,
 whose list is Vulkan's, rests while DirectX 12 draws, and says so.
 
 *When it cannot start* (no Direct3D 12 device, the window not shown, or
@@ -9807,7 +9809,7 @@ again; Software and back start the renderer again on the run's own
 device (the log's driver line says direct3d12 in the one run and vulkan
 in the other throughout).
 
-**A run at the game's own pace**, three minutes on the cave (stage 20, whose water is a pass into a texture every frame), under Proton. Through Direct3D 12: 10,600 pictures shown with 10,782 presents in 179.7 s (60.0 a second), none of the frames drawn left unshown, 7,939 reflection passes, a clean exit, no error in the log. Through Vulkan: the same but for one picture more. The two runs' pictures at the end are the same to the pixel.
+**A run at the game's own pace**, three minutes on the cave (stage 20, whose water is a pass into a texture every frame), under Proton. Through Direct3D 12: 10,600 pictures shown with 10,782 presents in 179.7 s (60.0 a second), 2 of the 10,033 frames in the log's ten-second counts never shown, 7,939 reflection passes, a clean exit, no error in the log. Through Vulkan: the same but for one picture more, and 1 frame never shown. The two runs' pictures at the end are the same to the pixel. (This paragraph first said that no frame was left unshown: the script that summed the log's lines read the wrong word of them.) In both runs the pacing left "each frame put on a refresh" for the two seconds its measure takes to settle again: both at the start, Vulkan's once more in the middle with nothing scripted, Direct3D 12's once more at the end, as the test's picture was saved.
 
 **The game built for Linux**, with all of this in: its pictures on three
 stages (1, 17, 22) are what they were, to the pixel; with `graphics =
@@ -9817,11 +9819,23 @@ directx` in its file it says so in the log and draws through Vulkan.
 the setting says; with it the GPU renderer now starts on that device
 too (before: the software picture).
 
+**The launcher's Settings page** was not looked at when this was
+written ("the same row, made by the same code as the menu's"). Looked
+at for release 0.5.28, the Windows launcher under Wine: the row has its
+three values and saves them (`renderer` and `graphics`); the GPU row
+rests under DirectX 12 with its note; a Linux launcher whose game is
+the native one has the two values, and writes a file's `directx` back
+as vulkan. And it showed a fault the menu could not: the row's text,
+written to the menu's panel, was 15 lines in the launcher's, which
+holds 11, and ran out of the panel over the page's foot. The text is
+now as long as the two-value one: 8 lines, which leave the launcher's
+panel room for a note of three. That a change between the two waits
+for the next start is no longer in it; the menu's mark and note say so
+when the change is made.
+
 **Not covered.** Windows itself, and any graphics chip but the
 development PC's GeForce: under Proton, Direct3D 12 ends on the same
 Vulkan driver, so nothing here says what Intel's DirectX driver does
-with it, which is the question it was made for. The launcher's Settings
-page with the new value was not looked at (it is the same row, made by
-the same code as the menu's). Fullscreen, Exclusive and the screen's
-modes through Direct3D 12; a two-PC game; a Steam Deck; how fast it is
-beside Vulkan.
+with it, which is the question it was made for. Fullscreen, Exclusive
+and the screen's modes through Direct3D 12; a two-PC game; a Steam
+Deck; how fast it is beside Vulkan.

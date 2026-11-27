@@ -12,13 +12,13 @@
 #define RT_ABOUT_2 "It needs a fast graphics chip with ray tracing; the log says if it could not start. A " \
                    "change applies at once. Replaces ambient occlusion. Software has none."
 static const char rt_about_directx[] = RT_ABOUT_1 "DirectX 12: the same through DirectX. " RT_ABOUT_2;
-/* Renderer's text where the game can draw through DirectX 12 too (docs/design.md section 103) */
+/* Renderer's text where the game can draw through DirectX 12 too (docs/design.md section 103). No longer
+ * than the other one: the launcher's panel holds eight lines of it over a note of three. (That a change
+ * between Vulkan and DirectX 12 waits for the next start is the menu's own mark and note, when it is made.) */
 static const char renderer_about_directx[] =
     "GPU (Vulkan) draws the game with the graphics chip at the internal resolution below. GPU (DirectX 12) is "
-    "the same renderer and the same picture through Windows' DirectX 12: try it if the picture freezes or "
-    "fails with Vulkan on your graphics chip. Windows then chooses the chip. Software draws the game on the "
-    "processor at the cabinet's 640 x 480 (wider with a wide picture). When no GPU can draw, Software is "
-    "used. GPU or Software applies at once; Vulkan or DirectX 12 the next time the game starts.";
+    "the same picture through DirectX: try it if Vulkan freezes or fails. Software draws on the processor at "
+    "the cabinet's 640 x 480, also when no GPU can draw.";
 
 const option_info options[OPT_COUNT] = {
     [OPT_CREDITS] = { "Credits",
