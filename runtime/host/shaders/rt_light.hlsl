@@ -30,8 +30,14 @@ cbuffer P : register(b0) {
     float4 p_dist;          // ambient rays' reach, shadow rays' reach, the sun's radius, a bulb's radius
     float4 p_tune;          // eps, baked surfaces' share of the occlusion, the most a pixel is brightened, the glass's gain
     int4 p_opt;             // reflection rays, bounce on, point lights' shadows on, seed
-    float4 p_tune2;         // the glass's roughness, 0, 0, 0
+    float4 p_tune2;         // the glass's roughness; how much of its angle's share the water's mirror takes
+                            // over the game's picture (1: all of it; section 90); 0, 0
     int4 p_counts;          // texels; the filter's neighborhood (rt_filter.hlsl)
+    float4 p_mirror;        // the water's plane: its normal towards the eye; w: 0 no water, 1 the mirror in the
+                            // place of the game's picture, 2 over that picture (which the renderer has drawn)
+    float4 p_mirror_bg;     // what a mirror's ray that leaves the scene shows; w: the plane's place (normal . point)
+    float4 p_mirror_fog;    // x: where the fog of the water's picture begins in lf (0: none): 129 steps of the
+                            // table, the fog's color, its density, 1 when on
 };
 StructuredBuffer<Tri> tri : register(t1);
 StructuredBuffer<Job> job : register(t2);
@@ -43,6 +49,17 @@ RWStructuredBuffer<uint> reflpix : register(u1);     // the mirrored color times
 RWStructuredBuffer<float> depthpix : register(u2);   // how far the eye's ray went; 0: it met nothing
 
 static const uint ALL = 3, FIGHTERS = 1;
+// water (a triangle with flag 64: the game gives it its reflection picture; here the rays mirror
+// the scene on it). In the picture's place (p_mirror.w 1): WATER_ANGLE 0: a full mirror at every
+// angle, as the game's picture is one; 1: the mirror's share falls towards 2 % where the eye looks
+// straight down (as water does), and the rest is WATER_BODY. Over the game's picture (p_mirror.w
+// 2): the mirror's share is that angle's share times WATER_OVER, and the game's picture keeps the
+// rest. WATER_RIPPLE: how much of each triangle's own tilt the mirror takes (0: the
+// flat plane of all of them). WATER_BUMP: how much of the mesh's own height over that plane the
+// mirror stands on (the game's water is a grid with heights that it moves on some stages; 1 would
+// swing the mirrored picture by twice each height, several times what the game's own does).
+static const float WATER_ANGLE = 0.0, WATER_RIPPLE = 0.0, WATER_BUMP = 0.15, WATER_OVER = 1.0;
+static const float3 WATER_BODY = float3(0.02, 0.05, 0.07);
 
 // A pixel's rays are not drawn by chance (docs/design.md section 80). The n rays of one use lie
 // on a spiral over the disk, one in each ring of equal area. Each pixel turns its spiral by an
@@ -293,6 +310,8 @@ Hit closest(float3 o, float3 d, float tmin, float tmax, int mode, uint mask)
         uint fl = tri[ti].flags;
         if (mode == 1 && (fl & 3u) == 1u)
             continue;       // the translucent list is drawn over the picture afterwards
+        if (mode == 3 && (fl & 64u) != 0u)
+            continue;       // a mirror's own ray: the water is not in its way
         if (mode != 0 && (fl & 16u) != 0u) {
             float front = (fl & 32u) != 0u ? -1.0 : 1.0;
             if (dot(face_normal(ti), d) * front >= 0.0)
@@ -415,11 +434,50 @@ float3 ray_origin(uint ti, float2 b, float3 P, float3 nf)
     return P + nf * p_tune.x;
 }
 
+// the game's fog on a color the water mirrors (0..1), as the game's own picture of the mirrored
+// scene has it: by the table, for a point of triangle ti that lies `away` before the mirrored eye
+// (scene.frag's fog_at, and its sum for a polygon that takes the table's fog)
+float3 water_fog(float3 c, uint ti, float away)
+{
+    uint at = uint(p_mirror_fog.x);
+    if (at == 0u || lf[at + 133u] == 0.0 || (st[job[tri[ti].job].st].tsp >> 22 & 3u) != 0u || !(away > 0.0))
+        return c;
+    float s = clamp(lf[at + 132u] / away, 1.0, 255.9999);
+    uint b = asuint(s);
+    uint i = (b >> 19) - (127u << 4), fr = b >> 11 & 255u;
+    float f = floor((lf[at + i] * float(256u - fr) + lf[at + i + 1u] * float(fr)) / 256.0);
+    f += floor(f / 128.0);
+    float3 fc = float3(lf[at + 129u], lf[at + 130u], lf[at + 131u]) / 255.0;
+    return c + (fc - c) * (f / 256.0);
+}
+
+// what the water at P shows to a ray d that is not the eye's (bounced light, a pane of glass): the
+// scene mirrored once in the water's plane, by its colors and the game's lights without shadows
+float3 water_seen(float3 P, float3 d)
+{
+    float3 Nw = dot(p_mirror.xyz, d) < 0.0 ? p_mirror.xyz : -p_mirror.xyz;
+    float3 R = normalize(d - Nw * (2.0 * dot(d, Nw)));
+    float3 O = P + Nw * p_tune.x;
+    Hit q = closest(O, R, 1e-4, 1e9, 3, ALL);
+    if (!q.ok)
+        return p_mirror_bg.rgb;
+    float3 Q = O + R * q.t, c;
+    float a;
+    surface(q.tri, q.b, Q, c, a);
+    if ((tri[q.tri].flags & 4u) != 0u)
+        return c;
+    uint ls = job[tri[q.tri].job].ls;
+    // the product held to full, not the sum (docs/design.md section 98), as the picture's own light
+    return min(c * lights_sum(ls, Q, normal_at(q.tri, q.b), Q, 0, ambient_of(ls)), float3(1, 1, 1));
+}
+
 // what a surface point sends back along a ray that met it: its color times the game's sum for it
 float3 radiance(Hit h, float3 o, float3 d)
 {
     float3 P = o + d * h.t, c;
     float a;
+    if ((tri[h.tri].flags & 64u) != 0u)
+        return water_seen(P, d);    // its own picture is not drawn
     surface(h.tri, h.b, P, c, a);
     if ((tri[h.tri].flags & 4u) != 0u)
         return c;
@@ -511,6 +569,45 @@ void main(uint3 id : SV_DispatchThreadID)
             T = float3(f, f, f);
         }
     }
+    // water: the scene mirrored in its plane, in the place of the game's reflection picture, by
+    // the game's own colors for the polygon (mode 3: like the eye's ray, without the water)
+    float3 wr = float3(0, 0, 0);
+    float wF = 0.0;
+    if (h.ok && p_mirror.w != 0.0 && (tri[h.tri].flags & 64u) != 0u) {
+        float3 Pw = o0 + d * h.t, ngw = face_normal(h.tri);
+        float3 Nw = dot(p_mirror.xyz, d) < 0.0 ? p_mirror.xyz : -p_mirror.xyz;
+        float3 Nm = normalize(lerp(Nw, dot(ngw, d) < 0.0 ? ngw : -ngw, WATER_RIPPLE));
+        float3 Rw = normalize(d - Nm * (2.0 * dot(d, Nm)));
+        if (dot(Rw, Nw) < 0.02)
+            Rw = normalize(Rw + Nw * (0.02 - dot(Rw, Nw)));
+        float over = dot(p_mirror.xyz, Pw) - p_mirror_bg.w, along = dot(p_mirror.xyz, d);
+        if (abs(over) < 0.5 && abs(along) > 1e-4)
+            Pw -= d * (over / along * (1.0 - WATER_BUMP));
+        float3 Ow = Pw + Nw * p_tune.x;
+        Hit q = closest(Ow, Rw, 1e-4, 1e9, 3, ALL);
+        // (how far the mirrored point lies before the mirrored eye: the two rays' lengths along the eye's)
+        float3 seen = p_mirror_bg.rgb;
+        if (q.ok)
+            seen = water_fog(radiance(q, Ow, Rw), q.tri, (length(Pw) + q.t) * -d.z);
+        uint4 wc = tri[h.tri].col;
+        float3 tint = job[tri[h.tri].job].base.rgb / 255.0, add = float3(0, 0, 0);
+        if ((wc.x | wc.y | wc.z) != 0u) {
+            float w0 = 1.0 - h.b.x - h.b.y;
+            tint = (unpack(wc.x).rgb * w0 + unpack(wc.y).rgb * h.b.x + unpack(wc.z).rgb * h.b.y) / 255.0;
+            add = unpack(wc.w).rgb / 255.0;
+        }
+        float angle = 0.02 + 0.98 * pow(1.0 - max(-dot(d, Nm), 0.0), 5.0);
+        // the game's sum for the polygon (its picture times its color, plus what it adds), and
+        // the light's ratio on it: the shadow the game lets fall on some stages' water
+        if (p_mirror.w > 1.5) {
+            wr = (seen * tint + add) * min(ratio, float3(1, 1, 1));
+            wF = clamp(angle * WATER_OVER * p_tune2.y, 0.0, 1.0);
+        } else {
+            float share = lerp(1.0, angle, WATER_ANGLE);
+            wr = ((seen * share + WATER_BODY * (1.0 - share)) * tint + add) * min(ratio, float3(1, 1, 1));
+            wF = 1.0;
+        }
+    }
     // glass in front of that: what a mirror there would show, by the glass's share at this angle
     float3 rf = float3(0, 0, 0);
     float F = 0.0;
@@ -541,6 +638,9 @@ void main(uint3 id : SV_DispatchThreadID)
     depthpix[at] = h.ok ? h.t : 0.0;
     uint3 l = uint3(clamp(ratio * 0.25, 0.0, 1.0) * 1023.0 + 0.5);
     lightpix[at] = l.x | l.y << 10 | l.z << 20 | 0xc0000000u;
-    uint3 c = uint3(clamp(rf * F, 0.0, 1.0) * 255.0 + 0.5);
-    reflpix[at] = c.x | c.y << 8 | c.z << 16 | uint(clamp(F, 0.0, 1.0) * 255.0 + 0.5) << 24;
+    // the water behind a pane of glass keeps what the glass leaves of it
+    float3 rc = rf * F + wr * (wF * (1.0 - F));
+    float rs = F + wF * (1.0 - F);
+    uint3 c = uint3(clamp(rc, 0.0, 1.0) * 255.0 + 0.5);
+    reflpix[at] = c.x | c.y << 8 | c.z << 16 | uint(clamp(rs, 0.0, 1.0) * 255.0 + 0.5) << 24;
 }

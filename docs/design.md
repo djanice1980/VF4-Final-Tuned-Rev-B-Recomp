@@ -9516,3 +9516,61 @@ that shows it (the camera low and close: a throw or a replay).
 
 **Not covered.** As section 99: one pair of fighters a stage and the
 first seconds of a fight.
+
+## 101. The DirectX 12 tracer mirrors the water too (2026-11-27)
+
+**What was wrong.** Section 99 laid the two tracers' pictures side by
+side and left three stages (18, 19 and 20) where the DirectX 12 tracer's
+was not Vulkan's. The cause was known: `rt_light.hlsl`, the twin of
+`rt_light.comp`, had none of the water's mirror (sections 81 and 90),
+and `gpu_render.c` kept two things for the Vulkan tracer alone because
+of it: the reflection passes drawn by the GPU renderer with the mirror
+over them (the water's mode 2), and the pass left out with the mirror in
+its place (mode 1, the Shrine). With DirectX ray tracing a water stage
+got neither. The maintainer asked for the two tracers to give the same
+picture.
+
+**The change.** `rt_light.hlsl` has the water's parts now, line for line
+its twin's: the three mirror fields of the constants (they were in the
+buffer already: `rt_scene.c` fills one record for both), mode 3 of
+`closest` (a mirror's own ray does not meet the water), `water_fog`,
+`water_seen`, the water's branch of `radiance`, the mirror's block of
+`main` and its sum with the glass's reflection. Where the GLSL takes one
+of two values by `?:` and one of them traces rays, the HLSL has an `if`
+(the twin's rule from section 75: DirectX's `?:` works both sides out,
+and the rays' numbering must stay the same). `gpu_render.c`'s two
+conditions lost "and the tracer is Vulkan's" (`passes_follow`, and the
+call of `view_host_rt_mirror`). Nothing is DirectX's by default: ray
+tracing through DirectX 12 is still the player's choice.
+
+**Checked.** The Windows development build under Proton, every real
+stage from its snapshot at 7600, ray tracing at Medium through DirectX
+12 and through Vulkan, 1,228,800 pixels:
+
+| Stage | Pixels that differ | Largest step | | Stage | Pixels that differ | Largest step |
+|---|---|---|---|---|---|---|
+| 0 | 6,977 | 2 | | 17 | 6,070 | 3 |
+| 1 | 4,523 | 3 | | 18 | 0 | 0 |
+| 2 | 4,582 | 3 | | 19 | 3,095 | 3 |
+| 3 | 4,573 | 2 | | 20 | 1,823 | 2 |
+| 4 | 5,795 | 3 | | 21 | 4,810 | 2 |
+| 5 | 4,620 | 2 | | 22 | 5,010 | 3 |
+| 11 | 1,141 | 3 | | 23 | 2,966 | 1 |
+| 16 | 2,720 | 2 | | | | |
+
+- Before, stage 18 differed in 17,731 pixels by up to 229, and stages 19
+  and 20 as widely. The water stages are now like the others.
+- On stage 18 ray tracing changes nothing at that moment with either
+  tracer (Vulkan's picture is the picture without ray tracing, pixel for
+  pixel), so that stage says only that the reflection pass is drawn
+  again; stages 19, 20 and 21 have the mirror itself.
+- What is left on every stage is single traced pixels scattered over the
+  lit floors, a step of 1 in nearly all (stage 0: 0.6 % of the pixels
+  differ at all, none by more than 2): a ray that just passes in one
+  tracer and just meets something in the other. The two shaders are
+  made by two compilers and the two tracers build their own acceleration
+  structures; this much cannot be brought to nothing, and it is not seen.
+
+**Not covered.** A Windows PC's own DirectX 12 driver (under Proton both
+tracers end on the same Vulkan driver); the High setting; more than one
+moment a stage.

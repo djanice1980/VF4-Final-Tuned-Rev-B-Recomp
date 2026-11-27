@@ -963,8 +963,9 @@ static void scene_shadows(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *rp, cons
 
 /* ---- passes into textures (section 78) ---- */
 
-/* Traced water (docs/design.md section 81): with ray tracing through Vulkan, the scene mirrored by
- * rays on the polygons the game gives its reflection pass's picture to. 1: in that picture's
+/* Traced water (docs/design.md section 81; through DirectX 12 too since section 101): with ray
+ * tracing, the scene mirrored by rays on the polygons the game gives its reflection pass's
+ * picture to. 1: in that picture's
  * place, and the pass is not drawn at all (view_host_rt_mirror); 2: over that picture, by the
  * angle's share, and the pass is drawn here as without ray tracing. Which of the two is the
  * stage's matter (gpu_render_water, any thread); the window's thread takes it up with a frame. */
@@ -982,7 +983,7 @@ void gpu_render_water(int mode, int over_percent)
  * the picture it needs none: rt_light.comp, water_seen) */
 static void passes_follow(void)
 {
-    view_host_gpu_passes(gpu && t_none && pass_want && (!rt_want || (water_mode == 2 && rt_want == &rt_vulkan)));
+    view_host_gpu_passes(gpu && t_none && pass_want && (!rt_want || water_mode == 2));
 }
 
 /* A state names a target picture: it is there, at the size the state's texture says? If not (the
@@ -1440,14 +1441,15 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
         rt_run->stop();
         rt_run = NULL;
     }
-    /* traced water: while frames are traced through Vulkan (the only shader that mirrors), the
-     * machine's thread draws no reflection pass and marks the water for the rays instead */
+    /* traced water: while frames are traced (both tracers' shaders mirror: rt_light.comp and its
+     * twin rt_light.hlsl), the machine's thread draws no reflection pass and marks the water for
+     * the rays instead */
     int asked = SDL_GetAtomicInt(&water_asked);
     if (asked && asked != water_mode) {
         water_mode = asked;
         passes_follow();
     }
-    view_host_rt_mirror(water_mode == 1 && rt && rt_run == &rt_vulkan && pass_want);
+    view_host_rt_mirror(water_mode == 1 && rt && pass_want);
     unsigned under = f->rt_mirror == 1 ? mirror_under(cmd, f, pass_done, rt) : 0;
     if (rt)
         ao = 0;
