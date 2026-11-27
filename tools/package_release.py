@@ -221,7 +221,15 @@ def main():
         for dirpath, _, names in os.walk(out):
             for n in names:
                 full = os.path.join(dirpath, n)
-                z.write(full, os.path.relpath(full, os.path.dirname(out)))
+                arcname = os.path.relpath(full, os.path.dirname(out))
+                # keep the Unix permission bits (executable bit) for the native
+                # Linux release: its launcher, game and helper scripts must run
+                # after the archive is extracted (docs/design.md section 8).
+                zi = zipfile.ZipInfo.from_file(full, arcname)
+                zi.compress_type = zipfile.ZIP_DEFLATED
+                zi.external_attr = (os.stat(full).st_mode & 0xFFFF) << 16
+                with open(full, "rb") as f:
+                    z.writestr(zi, f.read())
     print("%d builder files; %s (%d MB)" % (len(files), zpath, os.path.getsize(zpath) // 1000000))
 
 
