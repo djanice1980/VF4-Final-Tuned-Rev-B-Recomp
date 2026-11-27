@@ -87,6 +87,12 @@ enum { OCCLUSION_OFF, OCCLUSION_SSAO, OCCLUSIONS };
  * build, because a Linux launcher keeps the settings of the Windows game it builds for Steam;
  * the game built for Linux takes it as off (main.c), and nothing offers it for that game. */
 enum { RAYTRACING_OFF, RAYTRACING_VULKAN, RAYTRACING_DIRECTX, RAYTRACINGS };
+/* What the GPU renderer draws through (docs/design.md section 103). vulkan: Vulkan, in every
+ * game. directx: Direct3D 12, the Windows game only (on Windows, or under Proton), for a PC
+ * whose graphics driver gives trouble with Vulkan; the picture is the same. Never a default:
+ * only the player chooses it. The word is read in every build, as raytracing's is; the game
+ * built for Linux takes it as vulkan (main.c), and nothing offers it for that game. */
+enum { GRAPHICS_VULKAN, GRAPHICS_DIRECTX, GRAPHICS_KINDS };
 /* Ray tracing quality (docs/design.md section 76): how much work the traced light is. High: every
  * pixel of the picture is traced, with the most rays. Medium: a quarter of the pixels (half the
  * internal resolution each way), filled in over the picture by its depth. Low: that with a
@@ -126,6 +132,7 @@ typedef struct settings {
     int occlusion;          /* OCCLUSION_*: off by default */
     int raytracing;         /* RAYTRACING_*: off by default */
     int rayquality;         /* RAYQUALITY_*: medium by default */
+    int graphics;           /* GRAPHICS_*: vulkan by default, and never directx unless the player says so */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[2][ACT_COUNT];      /* gamepad, player 1's and player 2's (the same by default) */
     char pad_wish[2][PAD_WISH_MAX]; /* the controller each player asks for: "" Auto (the pads in the
@@ -227,6 +234,7 @@ extern const char *const settings_stats_name[STATS];          /* "off", "numbers
 extern const char *const settings_occlusion_name[OCCLUSIONS]; /* "off", "ssao" */
 extern const char *const settings_raytracing_name[RAYTRACINGS]; /* "off", "vulkan", "directx" */
 extern const char *const settings_rayquality_name[RAYQUALITIES]; /* "low", "medium", "high" */
+extern const char *const settings_graphics_name[GRAPHICS_KINDS]; /* "vulkan", "directx" */
 extern const char *const settings_pacing_name[PACINGS];       /* "game", "screen", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",

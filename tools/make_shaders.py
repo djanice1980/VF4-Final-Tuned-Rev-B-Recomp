@@ -6,7 +6,10 @@ arrays of bytes:
                            GPU renderer's, and the Vulkan ray tracing's
                            compute shaders;
   *.hlsl                   to DXIL, into runtime/host/dx_shaders.h: the
-                           DirectX 12 ray tracing's (compute shaders).
+                           DirectX 12 ray tracing's (compute shaders),
+                           and the GPU renderer's own for a Direct3D 12
+                           device (*.vert.hlsl, *.frag.hlsl: each the
+                           twin of the shader its name begins with).
 
 The headers are committed, so building the game needs no shader compiler;
 run this after changing a shader.
@@ -75,14 +78,21 @@ def dxil():
     lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(dxc))), "lib")
     if os.path.isdir(lib):          # Microsoft's archive: its libraries are beside bin/
         env["LD_LIBRARY_PATH"] = lib + os.pathsep + env.get("LD_LIBRARY_PATH", "")
-    out = ["/* The DirectX 12 ray tracing's shaders as DXIL: written by tools/make_shaders.py from",
-           " * the .hlsl files of runtime/host/shaders. Do not edit; change the shader and run the tool. */",
+    out = ["/* The DirectX 12 shaders as DXIL (the ray tracing's, and the GPU renderer's for a Direct3D 12",
+           " * device): written by tools/make_shaders.py from the .hlsl files of runtime/host/shaders. Do",
+           " * not edit; change the shader and run the tool. */",
            "#ifndef VF4FT_DX_SHADERS_H", "#define VF4FT_DX_SHADERS_H", ""]
     with tempfile.TemporaryDirectory() as tmp:
         for n in names:
             blob = os.path.join(tmp, n + ".dxil")
-            # compute shaders with inline ray queries: shader model 6.5
-            r = subprocess.run([dxc, "-T", "cs_6_5", "-E", "main", "-O3", "-Fo", blob, os.path.join(SRC, n)], env=env,
+            # the ray tracing's compute shaders with inline ray queries: shader model 6.5; the GPU
+            # renderer's vertex and pixel shaders (SDL_GPU's Direct3D 12 device takes any DXIL): 6.0
+            target = "vs_6_0" if n.endswith(".vert.hlsl") else "ps_6_0" if n.endswith(".frag.hlsl") else "cs_6_5"
+            # -Gis for the GPU renderer's: every sum as written, step by step (IEEE strictness). DXC
+            # otherwise lets the driver join and reorder them, and a texel's coordinate that lies
+            # just at a texel's edge then falls to the other side than in the twin (section 103)
+            strict = ["-Gis"] if target != "cs_6_5" else []
+            r = subprocess.run([dxc, "-T", target, "-E", "main", "-O3", *strict, "-Fo", blob, os.path.join(SRC, n)], env=env,
                                capture_output=True, text=True)
             if r.returncode != 0 or not os.path.exists(blob):
                 sys.exit("dxc failed on %s:\n%s" % (n, (r.stderr or r.stdout)[-3000:]))

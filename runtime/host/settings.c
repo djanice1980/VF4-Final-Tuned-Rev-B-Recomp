@@ -34,6 +34,7 @@ const char *const settings_stats_name[STATS] = { "off", "numbers", "graph" };
 const char *const settings_occlusion_name[OCCLUSIONS] = { "off", "ssao" };
 const char *const settings_raytracing_name[RAYTRACINGS] = { "off", "vulkan", "directx" };
 const char *const settings_rayquality_name[RAYQUALITIES] = { "low", "medium", "high" };
+const char *const settings_graphics_name[GRAPHICS_KINDS] = { "vulkan", "directx" };
 
 int settings_card_name_ok(const char *name)
 {
@@ -233,6 +234,7 @@ void settings_defaults(settings *s)
     s->occlusion = OCCLUSION_OFF;
     s->raytracing = RAYTRACING_OFF;
     s->rayquality = RAYQUALITY_MEDIUM;
+    s->graphics = GRAPHICS_VULKAN;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -607,6 +609,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "rayquality")) {
                 if ((ok = choice(v, settings_rayquality_name, RAYQUALITIES, &x)))
                     s->rayquality = x;
+            } else if (!strcmp(name, "graphics")) {
+                if ((ok = choice(v, settings_graphics_name, GRAPHICS_KINDS, &x)))
+                    s->graphics = x;
             } else if (!strcmp(name, "pacing")) {
                 if ((ok = choice(v, settings_pacing_name, PACINGS, &x)))
                     s->pacing = x;
@@ -763,6 +768,12 @@ int settings_save(const settings *s, const char *path)
         "                       # of the picture; medium a quarter of them (half the internal resolution\n"
         "                       # each way), filled in over the picture; low that with fewer rays\n",
         settings_rayquality_name[s->rayquality]);
+    PUT("graphics = %s         # vulkan | directx: what the GPU renderer draws through. directx is DirectX 12\n"
+        "                       # (Direct3D 12), for a PC whose graphics driver gives trouble with Vulkan:\n"
+        "                       # the picture is the same, and Windows chooses the graphics chip. It is the\n"
+        "                       # Windows game's alone (the native Linux game takes it as vulkan), and\n"
+        "                       # nothing chooses it by itself\n",
+        settings_graphics_name[s->graphics]);
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

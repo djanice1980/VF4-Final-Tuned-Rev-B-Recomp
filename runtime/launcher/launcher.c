@@ -2304,6 +2304,8 @@ static void settings_open(void)
     options_directx(directx_here());
     if (st.raytracing == RAYTRACING_DIRECTX && !directx_here())
         st.raytracing = RAYTRACING_OFF;     /* a native Linux game's file with the Windows game's value: off, as the game takes it */
+    if (st.graphics == GRAPHICS_DIRECTX && !directx_here())
+        st.graphics = GRAPHICS_VULKAN;      /* the same for the renderer's own way (section 103) */
     st_tab = st_row = st_top = 0;
     ctl.capturing = 0;
     cp_refresh(NULL);
@@ -2540,6 +2542,8 @@ static const char *renderer_note(int o, char *buf, size_t n)
     if (ren_soft)
         SDL_snprintf(buf, n, "No GPU can draw the launcher's window: it uses Software for now (launcher.log says "
                      "why).");
+    else if (o == OPT_GPU && st.graphics == GRAPHICS_DIRECTX && directx_here())
+        SDL_snprintf(buf, n, "With DirectX 12, Windows chooses the game's graphics chip.");
     else if (o != OPT_GPU || !ren_gpu[0])
         return NULL;
     else if (st.gpu[0] && SDL_strcasecmp(st.gpu, ren_gpu))

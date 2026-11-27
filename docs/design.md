@@ -9698,3 +9698,130 @@ layers), a feature of its own. Not done.
 renderer only (the GPU renderer draws by the same rules, section 99's
 check, but its depths are its own); passes into textures were drawn as
 the game is.
+
+## 103. The GPU renderer through DirectX 12, the player's choice (2026-11-27)
+
+**Why.** Issue 3's picture that freezes in full screen has its cause
+named by Windows itself on the reporter's PC: at each freeze the event
+log has the Intel graphics driver stopping and being started again
+(event 4101), while the game drew through Vulkan. The GPU renderer was
+Vulkan's alone; the only other way was the software picture. Whether
+DirectX would spare that driver is not known. It is the way that
+driver's maker has had far more use on, and trying it is how to find
+out. The maintainer's rule for it: never a default for anything; the
+player turns it on.
+
+**What it is.** Not a second renderer. `gpu_render.c` draws through
+SDL's GPU interface, which has a Direct3D 12 device beside its Vulkan
+one; the renderer refused that device only because its shaders existed
+as SPIR-V alone. Now each of its twelve shaders has a twin in DirectX's
+shader language (`scene.vert.hlsl` and so on, beside the GLSL one it is
+named after), compiled to DXIL into `dx_shaders.h` by
+`tools/make_shaders.py`, and `shader()` hands a device the kind it
+takes. The Windows build carries both; the Linux build has no DXIL and
+still refuses a device that takes no SPIR-V (the native Linux game never
+uses DirectX).
+
+What SDL's Direct3D 12 device asks of a shader, read in its source: a
+vertex shader's textures and buffers are in register space 0 and its
+constants in space 1, a pixel shader's in spaces 2 and 3, sampled
+textures before buffers; a buffer the shader only reads is a raw buffer
+(`ByteAddressBuffer`: the light sets, the strips' records, the states
+and the texels are read word by word, where the GLSL has arrays); every
+vertex input's semantic is `TEXCOORD` with its location's number.
+
+**The same picture.** The first pictures through Direct3D 12 differed
+from Vulkan's in up to 673 of 1,228,800 pixels a stage (none on one
+stage, 26 at least on the others), single pixels, by up to 105. Three
+causes were tried, each by building it and counting again:
+
+- The position's sum done as written (`precise`, tried in both
+  languages): no pixel changed. Not it. (It stays in the twin's
+  position; the GLSL is as it was.)
+- Every sum as written (dxc's strict mode, `-Gis`): 2 pixels changed.
+  Not it. (Kept: a twin should not be free to reorder what its twin
+  does in order.)
+- The screen-space derivative of the texture coordinates, which chooses
+  a mip-mapped texture's level. GLSL's `dFdx` leaves its kind to the
+  driver; HLSL's `ddx` is the coarse kind, one difference for a block
+  of four pixels. With the fine kind asked for by name in the twin
+  (`ddx_fine`), the pictures were the same. The GLSL asks by name too
+  now (`dFdxFine`), so that a Vulkan driver whose own choice is the
+  coarse kind draws what the others draw; on the driver all of this
+  was made with, that changes no pixel on any stage.
+
+After that, the Windows development build under Proton, each stage from
+its snapshot at 7600, Direct3D 12 against Vulkan: the same to the pixel
+on eleven stages; 1 pixel on stages 2, 4 and 22 and 2 on stage 21, a
+step of 1 of 255. The other paths of the renderer, the same way:
+
+| With | Stages | Pixels that differ |
+|---|---|---|
+| Ambient occlusion | 17, 22 | 0, 0 |
+| Ray tracing through DirectX 12, Medium | 3, 21 | 2, 5 (a step of 1) |
+| Ray tracing through Vulkan, Medium | 3, 21 | 2, 5 (a step of 1) |
+| The lights on the processor | 17, 22 | 0, 0 |
+| Internal resolution 1 | 17, 21 | 0, 0 |
+| Internal resolution 4 | 17 | 0 of 4,915,200 |
+| The wide picture (16:9) | 21, 18 | 2 (a step of 1), 0 |
+| The software renderer's picture, shown through each | 17 | 0 |
+
+The passes into textures (a stage's reflection) are drawn through
+Direct3D 12 as through Vulkan (stages 18 to 21 above). Either tracer
+works with either picture: both make a device of their own and bring
+their result back.
+
+**The player's choice.** `graphics = vulkan | directx` in settings.txt,
+vulkan by default. In the menu and the launcher it is Renderer's third
+value where the game can use it: GPU (Vulkan), GPU (DirectX 12),
+Software; a game built for Linux has the two it had, and takes a file's
+`directx` as vulkan (as it takes `raytracing = directx` as off).
+Nothing chooses DirectX 12 by itself: not a failure of Vulkan, not the
+graphics chip's maker, not the launcher.
+
+*One way a run.* The game takes the setting as it starts and keeps it
+until it ends: a window that has shown one of the two is not handed to
+the other while the game runs. Under Proton that works; on Windows a
+window's second swap chain of another kind can be refused, and that
+cannot be tried here, so it is not relied on. A change between Vulkan
+and DirectX 12 in the menu is therefore marked as the settings that
+wait for the next start are; GPU or Software still changes at once.
+With DirectX 12 the whole run is shown through that one device, the
+software picture too.
+
+*Which chip.* SDL opens Windows' own choice of adapter. The GPU row,
+whose list is Vulkan's, rests while DirectX 12 draws, and says so.
+
+*When it cannot start* (no Direct3D 12 device, the window not shown, or
+the GPU renderer not starting on it at the run's first try): the log
+says which, the run goes on in Vulkan's own order as if the setting
+were vulkan, the setting is kept, and the menu's Renderer row says that
+DirectX 12 could not start. `--no-direct3d12` (for tests) makes the
+device fail on purpose: the run then drew through Vulkan, its picture
+Vulkan's to the pixel, and the file still said directx.
+
+*The menu*, driven by keys under Proton from a run begun each way: the
+row goes through its three values; Vulkan to DirectX 12 (or back) gets
+the mark and the note of a change that waits, with no renderer started
+again; Software and back start the renderer again on the run's own
+device (the log's driver line says direct3d12 in the one run and vulkan
+in the other throughout).
+
+**A run at the game's own pace**, three minutes on the cave (stage 20, whose water is a pass into a texture every frame), under Proton. Through Direct3D 12: 10,600 pictures shown with 10,782 presents in 179.7 s (60.0 a second), none of the frames drawn left unshown, 7,939 reflection passes, a clean exit, no error in the log. Through Vulkan: the same but for one picture more. The two runs' pictures at the end are the same to the pixel.
+
+**The game built for Linux**, with all of this in: its pictures on three
+stages (1, 17, 22) are what they were, to the pixel; with `graphics =
+directx` in its file it says so in the log and draws through Vulkan.
+
+**`--gpu direct3d12`** still names SDL's device for one run, whatever
+the setting says; with it the GPU renderer now starts on that device
+too (before: the software picture).
+
+**Not covered.** Windows itself, and any graphics chip but the
+development PC's GeForce: under Proton, Direct3D 12 ends on the same
+Vulkan driver, so nothing here says what Intel's DirectX driver does
+with it, which is the question it was made for. The launcher's Settings
+page with the new value was not looked at (it is the same row, made by
+the same code as the menu's). Fullscreen, Exclusive and the screen's
+modes through Direct3D 12; a two-PC game; a Steam Deck; how fast it is
+beside Vulkan.

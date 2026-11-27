@@ -101,8 +101,11 @@ void main()
     State s = st[v_state];
     float scale = fu.p0.x;
     uint list = uint(fu.p0.w);
-    // the derivatives first, where every pixel of the quad still runs
-    vec2 dx = dFdx(v_uv), dy = dFdy(v_uv);
+    // the derivatives first, where every pixel of the quad still runs. The fine kind by name
+    // (each pixel's own difference to its neighbor): left to the driver, Vulkan's and DirectX's
+    // took different kinds, and a texture's level changed a pixel apart (docs/design.md section
+    // 103). It is the kind the driver this was made on took by itself
+    vec2 dx = dFdxFine(v_uv), dy = dFdyFine(v_uv);
 
     uint clip_mode = s.pcw >> 16 & 3u;
     if (clip_mode >= 2u) {

@@ -75,6 +75,7 @@ typedef struct menu_run {
     int refresh_own;        /* that rate is the game's own count of its presents, not the system's report:
                              * it is said as a guess (section 61) */
     const char *gpu_now;    /* the GPU the GPU renderer draws on now ("": none, Software); kept up to date */
+    const int *d3d12_now;   /* not 0: it draws through Direct3D 12 now (section 103); kept up to date */
     int deck;               /* settings_steam_deck() */
     int session;            /* a two-PC game (session.h): no test menu, restart or card changes */
     /* the host of a two-PC game: its join code (docs/design.md section 50), for the Game tab's Join

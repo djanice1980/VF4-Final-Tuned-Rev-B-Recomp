@@ -56,6 +56,15 @@
 #include "gpu_render.h"
 #include "view.h"
 #include "gpu_shaders.h"
+/* recomp (docs/design.md section 103): the same shaders in DirectX's language, for a Direct3D 12
+ * device (Windows only; each *.vert.hlsl and *.frag.hlsl is the twin of the shader it is named
+ * after). SH(name): a shader both ways, for shader() */
+#ifdef _WIN32
+#include "dx_shaders.h"
+#define SH(n) spv_##n, sizeof spv_##n, dxil_##n##_hlsl, sizeof dxil_##n##_hlsl
+#else
+#define SH(n) spv_##n, sizeof spv_##n, NULL, 0
+#endif
 #include "rt.h"
 
 #include <string.h>
@@ -360,15 +369,17 @@ static SDL_GPUSampler *smp_texel;
 #define AO_RADIUS 0.45f         /* in the scene's units: a fighter is about 1.7 tall */
 #define AO_STRENGTH 1.0f
 
-static SDL_GPUShader *shader(const unsigned char *code, size_t n, SDL_GPUShaderStage stage, Uint32 storage, Uint32 uniforms,
-                             Uint32 samplers)
+static int shader_dxil;         /* the device takes no SPIR-V: Direct3D 12, and the shaders go to it as DXIL */
+
+static SDL_GPUShader *shader(const unsigned char *spv, size_t spv_n, const unsigned char *dxil, size_t dxil_n,
+                             SDL_GPUShaderStage stage, Uint32 storage, Uint32 uniforms, Uint32 samplers)
 {
     SDL_GPUShaderCreateInfo ci;
     SDL_zero(ci);
-    ci.code = code;
-    ci.code_size = n;
+    ci.code = shader_dxil ? dxil : spv;
+    ci.code_size = shader_dxil ? dxil_n : spv_n;
     ci.entrypoint = "main";
-    ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    ci.format = shader_dxil ? SDL_GPU_SHADERFORMAT_DXIL : SDL_GPU_SHADERFORMAT_SPIRV;
     ci.stage = stage;
     ci.num_samplers = samplers;
     ci.num_storage_buffers = storage;
@@ -530,17 +541,26 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
     pk_nwait = 0;
     npend = 0;
     SDL_UnlockMutex(lock);
-    if (!(SDL_GetGPUShaderFormats(gpu) & SDL_GPU_SHADERFORMAT_SPIRV))
+    /* recomp (section 103): a Vulkan device takes the shaders as SPIR-V; a Direct3D 12 device as
+     * DXIL, which only the Windows build carries */
+    SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(gpu);
+    shader_dxil = !(formats & SDL_GPU_SHADERFORMAT_SPIRV);
+#ifdef _WIN32
+    if (shader_dxil && !(formats & SDL_GPU_SHADERFORMAT_DXIL))
+        return SDL_SetError("the GPU device takes neither SPIR-V nor DXIL"), -1;
+#else
+    if (shader_dxil)
         return SDL_SetError("the GPU device takes no SPIR-V (it is not Vulkan)"), -1;
+#endif
     ds_format = SDL_GPUTextureSupportsFormat(gpu, SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT, SDL_GPU_TEXTURETYPE_2D,
                                              SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
                     ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
-    sh_scene_v = shader(spv_scene_vert, sizeof spv_scene_vert, SDL_GPU_SHADERSTAGE_VERTEX, 2, 1, 0);
-    sh_scene_f = shader(spv_scene_frag, sizeof spv_scene_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1, VIEW_GPU_TARGETS);
-    sh_vol_v = shader(spv_volume_vert, sizeof spv_volume_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
-    sh_rect_v = shader(spv_rect_vert, sizeof spv_rect_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
-    sh_bg_f = shader(spv_background_frag, sizeof spv_background_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 0);
-    sh_const_f = shader(spv_constant_frag, sizeof spv_constant_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 0);
+    sh_scene_v = shader(SH(scene_vert), SDL_GPU_SHADERSTAGE_VERTEX, 2, 1, 0);
+    sh_scene_f = shader(SH(scene_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1, VIEW_GPU_TARGETS);
+    sh_vol_v = shader(SH(volume_vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
+    sh_rect_v = shader(SH(rect_vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 0);
+    sh_bg_f = shader(SH(background_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 0);
+    sh_const_f = shader(SH(constant_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 0);
     if (!sh_scene_v || !sh_scene_f || !sh_vol_v || !sh_rect_v || !sh_bg_f || !sh_const_f)
         return -1;
     pipe_desc p;
@@ -598,9 +618,9 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
              SDL_GPUTextureSupportsFormat(gpu, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTURETYPE_2D,
                                           SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
     if (ao_can) {
-        sh_ao_f = shader(spv_ssao_frag, sizeof spv_ssao_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 1);
-        sh_ao_blur_f = shader(spv_ssao_blur_frag, sizeof spv_ssao_blur_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 2);
-        sh_ao_apply_f = shader(spv_ssao_apply_frag, sizeof spv_ssao_apply_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 1);
+        sh_ao_f = shader(SH(ssao_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 1);
+        sh_ao_blur_f = shader(SH(ssao_blur_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 2);
+        sh_ao_apply_f = shader(SH(ssao_apply_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 1);
         SDL_GPUSamplerCreateInfo si;
         SDL_zero(si);
         si.min_filter = si.mag_filter = SDL_GPU_FILTER_NEAREST;
@@ -645,8 +665,8 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         smp_texel = SDL_CreateGPUSampler(gpu, &si);
     }
-    sh_copy_f = shader(spv_copy_frag, sizeof spv_copy_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 1);
-    sh_rt_apply_f = shader(spv_rt_apply_frag, sizeof spv_rt_apply_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 3);
+    sh_copy_f = shader(SH(copy_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 1);
+    sh_rt_apply_f = shader(SH(rt_apply_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, 3);
     if (sh_copy_f && sh_rt_apply_f && smp_texel) {
         SDL_zero(p);
         p.vs = sh_rect_v;
@@ -666,7 +686,7 @@ int gpu_render_init(SDL_GPUDevice *dev, int scale_)
          * stencil's reference 0). */
         p.fs = sh_copy_f;
         pl_copy_flat = pipeline(&p);
-        sh_rt_fill_f = shader(spv_rt_fill_frag, sizeof spv_rt_fill_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 5);
+        sh_rt_fill_f = shader(SH(rt_fill_frag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, 5);
         if (sh_rt_fill_f) {
             SDL_zero(p);
             p.vs = sh_rect_v;

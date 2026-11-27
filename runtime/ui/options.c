@@ -12,6 +12,13 @@
 #define RT_ABOUT_2 "It needs a fast graphics chip with ray tracing; the log says if it could not start. A " \
                    "change applies at once. Replaces ambient occlusion. Software has none."
 static const char rt_about_directx[] = RT_ABOUT_1 "DirectX 12: the same through DirectX. " RT_ABOUT_2;
+/* Renderer's text where the game can draw through DirectX 12 too (docs/design.md section 103) */
+static const char renderer_about_directx[] =
+    "GPU (Vulkan) draws the game with the graphics chip at the internal resolution below. GPU (DirectX 12) is "
+    "the same renderer and the same picture through Windows' DirectX 12: try it if the picture freezes or "
+    "fails with Vulkan on your graphics chip. Windows then chooses the chip. Software draws the game on the "
+    "processor at the cabinet's 640 x 480 (wider with a wide picture). When no GPU can draw, Software is "
+    "used. GPU or Software applies at once; Vulkan or DirectX 12 the next time the game starts.";
 
 const option_info options[OPT_COUNT] = {
     [OPT_CREDITS] = { "Credits",
@@ -152,6 +159,8 @@ void options_directx(int offered)
 
 const char *option_about(int o)
 {
+    if (o == OPT_RENDERER && directx_offered)
+        return renderer_about_directx;
     return o == OPT_RAYTRACING && directx_offered ? rt_about_directx : options[o].about;
 }
 
@@ -416,7 +425,10 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         break;
     }
     case OPT_FILTER: SDL_strlcpy(buf, s->filter == FILTER_SHARP ? "Sharp" : "Smooth", n); break;
-    case OPT_RENDERER: SDL_strlcpy(buf, s->renderer == RENDERER_GPU ? "GPU (Vulkan)" : "Software", n); break;
+    case OPT_RENDERER:
+        SDL_strlcpy(buf, s->renderer != RENDERER_GPU ? "Software"
+                         : directx_offered && s->graphics == GRAPHICS_DIRECTX ? "GPU (DirectX 12)" : "GPU (Vulkan)", n);
+        break;
     case OPT_SCALE:
         SDL_snprintf(buf, n, "%d x %d", settings_picture_width(s->picture) * s->scale, 480 * s->scale);
         row->off = s->renderer != RENDERER_GPU;
@@ -426,7 +438,8 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
             SDL_strlcpy(buf, "Auto", n);    /* which GPU that is: option_note */
         else
             SDL_snprintf(buf, n, name_in(gpu_names, gpu_n, s->gpu) >= 0 ? "%s" : "%s (not found)", s->gpu);
-        row->off = s->renderer != RENDERER_GPU;
+        /* with DirectX 12 the chip is Windows' choice (section 103) */
+        row->off = s->renderer != RENDERER_GPU || (directx_offered && s->graphics == GRAPHICS_DIRECTX);
         break;
     case OPT_DISPLAY:
         if (!s->display[0])
@@ -482,7 +495,16 @@ void option_change(settings *s, int o, int d)
     case OPT_WINDOW: s->window = window_step(s, d); break;
     case OPT_PICTURE: s->picture = wrap(s->picture, d, PICTURES); break;
     case OPT_FILTER: s->filter = wrap(s->filter, d, 2); break;
-    case OPT_RENDERER: s->renderer = wrap(s->renderer, d, 2); break;
+    case OPT_RENDERER: {
+        /* GPU (Vulkan), then GPU (DirectX 12) where the game can use it (section 103), then Software */
+        int kinds = directx_offered ? 3 : 2;
+        int at = s->renderer != RENDERER_GPU ? kinds - 1 : directx_offered && s->graphics == GRAPHICS_DIRECTX ? 1 : 0;
+        at = wrap(at, d, kinds);
+        s->renderer = at == kinds - 1 ? RENDERER_SOFTWARE : RENDERER_GPU;
+        if (directx_offered && at != kinds - 1)
+            s->graphics = at == 1 ? GRAPHICS_DIRECTX : GRAPHICS_VULKAN;
+        break;
+    }
     case OPT_SCALE: s->scale = wrap(s->scale - 1, d, 4) + 1; break;
     case OPT_GPU: name_change(s->gpu, sizeof s->gpu, gpu_names, gpu_n, d); break;
     case OPT_DISPLAY: name_change(s->display, sizeof s->display, display_names, display_n, d); break;

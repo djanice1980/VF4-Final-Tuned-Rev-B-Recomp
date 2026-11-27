@@ -21,7 +21,11 @@
  *                     network off) at its real pace too; by default it runs as fast as it can
  *   --fullscreen      start in fullscreen (F11 or Alt+Enter toggles)
  *   --silent          no sound chip: VF4debug's mailbox model in its place (as M3)
- *   --gpu NAME        SDL_GPU driver: direct3d12 (or d3d12) or vulkan (default: SDL's choice)
+ *   --gpu NAME        SDL_GPU driver for this run: direct3d12 (or d3d12) or vulkan, whatever the
+ *                     settings' graphics says (default: by that setting, which is vulkan unless
+ *                     the player chose directx; docs/design.md section 103)
+ *   --no-direct3d12   for tests: the Direct3D 12 device that graphics = directx asks for cannot
+ *                     be made, as on a PC without one: the run must go on through Vulkan
  *   --log FILE        log somewhere else
  *   --press LIST      for tests: buttons pressed for 6 vertical blanks at given ones, as
  *                     "6500:p1:start,6800:p1:p+g" (p1 or p2; up down left right p k g start coin, and
@@ -2164,6 +2168,7 @@ static gpu_info gpus[GPUS_MAX];
 static const char *gpu_names[GPUS_MAX];
 static int gpus_n = -1;                 /* -1: not listed yet */
 static char gpu_now[GPU_NAME_MAX];      /* the GPU the GPU renderer draws on ("": none, Software) */
+static int d3d12_now;                   /* it draws through Direct3D 12 (section 103) */
 
 /* Vulkan's GPUs, listed once (at the start for a GPU chosen by name, else
  * as the menu first opens) */
@@ -2246,6 +2251,7 @@ static SDL_GPUDevice *gpu_open_named(const gpu_info *g)
 /* ---- the window's device and renderer (docs/design.md section 53) ---- */
 
 static const char *gpu_driver;          /* --gpu: SDL_GPU's driver (NULL: Vulkan, else SDL's choice) */
+static int no_direct3d12;               /* --no-direct3d12 */
 static SDL_GPUDevice *gpu;              /* the window's device */
 static int use_gpu;                     /* the GPU renderer draws on it; else the software picture is shown */
 static SDL_GPUTexture *pic_tex;         /* the software picture, uploaded */
@@ -2277,12 +2283,13 @@ static int video_claim(SDL_GPUDevice *d)
  * process makes on a GeForce, once the first has drawn the game and been
  * closed (vkDestroySwapchainKHR 22 s, vkDestroyDevice 11 s): at the quit, or
  * at the next change in the menu. So no GPU gets a second device */
-enum { DEV_LISTED, DEV_OWN, DEV_ANY };      /* how video_open came by one: a GPU of the list, SDL's own choice, any driver */
+/* how video_open came by one: a GPU of the list, SDL's own choice, any driver, Direct3D 12 by the player's choice */
+enum { DEV_LISTED, DEV_OWN, DEV_ANY, DEV_D3D12 };
 static struct {
     SDL_GPUDevice *dev;
     int how;
     char name[GPU_NAME_MAX];
-} held[GPUS_MAX + 2];
+} held[GPUS_MAX + 3];
 static int held_n;
 static int gpu_how;                     /* the window's device: how video_open came by it */
 
@@ -2349,7 +2356,9 @@ static void close_step(const char *what, const char *on)
  * the software picture is shown through the first that showed the window.
  * Software passes the GPU setting by: the first in the list that shows the
  * window. Last, for the software picture, any device SDL_GPU has (Direct3D
- * 12 on Windows without Vulkan; --gpu names one). A device held from
+ * 12 on Windows without Vulkan; --gpu names one). Direct3D 12 asked for
+ * by name (section 103): SDL's Direct3D 12 device alone, with the GPU
+ * renderer on it when Renderer is GPU. A device held from
  * before (section 60) is taken in place of opening its GPU again. Sets gpu,
  * use_gpu, gpu_now, pic_tex and upload, the window claimed; 0, or -1 when
  * nothing can show the window */
@@ -2357,7 +2366,19 @@ static int video_open(void)
 {
     SDL_Window *win = main_win;
     char name[GPU_NAME_MAX];
-    int want_gpu = cfg_.renderer == RENDERER_GPU && !(gpu_driver && SDL_strcasecmp(gpu_driver, "vulkan"));
+    /* recomp (section 103): the GPU renderer runs on a Vulkan device and, when asked for by name,
+     * on a Direct3D 12 one */
+    int by_d3d12 = gpu_driver && !SDL_strcasecmp(gpu_driver, "direct3d12");
+    int want_gpu = cfg_.renderer == RENDERER_GPU && (!gpu_driver || !SDL_strcasecmp(gpu_driver, "vulkan") || by_d3d12);
+    /* the player's own choice of DirectX 12 (settings: graphics = directx), taken as the game
+     * starts and kept for the whole run: a window that has shown one of the two is not handed to
+     * the other while the game runs (on Windows that can fail, and it cannot be tried here), so a
+     * change in the menu waits for the next start. With it everything is shown through SDL's
+     * Direct3D 12 device, the software picture too. Where it cannot start, the run goes on as
+     * with graphics = vulkan (the setting is kept). Nothing but that setting chooses it */
+    static int run_d3d12 = -1;      /* this run's way: -1 not settled yet, 1 Direct3D 12, 0 Vulkan's own order */
+    if (run_d3d12 < 0)
+        run_d3d12 = !gpu_driver && start_cfg.graphics == GRAPHICS_DIRECTX;
     SDL_GPUDevice *keep = NULL;     /* the first that showed the window, where the GPU renderer did not start */
     int keep_how = 0, keep_old = 0;
     const char *why = "";
@@ -2367,7 +2388,48 @@ static int video_open(void)
     video_for.renderer = cfg_.renderer;
     video_for.scale = cfg_.scale;
     SDL_strlcpy(video_for.gpu, cfg_.gpu, sizeof video_for.gpu);
-    if (!gpu_driver || !SDL_strcasecmp(gpu_driver, "vulkan")) {
+    if (run_d3d12 == 1) {
+        SDL_GPUDevice *d = held_take(DEV_D3D12, NULL);
+        int old = d != NULL;            /* it showed the window before in this run: not closed before the end */
+        if (!d && no_direct3d12)
+            SDL_SetError("--no-direct3d12");
+        else if (!d)
+            d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_DXIL, false, "direct3d12");
+        if (!d) {
+            logf_("GPU: no Direct3D 12 device (%s): Vulkan instead (the setting is kept)", SDL_GetError());
+            run_d3d12 = 0;
+        } else if (!video_claim(d)) {
+            logf_("GPU: Direct3D 12 on %s cannot show the window (%s): Vulkan instead (the setting is kept)",
+                  gpu_name_of(d, name, sizeof name), SDL_GetError());
+            dev_drop(d, DEV_D3D12, old);
+            run_d3d12 = 0;
+        } else if (!want_gpu) {
+            gpu = d;                    /* the software picture, through the same device */
+            gpu_how = DEV_D3D12;
+        } else if (gpu_render_init(d, cfg_.scale) == 0) {
+            gpu = d;
+            gpu_how = DEV_D3D12;
+            use_gpu = 1;
+            why = " (DirectX 12, the player's choice)";
+        } else if (old) {
+            /* it drew before in this run (an internal resolution that does not fit now): the software
+             * picture through it, as with Vulkan when the GPU renderer starts on no GPU */
+            logf_("GPU: the GPU renderer cannot start again through Direct3D 12 on %s (%s)",
+                  gpu_name_of(d, name, sizeof name), SDL_GetError());
+            gpu_render_quit();
+            gpu = d;
+            gpu_how = DEV_D3D12;
+        } else {
+            logf_("GPU: the GPU renderer cannot start through Direct3D 12 on %s (%s): Vulkan instead (the setting "
+                  "is kept)", gpu_name_of(d, name, sizeof name), SDL_GetError());
+            gpu_render_quit();
+            if (win)
+                SDL_ReleaseWindowFromGPUDevice(d, win);
+            SDL_DestroyGPUDevice(d);
+            run_d3d12 = 0;
+        }
+    }
+    if (!gpu && (!gpu_driver || !SDL_strcasecmp(gpu_driver, "vulkan"))) {
         gpus_need();
         const gpu_info *chosen = want_gpu && cfg_.gpu[0] ? gpus_find(gpus, gpus_n, cfg_.gpu) : NULL;
         if (want_gpu && cfg_.gpu[0] && !chosen)
@@ -2456,11 +2518,22 @@ static int video_open(void)
         } else {
             gpu = d;
             gpu_how = DEV_ANY;
+            if (want_gpu && by_d3d12) {         /* recomp (section 103) */
+                if (gpu_render_init(d, cfg_.scale) == 0) {
+                    use_gpu = 1;
+                    why = " (Direct3D 12)";
+                } else {
+                    logf_("GPU: the GPU renderer cannot start through Direct3D 12 on %s (%s)",
+                          gpu_name_of(d, name, sizeof name), SDL_GetError());
+                    gpu_render_quit();
+                }
+            }
         }
     }
     if (!gpu)
         return -1;
     logf_("GPU driver: %s", SDL_GetGPUDeviceDriver(gpu));
+    d3d12_now = use_gpu && !SDL_strcasecmp(SDL_GetGPUDeviceDriver(gpu), "direct3d12");
     {
         /* which graphics driver, and its version: a fault of one driver's shows only on its PCs (section 83) */
         SDL_PropertiesID gp = SDL_GetGPUDeviceProperties(gpu);
@@ -2598,6 +2671,7 @@ static int video_changed(void)
 {
     if (cfg_.renderer != video_for.renderer)
         return 1;
+    /* (Vulkan or DirectX 12, settings' graphics, is the run's from its start: section 103) */
     return cfg_.renderer == RENDERER_GPU && (cfg_.scale != video_for.scale || SDL_strcasecmp(cfg_.gpu, video_for.gpu));
 }
 
@@ -2960,6 +3034,7 @@ static void menu_show_as(int notice)
     r.card_edit = card_edit_save;
     r.refresh = screen_rate(NULL, NULL, NULL, &r.refresh_own);
     r.gpu_now = gpu_now;                /* as it is now: video_switch changes it while the menu is open */
+    r.d3d12_now = &d3d12_now;
     r.deck = settings_steam_deck();
     r.session = in_session;
     r.join_code = in_session && session_role() == SESSION_HOST ? session_code : NULL;    /* the same values */
@@ -3757,6 +3832,7 @@ int main(int argc, char **argv)
             gpu_driver = argv[++i];
             if (!SDL_strcasecmp(gpu_driver, "d3d12")) gpu_driver = "direct3d12";   /* SDL's name for it */
         }
+        else if (!strcmp(a, "--no-direct3d12")) no_direct3d12 = 1;
         else if (!strcmp(a, "--log") && v) log_path = argv[++i];
         else if (!strcmp(a, "--user") && v) user_arg = argv[++i];
         else if (!strcmp(a, "--kofi-notice") && v) kofi_frame = (unsigned)strtoul(argv[++i], NULL, 10);
@@ -4005,6 +4081,10 @@ int main(int argc, char **argv)
             cfg_.raytracing = RAYTRACING_OFF;
             logf_("settings: raytracing = directx is the Windows game's alone: off in this game (vulkan traces the "
                   "same light here)");
+        }
+        if (cfg_.graphics == GRAPHICS_DIRECTX) {    /* recomp (section 103): the same for the renderer's own way */
+            cfg_.graphics = GRAPHICS_VULKAN;
+            logf_("settings: graphics = directx is the Windows game's alone: vulkan in this game");
         }
 #endif
         SDL_snprintf(backup_path, sizeof backup_path, "%sbackup.bin", user_dir);

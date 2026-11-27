@@ -188,6 +188,8 @@ static int change(int d)
     if ((id == OPT_SCALE || id == OPT_GPU || id == OPT_OCCLUSION || id == OPT_RAYTRACING || id == OPT_RAYQUALITY) &&
         s->renderer != RENDERER_GPU)
         return MENU_STAY;
+    if (id == OPT_GPU && run.d3d12_now && *run.d3d12_now)
+        return MENU_STAY;           /* DirectX 12 draws: the chip is Windows' choice (section 103) */
     if (id == OPT_SCREENMODE && s->fullscreen != FULLSCREEN_EXCLUSIVE)
         return MENU_STAY;           /* Exclusive's alone (section 86) */
     option_change(s, id, d);
@@ -808,6 +810,8 @@ static int later(int id)
     case OPT_NETWORK: return s->network != run.start.network;
     case OPT_REGION: return s->region != run.start.region;
     case OPT_SOUND: return s->sound != run.start.sound;
+    /* Vulkan or DirectX 12 is the run's from its start (docs/design.md section 103); GPU or Software applies at once */
+    case OPT_RENDERER: return s->renderer == RENDERER_GPU && s->graphics != run.start.graphics;
     }
     return 0;
 }
@@ -863,7 +867,18 @@ static void about_of(int id, const char **title, const char **text, const char *
                  !(run.gpu_now && run.gpu_now[0]))
             *note = "The GPU renderer could not start on any GPU: the game is drawn with Software for now. The "
                     "game's log (vf4ft.log) says why.";
-        else if (id == OPT_GPU) {
+        else if (id == OPT_RENDERER && later(id))
+            *note = "Changed: Vulkan or DirectX 12 is taken the next time the game starts.";
+        else if (id == OPT_RENDERER && s->renderer == RENDERER_GPU && s->graphics == GRAPHICS_DIRECTX &&
+                 !(run.d3d12_now && *run.d3d12_now))
+            *note = "DirectX 12 could not start: the game is drawn through Vulkan for now. The game's log "
+                    "(vf4ft.log) says why.";
+        else if (id == OPT_GPU && run.d3d12_now && *run.d3d12_now) {
+            static char dn[GPU_NAME_MAX + 100];
+            SDL_snprintf(dn, sizeof dn, "With DirectX 12, Windows chooses the graphics chip: drawing on %s.",
+                         run.gpu_now);
+            *note = dn;
+        } else if (id == OPT_GPU) {
             /* the whole names: the row cuts a long one short (section 53: as it is now) */
             static char gn[2 * GPU_NAME_MAX + 100];
             if (s->gpu[0] && SDL_strcasecmp(s->gpu, run.gpu_now))
@@ -1113,8 +1128,10 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
             if (id < OPT_COUNT) {
                 option_row(s, id, w, vals[i], sizeof vals[i]);
                 w->later = options[id].at_start && later(id);
-                if (id == OPT_CREDITS || id == OPT_NETWORK || id == OPT_REGION)
+                if (id == OPT_CREDITS || id == OPT_NETWORK || id == OPT_REGION || id == OPT_RENDERER)
                     w->later = later(id);
+                if (id == OPT_GPU)      /* off while Windows chooses the chip: the run draws through DirectX 12 */
+                    w->off = s->renderer != RENDERER_GPU || (run.d3d12_now && *run.d3d12_now);
                 if (id == OPT_VOLUME && !run.sound)
                     w->off = 1;
                 continue;

@@ -571,7 +571,7 @@ water, most where the eye looks along it, and only faintly in the cave,
 whose water is clear:
 [design.md s81](docs/design.md#81-traced-water-2026-11-25)); DirectX 12,
 in the Windows game (on Windows or under Proton), traces the same picture
-through DirectX instead, without the water's mirror so far. It needs a
+through DirectX instead (the water's mirror too, since 0.5.27). It needs a
 graphics chip with ray tracing; it is off by default. Ray tracing quality
 says how much work that is: High traces every pixel of the picture, Medium
 (the default) a quarter of them and fills the picture in, which looks
@@ -609,7 +609,14 @@ be set back there
 ([design.md s86](docs/design.md#86-fullscreens-two-kinds-borderless-window-and-exclusive-2026-11-26)).
 Picture, window size,
 scaling, fullscreen, screen mode, display, renderer, GPU, internal resolution and volume
-change at once (the launcher's window follows Renderer and GPU too). A GPU
+change at once (the launcher's window follows Renderer and GPU too). In
+the Windows game, Renderer has a third value, GPU (DirectX 12): the same
+renderer and the same picture through Windows' DirectX 12 in place of
+Vulkan, for a PC whose graphics driver gives trouble with Vulkan. It is
+never chosen for you. Between Vulkan and DirectX 12 the game chooses as it
+starts, so that change is marked for the next start; with DirectX 12
+Windows chooses the graphics chip, and the GPU row rests
+([design.md s103](docs/design.md#103-the-gpu-renderer-through-directx-12-the-players-choice-2026-11-27)). A GPU
 the game has drawn on stays open in the game until it quits, also after
 you choose another
 ([why](docs/design.md#60-one-device-a-gpu-for-the-whole-run-2026-11-17)). The
@@ -737,6 +744,12 @@ with only a gamepad, the menu's Operator test menu does the same.
   internal resolution each way), filled in over the picture, low that
   with a quarter of the rays; default medium:
   [design.md s76](docs/design.md#76-ray-tracing-quality-2026-11-25)),
+  `graphics` (vulkan | directx: what the GPU renderer draws through;
+  directx is DirectX 12, the Windows game's alone, for a PC whose
+  graphics driver gives trouble with Vulkan; the picture is the same;
+  the native Linux game takes it as vulkan; default vulkan, and nothing
+  chooses directx by itself:
+  [design.md s103](docs/design.md#103-the-gpu-renderer-through-directx-12-the-players-choice-2026-11-27)),
   then the controls: `key1.punch =
   K` (`key1.test`, `key1.service` the operator's switches), `key2.*` for
   keyboard player 2, `pad1.*` and `pad2.*` for each player's gamepad (a
@@ -763,9 +776,20 @@ the GPU chosen in the Picture tab's GPU row. A chosen GPU that is not
 there (an external one unplugged) or cannot draw is passed over for the
 first in the row's list that works, and Auto (the default) takes the
 first that works; the list is in Vulkan's order, which usually puts the
-GPU your screen is on first. When no GPU works, or with `--gpu
-direct3d12`, the game shows the software picture at 640 x 480, as in M3.
-`vf4ft.log` says which renderer and GPU it used, and why.
+GPU your screen is on first. When no GPU works, the game shows the
+software picture at 640 x 480, as in M3. `vf4ft.log` says which renderer
+and GPU it used, and why.
+
+In the Windows game the GPU renderer can draw through DirectX 12 in place
+of Vulkan (`graphics = directx`, or Renderer: GPU (DirectX 12) in the
+menu or the launcher; `--gpu direct3d12` for one run). It is the same
+renderer with the same shaders in DirectX's language, and its picture is
+Vulkan's to the pixel where it was compared. The game takes it as it
+starts and keeps it for the run: the software picture is then shown
+through DirectX 12 too, and Windows chooses the graphics chip. If
+DirectX 12 cannot start, the run draws through Vulkan and the menu says
+so; the setting is kept. Vulkan is the default, and nothing but your
+choice turns DirectX 12 on.
 
 Options: `--fullscreen`, `--gpu direct3d12|vulkan`, `--frames N` (quit
 after N vertical blanks), `--unpaced` (no waiting, for measuring),
@@ -810,7 +834,10 @@ building needs no shader compiler. After changing a shader in
 `runtime/host/shaders/`, install glslc (`sudo pacman -S shaderc`) and
 run `python3 tools/make_shaders.py`.
 
-The two `.hlsl` shaders there are the DirectX 12 ray tracing's; their
+The `.hlsl` shaders there are DirectX's: `rt_light.hlsl` and
+`rt_filter.hlsl` the DirectX 12 ray tracing's, and each `*.vert.hlsl`
+and `*.frag.hlsl` the twin of the GPU renderer's shader it is named
+after, for a Direct3D 12 device (change the two together). Their
 DXIL is committed too (`runtime/host/dx_shaders.h`). To make it again
 after changing one, the tool needs Microsoft's own build of its shader
 compiler, dxc: from
