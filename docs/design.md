@@ -9402,3 +9402,117 @@ of the comparison with the emulator (they sway, and the two are not at
 one frame). The emulator is a second reading, not the board: where the
 two agree both can be wrong. The ray tracers' own handling of a strip
 with colors and an environment map was not changed.
+
+## 100. After the audit: the board's frames on a floor, the statue of stage 0, the lamp everywhere (2026-11-27)
+
+**Why.** Section 99 left "cut first or light first" open for want of a
+frame of the real board, said of stage 0's statue that the game places
+it without having looked at how, and had the cage's lamp checked in
+three of the ways the game draws.
+
+**Cut first or light first: the board is ours'.** The maintainer
+supplied three frames from videos of the board, each from the fight's
+first quarter second: the cave (stage 20, Lei-Fei against Brad), the
+temple garden (stage 17, Lei-Fei against Kage) and the snow (stage 2,
+Jacky against Goh). Ours and the emulator were run with the same
+fighters; the camera stands still from the fight's first vertical blank
+to the 111th, where the emulator's picture is taken (ours' pictures 9
+and 111 after are the same on the floor away from the fighters).
+
+- With these fighters ours and the emulator agree on the cave's floor
+  and on the snow's but for a band at each edge (within 2 of 255), and
+  differ all over the temple's: the emulator is 1 to 3 brighter at the
+  floor's far edge and 13 to 15 at the picture's foot. So the temple's
+  frame is the one that can tell.
+- The frame is brought to ours' geometry by its HUD (section 93's way).
+  Its colors are set by the scene itself: a straight line per channel
+  over every pixel where ours and the emulator agree within 2 (12 % of
+  the picture, the HUD and the fighters left out). Where the two agree
+  the open question cannot matter, so the line owes nothing to it. It
+  misses those pixels by 2.6 to 3.0 (spread).
+- The floor between the fighters, in bands of 40 lines, areas of 17 x 17
+  averaged, mean of the three channels of 255:
+
+      lines        emulator - ours    board - ours
+      620..660          +2.5              +1.6
+      660..700          +5.8              -0.4
+      700..740          +8.4              +3.6
+      740..780          +9.2              -4.3
+      780..820          +9.1              +0.9
+      820..860         +12.9              +0.4
+      860..900         +13.2              -2.0
+      900..940         +14.0              -1.6
+
+  The strips at the left and right edges and across the foot of the
+  picture say the same: the emulator +1 to +15, the board within 4.5 of
+  ours in every band (20 bands in all, their mean -0.5).
+- The same measure on the two other frames, as a check of the method:
+  on the cave's floor the board is within 3.4 of ours in 19 of 20 bands
+  (one band beside the HUD's icons is not); on the snow within 1.3 in
+  all 12, three of them bands at the far left and right where the
+  emulator is 4 to 8 brighter than ours.
+- So on these floors the board draws what ours draws. Section 99's
+  first open item is closed and nothing is changed. (Why the emulator
+  is brighter there was read from its source, cutting before lighting,
+  and not proven by a test.)
+- Limits: one frame of one video for the stage that tells; that the
+  videos are of a real board is their makers' word (the frames have the
+  arcade's one-player HUD and the stair-stepped edges of 480 lines; if
+  one were an emulator's, it is not this emulator's); the color line
+  rests on scene pixels up to a brightness near 130.
+
+**The statue of stage 0: the game throws dice.** In section 99 a statue
+stood at the left in ours, at the right and mirrored in the emulator,
+and nowhere in the emulator's first round. The decompilation has the
+reason (read, not copied): as a stage is set up, the routine that sets
+up ten pieces of the ruins gives each its whole look or its broken look
+by one bit of the game's random number (the second piece always whole),
+and draws the one or the other from then on. The generator is seeded
+once, as the machine starts, from the board's clock, and over a hundred
+places draw from it (a face's blinking among them), so every start at
+another time of day shows another set.
+
+Checked in ours: the generator's state set to six values at the moment
+the stage is forced, the pieces' flags read back and the picture
+looked at. The left statue stands in three, the right in three (both in
+one, neither in one); the stone lion in the middle is whole in four and
+a white broken block in two. The eighth piece's bit goes with the right
+statue in all six, the ninth's with the left, the tenth's with the
+lion. The emulator's two rounds are two of these (neither statue and
+the broken lion; the right statue alone). The two statues are mirror
+twins on either side of the stage's middle: that was the "mirrored".
+Ours' tests show one set every time because they run on a fixed clock.
+
+**The cage's lamp in every way the game draws** (the lamp's box, red
+of 255, at the audit's three moments; the lamp pulses):
+
+    release 0.5.26, before section 99      100  102  102
+    Linux, the lights on the GPU           197  169  181
+    Linux, the lights on the processor     197  169  181
+    Linux, the software renderer           196  167  179
+    Linux, ray tracing (Vulkan), Medium    199  170  182
+    Linux, ray tracing (Vulkan), High      199  170  182
+    Windows (Proton), no ray tracing       197  169  181
+    Windows (Proton), ray tracing, Vulkan  199  170  182
+    Windows (Proton), ray tracing, DX12    199  170  182
+    the emulator                           209  162  189
+
+Section 99's "the ray tracers' own handling was not changed" needs no
+follow-up: the lamp is drawn by the same strips under either tracer.
+
+**What would settle the rest of section 99's open items.** None of them
+showed in the 15 pictures, so the first step is the same for each and
+needs nothing from outside: a switch in a test build that does it the
+other way (the translucent list's depth test as "greater or equal"; the
+sort by the nearest depth; the offset color not held before the fog; the
+mip level's D above 4 taken as 4; the far plane read), every stage drawn
+both ways over a whole match, and the pixels that change counted. An
+item that changes nothing in this game is closed by that. For one that
+does, the place it shows is then known, and a frame of the board at
+that place decides, as the temple's floor did here. The shadow volume
+cut by the near plane needs no board: the library's own software path
+closes the hole, so closing it is right; what is missing is a moment
+that shows it (the camera low and close: a throw or a replay).
+
+**Not covered.** As section 99: one pair of fighters a stage and the
+first seconds of a fight.
