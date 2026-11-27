@@ -9574,3 +9574,127 @@ stage from its snapshot at 7600, ray tracing at Medium through DirectX
 **Not covered.** A Windows PC's own DirectX 12 driver (under Proton both
 tracers end on the same Vulkan driver); the High setting; more than one
 moment a stage.
+
+## 102. Section 99's open items, each the other way, for a whole match on every stage (2026-11-27)
+
+**Why.** Section 99 left a list of places where `view.c` and the
+emulator differ and nobody knows the board's way; none showed in the 15
+pictures. Section 100 said what would settle them: a test build with a
+switch for each, every stage drawn both ways for a whole match, the
+changed pixels counted. What changes nothing is closed; for what does,
+the stage and the spot are then known, and a frame of the board there
+decides.
+
+**How.** Test code only (not in the repository; the patch scripts are
+kept beside the test's results): the software renderer, for every
+picture of the screen, draws the scene again with one thing the other
+way and counts the pixels that differ from the picture it shows. A
+seventh "switch" that changes nothing checks that a second drawing is
+the first (0 pixels in every frame). Each real stage from the audit's
+snapshot (Jacky against Brad), 4,000 vertical blanks past the fight's
+first: the stage's and the fighters' intros, a match of two rounds with
+both players' buttons pressed by a fixed pattern while the fight runs
+(hits, throws, two knockouts), the replays and the victory pose, which
+nothing presses through, and the first 16 seconds of the match that
+follows on another stage. 68,379 pictures, about 4,560 a stage.
+
+**Closed: nothing changes, on any stage, in any picture.**
+
+- *The far plane.* The matrix command's far word is 1000 in every one of
+  the 8.6 million commands, and no strip of 50 million lies wholly
+  beyond it.
+- *The background plane's depth.* The plane's own depth and the depth
+  register are both 0.00001; with the depth starting there and not
+  empty, no pixel differs.
+- *A shadow volume the near plane cuts.* It happens often (in 700 to
+  1,100 pictures of a match on six stages: replays and poses bring the
+  camera close), and the remedy is known (the library's own software
+  path closes the hole). Built as a switch: the two points where each
+  cut triangle meets the plane are an edge of the hole, and a fan of
+  triangles over those edges, in the plane, closes it. No pixel differs.
+  The fans show why: the holes lie thousands of pixels beside or below
+  the screen (the first of the snow's: columns -8,328 to -6,737, lines
+  7,600 to 9,523). The near plane cuts these volumes where the picture
+  is not. So on all 15 stages: not one of the 68,379 pictures has a pixel that closing the holes changes.
+
+**It changes pixels; which way is the board's is not shown.**
+
+- *The translucent list's depth test, "greater" as sent or "greater or
+  equal".* On 14 stages: 6,399 pixels in 4,112 of 63,834 pictures, one
+  or two a picture. On stage 11: 9.9 million, in half its pictures,
+  11,823 in the worst. A probe of one such pixel shows what it is. The
+  corridor's floor is sent twice with the same corners: in the opaque
+  list with the filter word 2, and in the translucent list with the
+  filter word 3 and a one-plus-one blend, both with "greater". Those
+  are the chip's two passes of a tri-linear filter (the two mip levels a
+  pixel lies between, each by its share, added). With "greater" the
+  second pass loses to the first at the same depth, so `view.c` shows
+  the first pass alone and in full: one mip level, not two blended. The
+  floor's far part at one moment of the fight: 103 91 77 here (both
+  renderers), 148 140 124 with the switch (both passes in full: too
+  much), 126 111 92 in the emulator (which takes "greater or equal" for
+  a sorted list whatever is sent, and weighs the passes by two bits of
+  the D number). The game sends a second pass that "greater" could
+  never let through, and its makers saw their floor on the board, so
+  "greater or equal" is very likely the chip's way in a sorted list;
+  but it is only right together with the two passes' shares, which
+  nothing here works out yet. Left as it is. A frame of the board on
+  stage 11 as a round begins, the far floor beside the rails, would say
+  how bright that floor is.
+- *The texture's color plus the offset color: held to full before the
+  fog, or only at the end.* 9,229 pictures. Most on stages 0, 4 and 22
+  (3,081, 2,001 and 1,952 pictures: through the fights). On stage 0,
+  looked at: the fighters' whitest parts (hand wraps, a fur collar),
+  where light over full has gone into the offset color (section 98) and
+  the stage has fog: about 1,100 pixels, up to 19 of 255. On the other
+  stages 39 to 672 pictures, up to 61 of 255; on stage 17, looked at,
+  the first 92 of its 199 are the second and a half in which the stage's
+  picture fades in from white. Held first, a white part is a little under white (the
+  fog's share of it); held at the end it is full white. Left as it is.
+  A frame of the board with a fighter's white cloth in a fight on stage
+  0, 4 or 22 would say.
+- *A mip-mapped texture's D number above 4: a factor (2.5 for 10), or
+  taken as 4.* Stages 20, 22, 23 and 3: 23,873 pixels a picture on stage
+  20 (D is 5 on the cave's rock), 16,638 on stage 22 (D is 10), 1,936 on
+  stage 23, 78 on stage 3. As a factor those textures are softer. The
+  emulator's own source calls its table "a rough approximation" that is
+  "only used to increase" the level of detail. The maintainer's frame of
+  the board in the cave (section 100) was held against both: the fine
+  detail (brightness less its mean over 5 x 5) in blocks of 16 x 16,
+  with a line through the blocks that do not change for what the video
+  keeps of ours' detail (0.21 + 0.69 x, missing them by 0.60). Of the 20
+  blocks that change the board is nearer the line's value for "taken as
+  4" in 13 and for the factor in 7 (10.44 against 10.21 and 9.75): a
+  lean toward "taken as 4" that is smaller than the line's own misses.
+  Not decided, and left as it is. Stage 22 would say much more clearly
+  (its factor is 2.5, the cave's 1.25): a frame of the board there as a
+  round begins.
+
+**The order of translucent triangles: the chip's own way is known, and
+is neither.** Section 99 had the emulator sort by a triangle's nearest
+corner. Read again: it sorts by the farthest (the smallest 1/w of the
+three), where `view.c` takes the mean of the three. The chip does
+neither: in a sorted list (and the feed register says this game's are
+sorted) it orders the translucent layers of each pixel by themselves.
+That was built as a test too: the translucent list drawn a layer of
+each pixel at a time, from the back, by depth and then by the
+triangle's number (up to 55 layers in a pixel). Held against it over
+the same 68,379 pictures:
+
+    the triangles sorted by            pixels that differ    a picture with any
+    the mean of their corners (ours)       69.9 million            1,129
+    their farthest corner (emulator)       89.3 million            1,447
+    their nearest corner                  102.7 million            1,660
+
+The mean is the nearest of the three to the chip's order on every
+stage, and it is still not that order in nine pictures of ten: about
+0.4 % of a picture, by steps up to the full range. On the stage looked
+at (17) it is the fighters' hair, which is layers of translucent
+strands, and a few leaves. Getting it right is each pixel's own order
+in the renderers (for the GPU renderer: its translucent list drawn in
+layers), a feature of its own. Not done.
+
+**Not covered.** One pair of fighters, one match a stage; the software
+renderer only (the GPU renderer draws by the same rules, section 99's
+check, but its depths are its own); passes into textures were drawn as
+the game is.
