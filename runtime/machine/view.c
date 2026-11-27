@@ -300,6 +300,7 @@ typedef struct xform {
 typedef struct lightset {
     float amb[3];
     light l[16];
+    int over;           /* recomp (section 93): the header's bit 9: light over full goes into the offset color */
 } lightset;
 
 /* a strip of a model, kept (with a copy of its vertices) until the scene is drawn */
@@ -310,8 +311,10 @@ typedef struct sjob {
     u32 base, offset;                   /* the material's colours */
     u16 size, format;
     u8 k;                               /* 0 opaque, 1 punch-through, 2 translucent */
-    u8 unlit, env, spec;                /* from the material: no lights; generated coordinates; the specular power */
+    u8 unlit, env, spec;                /* from the material: no lights; generated coordinates; its row of the
+                                         * library's specular table (the ray tracers know a pane of glass by it) */
     u8 flat, use_ofs;
+    u8 gloss;                           /* recomp (section 93): the material's gloss byte as it came: the highlight's power */
     s8 keep;
 } sjob;
 
@@ -664,17 +667,6 @@ static inline u32 blend_factor(int f, u32 other, u32 a)
     }
 }
 
-static inline u32 mul_add(u32 s, u32 sf, u32 d, u32 df)
-{
-    u32 r = ((s >> 16 & 255) * (sf >> 16 & 255) + (d >> 16 & 255) * (df >> 16 & 255) + 127) / 255;
-    u32 g = ((s >> 8 & 255) * (sf >> 8 & 255) + (d >> 8 & 255) * (df >> 8 & 255) + 127) / 255;
-    u32 b = ((s & 255) * (sf & 255) + (d & 255) * (df & 255) + 127) / 255;
-    if (r > 255) r = 255;
-    if (g > 255) g = 255;
-    if (b > 255) b = 255;
-    return r << 16 | g << 8 | b;
-}
-
 /* a texel coordinate brought into the texture: clamped, mirrored or repeated */
 static inline int tex_at(int t, int size, int clamp, int flip)
 {
@@ -868,12 +860,20 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
     }
     int flat = p0->r == p1->r && p0->r == p2->r && p0->g == p1->g && p0->g == p2->g && p0->b == p1->b &&
                p0->b == p2->b && p0->a == p1->a && p0->a == p2->a;
+    /* recomp (section 95): a vertex's colours go across the triangle with the perspective, as the
+     * texture's coordinates do: colour / w is what runs straight on the screen (z here is 1 / w).
+     * A triangle of one depth (the HUD, a picture) and one of one colour keep the plain way,
+     * which is the same there */
+    int persp = !(p0->z == p1->z && p0->z == p2->z);
+    int pcol = persp && !flat;
+    float kc0 = pcol ? p0->z : 1.0f, kc1 = pcol ? p1->z : 1.0f, kc2 = pcol ? p2->z : 1.0f;
+    float r0 = p0->r * kc0, g0 = p0->g * kc0, b0 = p0->b * kc0, a0 = p0->a * kc0;
     float drx = 0, dry = 0, dgx = 0, dgy = 0, dbx = 0, dby = 0, dax = 0, day = 0;
     if (!flat) {
-        GRAD(p0->r, p1->r, p2->r, drx, dry);
-        GRAD(p0->g, p1->g, p2->g, dgx, dgy);
-        GRAD(p0->b, p1->b, p2->b, dbx, dby);
-        GRAD(p0->a, p1->a, p2->a, dax, day);
+        GRAD(r0, p1->r * kc1, p2->r * kc2, drx, dry);
+        GRAD(g0, p1->g * kc1, p2->g * kc2, dgx, dgy);
+        GRAD(b0, p1->b * kc1, p2->b * kc2, dbx, dby);
+        GRAD(a0, p1->a * kc1, p2->a * kc2, dax, day);
     }
     /* the offset colour: added after the texture; its alpha is the fog of a polygon with fog by vertex */
     int fog_mode = tsp >> 22 & 3;
@@ -882,11 +882,14 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
                   (p0->or_ != 0 || p0->og != 0 || p0->ob != 0 || p1->or_ != 0 || p1->og != 0 || p1->ob != 0 ||
                    p2->or_ != 0 || p2->og != 0 || p2->ob != 0 || fog_mode == 1 || bump);
     float dorx = 0, dory = 0, dogx = 0, dogy = 0, dobx = 0, doby = 0, doax = 0, doay = 0;
+    int pofs = persp && has_ofs;        /* recomp (section 95): the offset colour the same way */
+    float ko0 = pofs ? p0->z : 1.0f, ko1 = pofs ? p1->z : 1.0f, ko2 = pofs ? p2->z : 1.0f;
+    float or0 = p0->or_ * ko0, og0 = p0->og * ko0, ob0 = p0->ob * ko0, oa0 = p0->oa * ko0;
     if (has_ofs) {
-        GRAD(p0->or_, p1->or_, p2->or_, dorx, dory);
-        GRAD(p0->og, p1->og, p2->og, dogx, dogy);
-        GRAD(p0->ob, p1->ob, p2->ob, dobx, doby);
-        GRAD(p0->oa, p1->oa, p2->oa, doax, doay);
+        GRAD(or0, p1->or_ * ko1, p2->or_ * ko2, dorx, dory);
+        GRAD(og0, p1->og * ko1, p2->og * ko2, dogx, dogy);
+        GRAD(ob0, p1->ob * ko1, p2->ob * ko2, dobx, doby);
+        GRAD(oa0, p1->oa * ko1, p2->oa * ko2, doax, doay);
     }
 #undef GRAD
 
@@ -915,6 +918,7 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
     int fog_lut = tg.fog_on && (fog_mode == 0 || fog_mode == 3), fog_vert = fog_mode == 1 && has_ofs;
     u32 fog_col = fog_vert ? tg.fog_col_vert : tg.fog_col;
     int fcr = fog_col >> 16 & 255, fcg = fog_col >> 8 & 255, fcb = fog_col & 255;
+    int stretch = tpix != NULL || pcol || pofs;     /* recomp (section 95): something is worked out by the stretch */
     u8 takes_shadow = pcw >> 7 & 1;
     int tshadow = mode == 2 && takes_shadow && th_tvol && tg.shadow_scale < 256;
     int clip_out = clip_mode == 3;
@@ -942,15 +946,33 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
         float px = (float)(xl + 0.5 - x0), py = (float)(y + 0.5 - y0);
         float z = p0->z + dzx * px + dzy * py;
         float uz = u0z + dux * px + duy * py, vz = v0z + dvx * px + dvy * py;
-        /* colours as 16.16 fixed point, 0..255 */
-        int cr = (int)((p0->r + drx * px + dry * py) * 65536.0f), cg = (int)((p0->g + dgx * px + dgy * py) * 65536.0f);
-        int cb = (int)((p0->b + dbx * px + dby * py) * 65536.0f), ca = (int)((p0->a + dax * px + day * py) * 65536.0f);
+        /* colours as 16.16 fixed point, 0..255. With the perspective (section 95) they are exact
+         * every eighth pixel and straight between, as the texture's coordinates are: the row's
+         * first colour / w is kept, and each stretch works its two ends out from it */
+        float rz = r0 + drx * px + dry * py, gz = g0 + dgx * px + dgy * py;
+        float bz = b0 + dbx * px + dby * py, az = a0 + dax * px + day * py;
+        int cr = 0, cg = 0, cb = 0, ca = 0;
+        int jcr = icr, jcg = icg, jcb = icb, jca = ica;         /* a pixel's step */
+        if (!pcol) {
+            cr = (int)(rz * 65536.0f);
+            cg = (int)(gz * 65536.0f);
+            cb = (int)(bz * 65536.0f);
+            ca = (int)(az * 65536.0f);
+        }
+        float orz = 0, ogz = 0, obz = 0, oaz = 0;
         int co_r = 0, co_g = 0, co_b = 0, co_a = 0;
+        int jor = ior, jog = iog, job = iob, joa = ioa;
         if (has_ofs) {
-            co_r = (int)((p0->or_ + dorx * px + dory * py) * 65536.0f);
-            co_g = (int)((p0->og + dogx * px + dogy * py) * 65536.0f);
-            co_b = (int)((p0->ob + dobx * px + doby * py) * 65536.0f);
-            co_a = (int)((p0->oa + doax * px + doay * py) * 65536.0f);
+            orz = or0 + dorx * px + dory * py;
+            ogz = og0 + dogx * px + dogy * py;
+            obz = ob0 + dobx * px + doby * py;
+            oaz = oa0 + doax * px + doay * py;
+            if (!pofs) {
+                co_r = (int)(orz * 65536.0f);
+                co_g = (int)(ogz * 65536.0f);
+                co_b = (int)(obz * 65536.0f);
+                co_a = (int)(oaz * 65536.0f);
+            }
         }
         u32 *frow = fb + y * FBW;
         float *zrow = zb + y * FBW;
@@ -958,21 +980,45 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
         /* texture coordinates: exact every eighth pixel, straight between */
         float ua = 0, va = 0, dua = 0, dva = 0;
         int seg = 0;
-        for (int x = xl; x <= xr; x++, z += dzx, uz += dux, vz += dvx, ua += dua, va += dva, seg--, cr += icr, cg += icg,
-                 cb += icb, ca += ica, co_r += ior, co_g += iog, co_b += iob, co_a += ioa) {
-            if (tpix && seg <= 0) {
+        for (int x = xl; x <= xr; x++, z += dzx, uz += dux, vz += dvx, ua += dua, va += dva, seg--, cr += jcr, cg += jcg,
+                 cb += jcb, ca += jca, co_r += jor, co_g += jog, co_b += job, co_a += joa) {
+            if (stretch && seg <= 0) {
                 static const float inv_n[8] = { 0, 1.0f, 1.0f / 2, 1.0f / 3, 1.0f / 4, 1.0f / 5, 1.0f / 6, 1.0f / 7 };
                 int len = xr - x + 1;
                 if (len > 8)
                     len = 8;
-                float w = 1.0f / z;
-                ua = uz * w;
-                va = vz * w;
-                dua = dva = 0;
-                if (len > 1) {
-                    float n = (float)(len - 1), w1 = 1.0f / (z + dzx * n);
-                    dua = ((uz + dux * n) * w1 - ua) * inv_n[len - 1];
-                    dva = ((vz + dvx * n) * w1 - va) * inv_n[len - 1];
+                float w = 1.0f / z, n = (float)(len - 1), w1 = len > 1 ? 1.0f / (z + dzx * n) : w;
+                if (tpix) {
+                    ua = uz * w;
+                    va = vz * w;
+                    dua = dva = 0;
+                    if (len > 1) {
+                        dua = ((uz + dux * n) * w1 - ua) * inv_n[len - 1];
+                        dva = ((vz + dvx * n) * w1 - va) * inv_n[len - 1];
+                    }
+                }
+                if (pcol || pofs) {
+                    /* recomp (section 95): the colours at the stretch's two ends, each its
+                     * colour / w divided by its own 1 / w */
+                    float na = (float)(x - xl), nb = na + n, ks = inv_n[len - 1] * 65536.0f;
+#define ENDS(c0_, d_, c_, j_) do { \
+                        float ea_ = ((c0_) + (d_) * na) * w, eb_ = ((c0_) + (d_) * nb) * w1; \
+                        c_ = (int)(ea_ * 65536.0f); \
+                        j_ = (int)((eb_ - ea_) * ks); \
+                    } while (0)
+                    if (pcol) {
+                        ENDS(rz, drx, cr, jcr);
+                        ENDS(gz, dgx, cg, jcg);
+                        ENDS(bz, dbx, cb, jcb);
+                        ENDS(az, dax, ca, jca);
+                    }
+                    if (pofs) {
+                        ENDS(orz, dorx, co_r, jor);
+                        ENDS(ogz, dogx, co_g, jog);
+                        ENDS(obz, dobx, co_b, job);
+                        ENDS(oaz, doax, co_a, joa);
+                    }
+#undef ENDS
                 }
                 seg = len;
                 if (maxl) {
@@ -1007,13 +1053,19 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
                 continue;
             if (row_out && x >= cx0 && x <= cx1)
                 continue;
-            int ir = cr >> 16, ig = cg >> 16, ib = cb >> 16, ia = use_alpha ? ca >> 16 : 255;
-            if ((unsigned)ir > 255) ir = ir < 0 ? 0 : 255;
-            if ((unsigned)ig > 255) ig = ig < 0 ? 0 : 255;
-            if ((unsigned)ib > 255) ib = ib < 0 ? 0 : 255;
-            if ((unsigned)ia > 255) ia = ia < 0 ? 0 : 255;
+            /* recomp (section 95): the colours carry 8 more bits below the point through the pixel's
+             * sum (0..65280 for 0..255) and are rounded once, to the nearest, as the pixel is
+             * written. Before, each step cut to the whole number below (the vertex colour, the
+             * filtered texel, their product, the fog's step, the blend), which made the picture
+             * about 1 of 255 darker than a sum that keeps its fractions */
+            int ir = (cr + 128) >> 8, ig = (cg + 128) >> 8, ib = (cb + 128) >> 8, ia = use_alpha ? (ca + 128) >> 8 : 65280;
+            if ((unsigned)ir > 65280) ir = ir < 0 ? 0 : 65280;
+            if ((unsigned)ig > 65280) ig = ig < 0 ? 0 : 65280;
+            if ((unsigned)ib > 65280) ib = ib < 0 ? 0 : 65280;
+            if ((unsigned)ia > 65280) ia = ia < 0 ? 0 : 65280;
             if (tpix) {
-                u32 c;
+                u32 c = 0;
+                int tr, tg_, tb, ta;            /* the texel, 0..65280 */
                 if (smooth) {
                     float fu = ua * twf + 16383.5f, fv = va * thf + 16383.5f;
                     int tx = (int)fu, ty = (int)fv;
@@ -1021,11 +1073,18 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
                     int x0i = tex_at(tx - 16384, tw, clamp_u, flip_u), x1i = tex_at(tx - 16383, tw, clamp_u, flip_u);
                     int y0i = tex_at(ty - 16384, th, clamp_v, flip_v) * tw, y1i = tex_at(ty - 16383, th, clamp_v, flip_v) * tw;
                     u32 c00 = tpix[y0i + x0i], c10 = tpix[y0i + x1i], c01 = tpix[y1i + x0i], c11 = tpix[y1i + x1i];
-                    u32 rb0 = ((c00 & 0xff00ffu) * (256 - ax) + (c10 & 0xff00ffu) * ax) >> 8 & 0xff00ffu;
-                    u32 ag0 = ((c00 >> 8 & 0xff00ffu) * (256 - ax) + (c10 >> 8 & 0xff00ffu) * ax) >> 8 & 0xff00ffu;
-                    u32 rb1 = ((c01 & 0xff00ffu) * (256 - ax) + (c11 & 0xff00ffu) * ax) >> 8 & 0xff00ffu;
-                    u32 ag1 = ((c01 >> 8 & 0xff00ffu) * (256 - ax) + (c11 >> 8 & 0xff00ffu) * ax) >> 8 & 0xff00ffu;
-                    c = ((rb0 * (256 - ay) + rb1 * ay) >> 8 & 0xff00ffu) | ((ag0 * (256 - ay) + ag1 * ay) & 0xff00ff00u);
+                    /* the four channels side by side in 64 bits: across first (16 bits each: b, r,
+                     * g, a), then down (two words, 32 bits each), nothing cut between the two */
+#define WIDE(c_) (((u64)(c_) & 0x00ff00ffu) | (u64)((c_) & 0xff00ff00u) << 24)
+#define PAIR(h_) (((h_) & 0xffffu) | ((h_) & 0xffff0000u) << 16)
+                    u64 h0 = WIDE(c00) * (256 - ax) + WIDE(c10) * ax, h1 = WIDE(c01) * (256 - ax) + WIDE(c11) * ax;
+                    u64 br = PAIR(h0) * (256 - ay) + PAIR(h1) * ay, ga = PAIR(h0 >> 32) * (256 - ay) + PAIR(h1 >> 32) * ay;
+#undef WIDE
+#undef PAIR
+                    tb = (int)((u32)br >> 8);
+                    tr = (int)(br >> 40);
+                    tg_ = (int)((u32)ga >> 8);
+                    ta = (int)(ga >> 40);
                 } else {
                     int tx = (int)(ua * twf + 16384.0f), ty = (int)(va * thf + 16384.0f);
                     if (wrap_uv) {
@@ -1036,93 +1095,107 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
                         ty = tex_at(ty - 16384, th, clamp_v, flip_v);
                     }
                     c = tpix[ty * tw + tx];
+                    tr = (int)(c >> 16 & 255) << 8;
+                    tg_ = (int)(c >> 8 & 255) << 8;
+                    tb = (int)(c & 255) << 8;
+                    ta = (int)(c >> 24) << 8;
                 }
                 if (bump) {
                     /* a bump map: the texel is two angles (up from the surface, round it), the
                      * offset colour the light: brightness = K1 + K2 sin S + K3 cos S cos (R - Q) */
+                    const float part = 1.0f / (65536.0f * 255.0f);
                     float s_ang = (float)(c >> 8 & 255) * (float)(M_PI / 2 / 256), r_ang = (float)(c & 255) * (float)(2 * M_PI / 256);
-                    float k1 = (float)(co_a >> 16) / 255.0f, k2 = (float)(co_r >> 16) / 255.0f, k3 = (float)(co_g >> 16) / 255.0f;
-                    float q_ang = (float)(co_b >> 16) * (float)(2 * M_PI / 256);
+                    float k1 = (float)co_a * part, k2 = (float)co_r * part, k3 = (float)co_g * part;
+                    float q_ang = (float)co_b * (float)(2 * M_PI / 256 / 65536);
                     float i_ = k1 + k2 * sinf(s_ang) + k3 * cosf(s_ang) * cosf(r_ang - q_ang);
-                    int v = (int)(i_ * 255.0f);
-                    v = v < 0 ? 0 : v > 255 ? 255 : v;
-                    c = (u32)v << 24 | (u32)v << 16 | (u32)v << 8 | (u32)v;
+                    int v = (int)(i_ * 65280.0f);
+                    v = v < 0 ? 0 : v > 65280 ? 65280 : v;
+                    tr = tg_ = tb = ta = v;
                 }
-                int ta = no_tex_alpha ? 255 : (int)(c >> 24);
-                int tr = c >> 16 & 255, tg_ = c >> 8 & 255, tb = c & 255;
-                /* x * y / 255 as (x * (y + y / 128)) / 256 */
+                if (no_tex_alpha)
+                    ta = 65280;
+                /* x * y / 255, both 0..65280: the product over 65280, to the nearest */
                 if (shade & 1) {
-                    ir = tr * (ir + (ir >> 7)) >> 8;
-                    ig = tg_ * (ig + (ig >> 7)) >> 8;
-                    ib = tb * (ib + (ib >> 7)) >> 8;
-                    ia = shade == 1 ? ta : ta * (ia + (ia >> 7)) >> 8;
+                    ir = (int)(((u32)tr * (u32)ir + 32640u) / 65280u);
+                    ig = (int)(((u32)tg_ * (u32)ig + 32640u) / 65280u);
+                    ib = (int)(((u32)tb * (u32)ib + 32640u) / 65280u);
+                    ia = shade == 1 ? ta : (int)(((u32)ta * (u32)ia + 32640u) / 65280u);
                 } else if (shade == 0) {
                     ir = tr;
                     ig = tg_;
                     ib = tb;
                     ia = ta;
                 } else {
-                    int k = ta + (ta >> 7);
-                    ir = (tr * k + ir * (256 - k)) >> 8;
-                    ig = (tg_ * k + ig * (256 - k)) >> 8;
-                    ib = (tb * k + ib * (256 - k)) >> 8;
+                    u32 k = (u32)ta, nk = 65280u - k;
+                    ir = (int)(((u32)tr * k + (u32)ir * nk + 32640u) / 65280u);
+                    ig = (int)(((u32)tg_ * k + (u32)ig * nk + 32640u) / 65280u);
+                    ib = (int)(((u32)tb * k + (u32)ib * nk + 32640u) / 65280u);
                 }
                 if (has_ofs && !bump) {
-                    ir += co_r >> 16;
-                    ig += co_g >> 16;
-                    ib += co_b >> 16;
-                    if ((unsigned)ir > 255) ir = ir < 0 ? 0 : 255;
-                    if ((unsigned)ig > 255) ig = ig < 0 ? 0 : 255;
-                    if ((unsigned)ib > 255) ib = ib < 0 ? 0 : 255;
+                    ir += (co_r + 128) >> 8;
+                    ig += (co_g + 128) >> 8;
+                    ib += (co_b + 128) >> 8;
+                    if ((unsigned)ir > 65280) ir = ir < 0 ? 0 : 65280;
+                    if ((unsigned)ig > 65280) ig = ig < 0 ? 0 : 65280;
+                    if ((unsigned)ib > 65280) ib = ib < 0 ? 0 : 65280;
                 }
             }
-            if (mode == 1 && (u32)ia < alpha_ref)
+            if (mode == 1 && (u32)ia < alpha_ref << 8)
                 continue;
             if (fog_lut) {
                 int f = (int)fog_at(z);
                 if (fog_mode == 3) {
-                    ir = fcr;
-                    ig = fcg;
-                    ib = fcb;
-                    ia = f;
+                    ir = fcr << 8;
+                    ig = fcg << 8;
+                    ib = fcb << 8;
+                    ia = f << 8;
                 } else if (f) {
                     f += f >> 7;
-                    ir += (fcr - ir) * f >> 8;
-                    ig += (fcg - ig) * f >> 8;
-                    ib += (fcb - ib) * f >> 8;
+                    ir += ((fcr << 8) - ir) * f >> 8;
+                    ig += ((fcg << 8) - ig) * f >> 8;
+                    ib += ((fcb << 8) - ib) * f >> 8;
                 }
             } else if (fog_vert) {
-                int f = co_a >> 16;
+                int f = (co_a + 128) >> 16;
                 f = f < 0 ? 0 : f > 255 ? 256 : f + (f >> 7);
-                ir += (fcr - ir) * f >> 8;
-                ig += (fcg - ig) * f >> 8;
-                ib += (fcb - ib) * f >> 8;
+                ir += ((fcr << 8) - ir) * f >> 8;
+                ig += ((fcg << 8) - ig) * f >> 8;
+                ib += ((fcb << 8) - ib) * f >> 8;
             }
             if (tshadow && tvol_inside(x, y, z)) {
                 ir = ir * tg.shadow_scale >> 8;
                 ig = ig * tg.shadow_scale >> 8;
                 ib = ib * tg.shadow_scale >> 8;
             }
-            u32 src = (u32)ir << 16 | (u32)ig << 8 | (u32)ib;
             if (mode == 2) {
                 u32 dst = frow[x];
+                u32 dr = (dst >> 16 & 255) << 8, dg = (dst >> 8 & 255) << 8, db = (dst & 255) << 8;
                 if (sf == 4 && df == 5) {
                     if (ia == 0)
                         continue;
-                    int k = ia + (ia >> 7), nk = 256 - k;
-                    src = (((u32)ir * k + (dst >> 16 & 255) * nk) >> 8) << 16 |
-                          (((u32)ig * k + (dst >> 8 & 255) * nk) >> 8) << 8 | (((u32)ib * k + (dst & 255) * nk) >> 8);
+                    u32 k = (u32)ia, nk = 65280u - k;
+                    ir = (int)(((u32)ir * k + dr * nk + 32640u) / 65280u);
+                    ig = (int)(((u32)ig * k + dg * nk + 32640u) / 65280u);
+                    ib = (int)(((u32)ib * k + db * nk + 32640u) / 65280u);
                 } else if (sf == 4 && df == 1) {
-                    int k = ia + (ia >> 7);
-                    u32 or_ = ((u32)ir * k >> 8) + (dst >> 16 & 255), og = ((u32)ig * k >> 8) + (dst >> 8 & 255);
-                    u32 ob = ((u32)ib * k >> 8) + (dst & 255);
-                    src = (or_ > 255 ? 255 : or_) << 16 | (og > 255 ? 255 : og) << 8 | (ob > 255 ? 255 : ob);
+                    ir = (int)(((u32)ir * (u32)ia + 32640u) / 65280u + dr);
+                    ig = (int)(((u32)ig * (u32)ia + 32640u) / 65280u + dg);
+                    ib = (int)(((u32)ib * (u32)ia + 32640u) / 65280u + db);
                 } else {
-                    src = mul_add(src, blend_factor(sf, dst, (u32)ia), dst, blend_factor(df, src, (u32)ia));
+                    /* the other blends: their weights are whole numbers of 255, from the colours rounded */
+                    u32 a8 = (u32)(ia + 128) >> 8;
+                    u32 s8 = (u32)((ir + 128) >> 8) << 16 | (u32)((ig + 128) >> 8) << 8 | (u32)((ib + 128) >> 8);
+                    u32 fs = blend_factor(sf, dst, a8), fd = blend_factor(df, s8, a8);
+                    ir = (int)(((u32)ir * (fs >> 16 & 255) + dr * (fd >> 16 & 255) + 127) / 255);
+                    ig = (int)(((u32)ig * (fs >> 8 & 255) + dg * (fd >> 8 & 255) + 127) / 255);
+                    ib = (int)(((u32)ib * (fs & 255) + db * (fd & 255) + 127) / 255);
                 }
+                if (ir > 65280) ir = 65280;
+                if (ig > 65280) ig = 65280;
+                if (ib > 65280) ib = 65280;
             } else
                 prow[x] = takes_shadow;
-            frow[x] = src;
+            frow[x] = (u32)((ir + 128) >> 8) << 16 | (u32)((ig + 128) >> 8) << 8 | (u32)((ib + 128) >> 8);
             if (zwrite)
                 zrow[x] = z;
         }
@@ -1262,6 +1335,7 @@ typedef struct tlctx {
     float near_z;
     u32 spare;                          /* recomp: tri_room's spare left for the guard band's pieces */
     u32 gl;                             /* recomp (section 67): the strip's record + 1 when the GPU lights it */
+    int recut;                          /* recomp (section 98): a triangle the GPU was to light needs cutting */
 } tlctx;
 
 /* recomp: the guard band. A triangle cut at the near plane, or one close to
@@ -1418,11 +1492,24 @@ static void tri_view(tlctx *c, const vv *a, const vv *b, const vv *cc, int keep)
         if (keep && ((o[1].x - o[0].x) * (o[2].y - o[0].y) - (o[2].x - o[0].x) * (o[1].y - o[0].y)) * (float)keep <= 0)
             return;
         if (beyond_guard(&o[0].x, &o[0].y, 3, RV_FLOATS)) {     /* recomp: the guard band */
+            if (c->gl) {
+                c->recut = 1;           /* recomp (section 98): strip_job lights the strip itself */
+                return;
+            }
             vv poly[3] = { *a, *b, *cc };
             tri_guard(c, poly, 3);
             return;
         }
         c->n += (u32)tri_fill(&c->out[c->n], &o[0], &o[1], &o[2], c->st, c->gl);
+        return;
+    }
+    if (c->gl) {
+        /* recomp (section 98): cut by the near plane. The board lights a model's vertices and
+         * cuts afterwards, so a cut point's color lies between its two vertices' colors. The
+         * GPU would light the cut point itself (its normal and place lie between), which is
+         * another color where a highlight or a spot's cone is near: on the wooden ring's floor
+         * under the camera it was up to 20 of 255 off. strip_job lights such a strip itself */
+        c->recut = 1;
         return;
     }
     vv cl[4];
@@ -1477,10 +1564,15 @@ static void strip_job(scene *sc, sjob *j)
     float br = (float)(j->base >> 16 & 255), bg = (float)(j->base >> 8 & 255), bb = (float)(j->base & 255);
     float ba = (float)(j->base >> 24);
     float sr = (float)(j->offset >> 16 & 255), sg = (float)(j->offset >> 8 & 255), sb = (float)(j->offset & 255);
-    int spec = j->use_ofs && j->spec && (j->offset & 0xffffff) && !j->unlit;
+    /* recomp (sections 93 and 98): the highlight: the material's offset color times the lights,
+     * into the base color, by the gloss byte's own number (a small float: 3 bits of exponent, 5
+     * of fraction; the library's table of bytes gives its rows' numbers by it: 0x60 is 4, 0x68 5,
+     * 0x88 10) */
+    int spec = (j->offset & 0xffffff) && !j->unlit;
+    float gloss = spec ? ldexpf(1.0f + (float)(j->gloss & 31) / 32.0f, (j->gloss >> 5) - 1) : 0;
     const float *m = xf->m, *nm = xf->n;
     tlctx c = { xf, sc->tris[j->k] + j->first, 0, j->st, j->flat, xf->near_z > 0 ? xf->near_z : 0.05f,
-                tri_spare(j->count), 0 };
+                tri_spare(j->count), 0, 0 };
     /* recomp (section 67): the GPU lights a strip whose every vertex would be lit below: no
      * vertex with colours of its own, no bump map, and not a material that only takes its base
      * colour. Its record says what the lights need of the material */
@@ -1495,12 +1587,14 @@ static void strip_job(scene *sc, sjob *j)
         float *rec = sc->gl_rec + (size_t)(j - sc->jobs) * VIEW_GPU_LIT_FLOATS;
         rec[0] = br; rec[1] = bg; rec[2] = bb; rec[3] = ba;
         rec[4] = sr; rec[5] = sg; rec[6] = sb;
-        rec[7] = spec ? (float)j->spec : 0;
+        rec[7] = gloss;                         /* recomp (section 98): the highlight's power; 0: none */
         rec[8] = (float)j->ls;
         rec[9] = j->unlit ? 1.0f : 0.0f;
-        rec[10] = rec[11] = 0;
+        rec[10] = j->use_ofs ? 1.0f : 0.0f;     /* recomp (section 93): it has an offset color */
+        rec[11] = 0;
         c.gl = (u32)(j - sc->jobs) + 1;
     }
+again:;
     int keep = j->keep, odd = 0;
     vv first, before, prev;             /* the strip's first vertex, and the last two */
     memset(&first, 0, sizeof first);
@@ -1564,7 +1658,7 @@ static void strip_job(scene *sc, sjob *j)
             }
             float lr = ls->amb[0], lg = ls->amb[1], lb = ls->amb[2];
             float la = 0;                       /* recomp: what the lights add to the alpha, of 1 */
-            float pr = 0, pg = 0, pb = 0;       /* the specular sum */
+            float qr = 0, qg = 0, qb = 0;       /* recomp (section 93): the highlight, which goes into the base color */
             float ex = 0, ey = 0, ez = 0;       /* from the vertex to the eye */
             float k2 = 0, k3 = 1, q_ang = 0;    /* a bump map's light */
             if (len > 0) {
@@ -1636,21 +1730,19 @@ static void strip_job(scene *sc, sjob *j)
                         lg += l->col[1] * d;
                         lb += l->col[2] * d;
                     }
-                    if (spec && d > 0) {
-                        /* the library's own curve (object_put_init): with c the cosine between the
-                         * normal and the direction half way between light and eye, (2c^2 - 1)^2 to
-                         * the material's power, nothing below c = 0.7071 */
-                        float hx = tx + ex, hy = ty + ey, hz = tz + ez;
-                        float hl = sqrtf(hx * hx + hy * hy + hz * hz);
-                        if (hl > 0) {
-                            float cs = (gx * hx + gy * hy + gz * hz) / hl;
-                            if (cs > 0.70710678f) {
-                                float w2 = 2 * cs * cs - 1;
-                                float s = powf(w2 * w2, (float)j->spec) * at;
-                                pr += l->col[0] * s;
-                                pg += l->col[1] * s;
-                                pb += l->col[2] * s;
-                            }
+                    if (spec) {
+                        /* the eye's direction mirrored at the surface, against the way to the light,
+                         * to the gloss's power; whichever side of the surface the light is on. (Until
+                         * section 98 the highlight was the library's own curve, object_put_init's,
+                         * into the offset color: twice the power, and not where the chip's words
+                         * send it) */
+                        float ne = gx * ex + gy * ey + gz * ez;
+                        float rl = (2 * ne * gx - ex) * tx + (2 * ne * gy - ey) * ty + (2 * ne * gz - ez) * tz;
+                        if (rl > 0) {
+                            float s = powf(rl > 1 ? 1 : rl, gloss) * at;
+                            qr += l->col[0] * s;
+                            qg += l->col[1] * s;
+                            qb += l->col[2] * s;
                         }
                     }
                     if (bumped && k == 0) {
@@ -1672,17 +1764,35 @@ static void strip_job(scene *sc, sjob *j)
                     }
                 }
             }
-            if (j->unlit)
-                lr = lg = lb = 1;
-            v.r = br * (lr > 1 ? 1 : lr);
-            v.g = bg * (lg > 1 ? 1 : lg);
-            v.b = bb * (lb > 1 ? 1 : lb);
+            float xr = 0, xg = 0, xb = 0;       /* recomp (section 93): what is over full, for the offset color */
+            if (!j->unlit) {
+                /* recomp (sections 93 and 98): the product is held to full, not the lights' sum;
+                 * and what is over goes into the offset color where the light set asks for it
+                 * and the polygon has one. (Until section 98 the sum was held to 1 first, which
+                 * left a material made to be lit over full, a white cloth of 80 % under 140 % of
+                 * light, at its own color) */
+                v.r = br * lr + sr * qr;
+                v.g = bg * lg + sg * qg;
+                v.b = bb * lb + sb * qb;
+                if (ls->over && j->use_ofs) {
+                    xr = v.r > 255 ? v.r - 255 : 0;
+                    xg = v.g > 255 ? v.g - 255 : 0;
+                    xb = v.b > 255 ? v.b - 255 : 0;
+                }
+                v.r = v.r > 255 ? 255 : v.r;
+                v.g = v.g > 255 ? 255 : v.g;
+                v.b = v.b > 255 ? 255 : v.b;
+            } else {
+                v.r = br;
+                v.g = bg;
+                v.b = bb;
+            }
             v.a = ba + la * 255.0f;             /* recomp */
             v.a = v.a < 0 ? 0 : v.a > 255 ? 255 : v.a;
-            if (spec) {
-                v.or_ = sr * (pr > 1 ? 1 : pr);
-                v.og = sg * (pg > 1 ? 1 : pg);
-                v.ob = sb * (pb > 1 ? 1 : pb);
+            if (xr > 0 || xg > 0 || xb > 0) {   /* recomp (section 93) */
+                v.or_ = v.or_ + xr > 255 ? 255 : v.or_ + xr;
+                v.og = v.og + xg > 255 ? 255 : v.og + xg;
+                v.ob = v.ob + xb > 255 ? 255 : v.ob + xb;
             }
             if (bumped) {
                 /* K1 the part that does not depend on the light, the rest shared out by K2 and K3 */
@@ -1722,6 +1832,8 @@ static void strip_job(scene *sc, sjob *j)
                 tri_view(&c, &first, &prev, &v, keep);
             else if (code)
                 tri_view(&c, &before, &prev, &v, odd ? -keep : keep);
+            if (c.recut)
+                break;
             if (code == 3)
                 first = before;
             before = prev;
@@ -1729,6 +1841,16 @@ static void strip_job(scene *sc, sjob *j)
         }
         if (ctl >> 31)
             have = 0;
+    }
+    if (c.recut) {
+        /* recomp (section 98): one of its triangles is cut (tri_view): the strip again, lit here */
+        gl = 0;
+        c.gl = 0;
+        c.recut = 0;
+        c.n = 0;
+        c.spare = tri_spare(j->count);
+        p = sc->vcopy + j->voff;
+        goto again;
     }
     sc->runs[j->k][j->run].n = c.n;
 }
@@ -1948,6 +2070,12 @@ static u32 model_strip(u32 addr, u32 end)
     st.isp = h[1] ^ (es.link_or1 & 0xe0000000u);
     st.tsp = h[2] ^ es.link_or2;
     st.tcw = h[3];
+    /* recomp (sections 93 and 98): an environment-mapped material's polygon has no offset color;
+     * its texture's alpha and its vertices' alpha count */
+    if (es.mat_flags >> 11 & 1) {
+        st.pcw &= ~4u;
+        st.tsp = (st.tsp | 1u << 20) & ~(1u << 19);
+    }
     int has_uv = format >> 3 & 1;
     /* textured with coordinates of its own, or with the ones the ELAN makes from the normals */
     st.textured = (h[0] >> 3 & 1) && (has_uv || (es.mat_flags >> 11 & 3));
@@ -2011,6 +2139,7 @@ static u32 model_strip(u32 addr, u32 end)
         j->spec = spec_power[es.mat_spec & 255];
         j->flat = !(st.pcw >> 1 & 1);
         j->use_ofs = st.pcw >> 2 & 1;
+        j->gloss = (u8)(es.mat_spec & 255);     /* recomp (section 93) */
         j->keep = (s8)keep;
         /* room for its triangles (tri_room) */
         u32 room = tri_room(n);         /* recomp: was 2 (n - 2), before the guard band's spare */
@@ -2219,15 +2348,74 @@ static void chip_vertex(const u32 *w)
 
 /* ---- the command stream ---- */
 
+/* recomp: --light-census (docs/design.md section 92): what the game's light commands ask for, counted
+ * by kind. A light set's header: its mode bits (the ambient multiplied with the vertex color or
+ * added as it is, for the base and for the offset color; the same for a second volume; light
+ * over 1 carried into the offset color), whether its diffuse and specular masks differ, whether it
+ * has an ambient for the offset color, whether it has a second volume's set. A light: parallel
+ * or point, its diffuse and specular modes, its routing, whether it falls with distance and has a
+ * cone. The names of the bits are the Flycast emulator's reading of the chip (read, not copied) */
+#define CENSUS_MAX 160
+static struct { u32 key, n; } census[CENSUS_MAX];
+static int census_on, census_n;
+
+static void census_add(u32 key)
+{
+    for (int i = 0; i < census_n; i++)
+        if (census[i].key == key) {
+            census[i].n++;
+            return;
+        }
+    if (census_n < CENSUS_MAX) {
+        census[census_n].key = key;
+        census[census_n++].n = 1;
+    }
+}
+
+void view_light_census(int on)
+{
+    census_on = on;
+    census_n = 0;
+}
+
+int view_light_census_line(int i, char *buf, int n)
+{
+    static const char *const routes[16] = {
+        "base diffuse, base specular", "base diffuse, offset specular", "offset diffuse, base specular",
+        "offset diffuse, offset specular", "alpha by diffuse", "alpha by fall", "fog by diffuse", "fog by fall",
+        "base diffuse, base specular, taken away", "base diffuse, offset specular, taken away",
+        "offset diffuse, base specular, taken away", "offset diffuse, offset specular, taken away",
+        "alpha by diffuse, taken away", "alpha by fall, taken away", "fog by diffuse, taken away",
+        "fog by fall, taken away",
+    };
+    if (i < 0 || i >= census_n)
+        return 0;
+    u32 k = census[i].key;
+    if (k >> 31)
+        snprintf(buf, (size_t)n, "set header x%u: ambient times vertex color %u (offset %u), second volume %u (offset %u), "
+                 "light over 1 into the offset %u; masks %s; offset ambient %s; second volume's set %s", census[i].n,
+                 k >> 1 & 1, k >> 2 & 1, k >> 3 & 1, k >> 4 & 1, k >> 5 & 1, k >> 8 & 1 ? "differ" : "the same",
+                 k >> 9 & 1 ? "used" : "black", k >> 10 & 1 ? "used" : "empty");
+    else
+        snprintf(buf, (size_t)n, "light x%u: %s, diffuse mode %u, specular mode %u, routing %u (%s)%s%s", census[i].n,
+                 k & 1 ? "point" : "parallel", k >> 2 & 7, k >> 5 & 3, k >> 7 & 15, routes[k >> 7 & 15],
+                 k >> 12 & 1 ? ", falls with distance" : "", k >> 11 & 1 ? ", has a cone" : "");
+    return 1;
+}
+
 static void light_cmd(const u32 *w)
 {
     if (w[1] & 0x10) {
+        if (census_on)
+            census_add(0x80000000u | (w[1] >> 4 & 0x3f) | (u32)((w[2] & 0xffff) != w[2] >> 16) << 8 |
+                       (u32)((w[4] & 0xffffff) != 0) << 9 | (u32)(w[5] != 0 || (w[6] & 0xffffff) != 0) << 10);
         /* the light set's header (elan_light_masks_queue): which lights are on, the
          * ambient colour; the lights follow */
         es.ls.amb[0] = (float)(w[3] >> 16 & 255) / 255.0f;
         es.ls.amb[1] = (float)(w[3] >> 8 & 255) / 255.0f;
         es.ls.amb[2] = (float)(w[3] & 255) / 255.0f;
         es.light_mask = (w[2] | w[2] >> 16) & 0xffff;
+        es.ls.over = (int)(w[1] >> 9 & 1);  /* recomp (section 93) */
         /* recomp: the lights stay as they were sent. The header says which of them are on (the
          * mask, taken with the lights when a strip is linked) and does not put them out: the
          * game's extra light comes before its header (extra_light_spot_set: elan_light_queue,
@@ -2242,9 +2430,14 @@ static void light_cmd(const u32 *w)
     l->col[0] = (float)(w[1] >> 24) / 127.0f;
     l->col[1] = (float)(w[1] >> 16 & 255) / 127.0f;
     l->col[2] = (float)(w[1] >> 8 & 255) / 127.0f;
-    l->dir[0] = (float)(s8)(w[2] >> 16) / 127.0f;
-    l->dir[1] = (float)(s8)(w[2] >> 8) / 127.0f;
-    l->dir[2] = (float)(s8)w[2] / 127.0f;
+    /* recomp (section 96): the direction as the library packs it for this ELAN
+     * (elan_light_pack_directional, elan_light_pack_spot): 12 bits a component, the byte and 4
+     * more bits in the command's first word, over 2048, which is the length the library itself
+     * measures before it makes a cone's two numbers; not brought to length 1. The byte alone
+     * over 127 was 1 to 2 % too long for a direction with components below zero */
+    l->dir[0] = (float)((int)(s8)(w[2] >> 16) * 16 + (int)(w[0] >> 16 & 15)) / 2048.0f;
+    l->dir[1] = (float)((int)(s8)(w[2] >> 8) * 16 + (int)(w[0] >> 4 & 15)) / 2048.0f;
+    l->dir[2] = (float)((int)(s8)w[2] * 16 + (int)(w[0] & 15)) / 2048.0f;
     l->point = w[2] >> 30 & 1;
     l->linear = w[2] >> 31;
     l->pos[0] = f32(w[3]);
@@ -2256,6 +2449,10 @@ static void light_cmd(const u32 *w)
     l->route = w[2] >> 24 & 15;
     l->ck = f32(w[7] & 0xffff0000u);
     l->cb = f32(w[7] << 16);
+    if (census_on)      /* a parallel light's diffuse mode is in the second word; it has no specular mode */
+        census_add((u32)l->point | (u32)l->linear << 1 | (l->point ? (u32)l->dmode : w[2] >> 28 & 3) << 2 |
+                   (l->point ? w[2] >> 28 & 3 : 0) << 5 | (u32)l->route << 7 | (u32)(l->point && l->ck != 0) << 11 |
+                   (u32)(l->point && !(l->ka == 0 && l->kb == 1)) << 12);
     es.ls_new = 1;
 }
 
@@ -2973,9 +3170,12 @@ static void target_clear(void)
     const float *c0 = bp.c0, *ga = bp.ga, *gb = bp.gb;
     int flat = bp.flat, fog = bp.fog;
     u32 fc[3] = { tg.fog_col >> 16 & 255, tg.fog_col >> 8 & 255, tg.fog_col & 255 };
+    /* recomp (section 95): the colour and its fog keep their fractions, rounded once */
     u32 one = 0;
-    for (int k = 0; k < 3; k++)
-        one = one << 8 | (u32)((int)c0[k] + (((int)fc[k] - (int)c0[k]) * fog >> 8));
+    for (int k = 0; k < 3; k++) {
+        float v = c0[k] < 0 ? 0 : c0[k] > 255 ? 255 : c0[k];
+        one = one << 8 | (u32)(v + ((float)fc[k] - v) * (float)fog * (1.0f / 256.0f) + 0.5f);
+    }
     for (int yy = 0; yy < tg.h; yy++) {
         u32 *frow = fb + yy * FBW;
         if (flat) {
@@ -2986,8 +3186,8 @@ static void target_clear(void)
                 u32 px = 0;
                 for (int k = 0; k < 3; k++) {
                     float v = c0[k] + ga[k] * ((float)xx + 0.5f - bp.x0) + gb[k] * ((float)yy + 0.5f - bp.y0);
-                    int iv = v < 0 ? 0 : v > 255 ? 255 : (int)v;
-                    px = px << 8 | (u32)(iv + (((int)fc[k] - iv) * fog >> 8));
+                    v = v < 0 ? 0 : v > 255 ? 255 : v;
+                    px = px << 8 | (u32)(v + ((float)fc[k] - v) * (float)fog * (1.0f / 256.0f) + 0.5f);
                 }
                 frow[xx] = px;
             }
@@ -3103,8 +3303,10 @@ static void band_item(int b, void *arg)
             const u8 *srow = stn + y * FBW, *prow = pfb + y * FBW;
             for (int x = 0; x < tg.w; x++)
                 if (srow[x] & prow[x] & 1) {
+                    /* recomp (section 95): to the nearest, not cut */
                     u32 c = frow[x], s = (u32)tg.shadow_scale;
-                    frow[x] = ((c >> 16 & 255) * s >> 8) << 16 | ((c >> 8 & 255) * s >> 8) << 8 | ((c & 255) * s >> 8);
+                    frow[x] = (((c >> 16 & 255) * s + 128) >> 8) << 16 | (((c >> 8 & 255) * s + 128) >> 8) << 8 |
+                              (((c & 255) * s + 128) >> 8);
                 }
         }
     }
@@ -3400,7 +3602,8 @@ static u32 gpu_tex(const tex *t, int *full)
 
 static inline u32 gpu_rgba(float r, float g, float b, float a)
 {
-#define B8(f) ((u32)((f) <= 0 ? 0 : (f) >= 255 ? 255 : (int)(f)))
+/* recomp (section 95): to the nearest byte, not the one below */
+#define B8(f) ((u32)((f) <= 0 ? 0 : (f) >= 255 ? 255 : (int)((f) + 0.5f)))
     return B8(r) | B8(g) << 8 | B8(b) << 16 | B8(a) << 24;
 #undef B8
 }
@@ -3709,7 +3912,9 @@ static void gpu_export(scene *sc)
         GROW(sets, sets_cap, (sc->ls_n + 1) * VIEW_GPU_LIGHTSET_FLOATS + VIEW_RT_FOG_FLOATS);
         for (u32 i = 0; i < sc->ls_n; i++) {
             const lightset *s = &sc->ls[i];
-            sets[n++] = s->amb[0]; sets[n++] = s->amb[1]; sets[n++] = s->amb[2]; sets[n++] = 0;
+            sets[n++] = s->amb[0]; sets[n++] = s->amb[1]; sets[n++] = s->amb[2];
+            /* recomp (sections 93 and 98): 1 when what is over full goes into the offset color */
+            sets[n++] = s->over ? 1.0f : 0.0f;
             for (int k = 0; k < 15; k++) {
                 const light *l = &s->l[k];
                 sets[n++] = l->col[0]; sets[n++] = l->col[1]; sets[n++] = l->col[2];

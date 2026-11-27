@@ -431,7 +431,7 @@ float3 radiance(Hit h, float3 o, float3 d)
     ray_use0 = 32 + 16 * bounces++;
     float3 sum = lights_sum(ls, P, N, O, 1, ambient_of(ls));
     ray_use0 = was;
-    return c * min(sum, float3(1, 1, 1));
+    return min(c * sum, float3(1, 1, 1));       // the product held to full, not the sum (section 98)
 }
 
 [numthreads(8, 8, 1)]

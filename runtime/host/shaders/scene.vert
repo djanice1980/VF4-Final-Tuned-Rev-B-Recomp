@@ -1,8 +1,9 @@
 #version 450
 // A triangle of the scene (view.h, view_gpu_vertex): the target's pixels and
-// z = 1/w. The position's w is 1/z, so the texture coordinates are
-// interpolated with the perspective, as the software rasterizer does; the
-// colours and z are interpolated on the screen (noperspective), as it does.
+// z = 1/w. The position's w is 1/z, so the texture coordinates and the
+// colours are interpolated with the perspective, as the software rasterizer
+// does (docs/design.md section 95: the chip does it for a vertex's colours
+// too); z is interpolated on the screen (noperspective), as it does.
 //
 // A vertex whose a_lit is not 0 was not lit by the machine's thread
 // (docs/design.md section 67): its colours are made here, by the same rule
@@ -18,13 +19,15 @@ layout(location = 5) in vec3 a_n;
 layout(location = 6) in vec3 a_l;
 layout(location = 7) in uint a_lit;
 
-// a strip's record, 12 floats: the material's base colour (r, g, b, a,
-// 0..255), its specular colour (r, g, b) and power (0: none), the light set,
-// 1 when the material takes no lights
+// a strip's record, 12 floats: the material's base color (r, g, b, a,
+// 0..255), its offset color (r, g, b: the highlight's) and the highlight's
+// power (0: none), the light set, 1 when the material takes no lights, 1 when
+// its polygons have an offset color
 layout(std430, set = 0, binding = 0) readonly buffer Lit {
     float lit[];
 };
-// a light set, 244 floats: the ambient colour (r, g, b, 0), then 15 lights of
+// a light set, 244 floats: the ambient color (r, g, b), 1 when light over full
+// goes into the offset color (sections 93 and 98), then 15 lights of
 // 16: colour (r, g, b), flags (1 on, 2 point, 4 linear fall); direction (x,
 // y, z), fall a; position (x, y, z), fall b; cone k, cone b, the diffuse mode,
 // the routing
@@ -36,8 +39,8 @@ layout(set = 1, binding = 0) uniform VU {
     vec4 screen;        // target width, height (pixels), depth scale (1 / largest z), 0
 } vu;
 
-layout(location = 0) noperspective out vec4 v_col;
-layout(location = 1) noperspective out vec4 v_ofs;
+layout(location = 0) out vec4 v_col;
+layout(location = 1) out vec4 v_ofs;
 layout(location = 2) out vec2 v_uv;
 layout(location = 3) noperspective out float v_z;
 layout(location = 4) flat out uint v_state;
@@ -47,16 +50,18 @@ void light(out vec4 col, out vec4 ofs)
     uint r = (a_lit - 1u) * 12u;
     vec4 base = vec4(lit[r], lit[r + 1u], lit[r + 2u], lit[r + 3u]);
     vec3 spec_col = vec3(lit[r + 4u], lit[r + 5u], lit[r + 6u]);
-    float power = lit[r + 7u];
+    float gloss = lit[r + 7u];
     uint s = uint(lit[r + 8u]) * 244u;
     bool unlit = lit[r + 9u] != 0.0;
+    bool use_ofs = lit[r + 10u] != 0.0;     // the polygon has an offset color (section 93)
     vec3 g = a_n;
     vec3 l = vec3(lights[s], lights[s + 1u], lights[s + 2u]);
-    vec3 p = vec3(0.0);
+    bool over = lights[s + 3u] != 0.0;      // what is over full goes into the offset color
+    vec3 q = vec3(0.0);                     // the highlight, which goes into the base color
     float la = 0.0;
     if (dot(g, g) > 0.0) {
         vec3 e = vec3(0.0);
-        if (power > 0.0) {
+        if (gloss > 0.0) {
             float el = length(a_l);
             if (el > 0.0)
                 e = vec3(a_l.x, -a_l.y, a_l.z) / el;
@@ -103,29 +108,27 @@ void light(out vec4 col, out vec4 ofs)
             }
             at *= cone;
             float d = dot(g, t) * at;
-            if (d > 0.0) {
+            if (d > 0.0)
                 l += lc * d;
-                if (power > 0.0) {
-                    vec3 h = t + e;
-                    float hl = length(h);
-                    if (hl > 0.0) {
-                        float cs = dot(g, h) / hl;
-                        if (cs > 0.70710678) {
-                            float w2 = 2.0 * cs * cs - 1.0;
-                            p += lc * (pow(w2 * w2, power) * at);
-                        }
-                    }
-                }
+            if (gloss > 0.0) {
+                // the eye's direction mirrored at the surface, against the way to the light, to
+                // the gloss's power; whichever side of the surface the light is on (section 98)
+                float ne = dot(g, e);
+                float rl = dot(2.0 * ne * g - e, t);
+                if (rl > 0.0)
+                    q += lc * (pow(min(rl, 1.0), gloss) * at);
             }
         }
     }
-    if (unlit)
-        l = vec3(1.0);
-    col = vec4(base.rgb * min(l, vec3(1.0)), clamp(base.a + la * 255.0, 0.0, 255.0));
-    ofs = vec4(power > 0.0 ? spec_col * min(p, vec3(1.0)) : vec3(0.0), 0.0);
-    // whole steps of 255, as the bytes the machine's thread sends
-    col = floor(clamp(col, 0.0, 255.0));
-    ofs = floor(clamp(ofs, 0.0, 255.0));
+    // the product is held to full, not the lights' sum; what is over goes into the offset color
+    // where the light set asks for it and the polygon has one (sections 93 and 98)
+    vec3 lit_rgb = unlit ? base.rgb : base.rgb * l + spec_col * q;
+    vec3 extra = over && !unlit && use_ofs ? max(lit_rgb - vec3(255.0), vec3(0.0)) : vec3(0.0);
+    col = vec4(lit_rgb, clamp(base.a + la * 255.0, 0.0, 255.0));
+    ofs = vec4(extra, 0.0);
+    // whole steps of 255, to the nearest, as the bytes the machine's thread sends (section 95)
+    col = floor(clamp(col, 0.0, 255.0) + 0.5);
+    ofs = floor(clamp(ofs, 0.0, 255.0) + 0.5);
 }
 
 void main()

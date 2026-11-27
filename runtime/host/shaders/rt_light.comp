@@ -454,7 +454,8 @@ vec3 water_seen(vec3 P, vec3 d)
     if ((tri[q.tri].flags & 4u) != 0u)
         return c;
     uint ls = job[tri[q.tri].job].ls;
-    return c * min(lights_sum(ls, Q, normal_at(q.tri, q.b), Q, 0, ambient_of(ls)), vec3(1.0));
+    // the product held to full, not the sum (docs/design.md section 98), as the picture's own light
+    return min(c * lights_sum(ls, Q, normal_at(q.tri, q.b), Q, 0, ambient_of(ls)), vec3(1.0));
 }
 
 // what a surface point sends back along a ray that met it: its color times the game's sum for it
@@ -475,7 +476,7 @@ vec3 radiance(Hit h, vec3 o, vec3 d)
     ray_use0 = 32 + 16 * bounces++;
     vec3 sum = lights_sum(ls, P, N, O, 1, ambient_of(ls));
     ray_use0 = was;
-    return c * min(sum, vec3(1.0));
+    return min(c * sum, vec3(1.0));     // the product held to full, not the sum (section 98)
 }
 
 void main()

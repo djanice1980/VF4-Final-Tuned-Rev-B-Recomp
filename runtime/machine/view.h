@@ -77,10 +77,12 @@ typedef struct view_gpu_vertex {
     float n[3], l[3];
     u32 lit;
 } view_gpu_vertex;
-/* a strip record, VIEW_GPU_LIT_FLOATS floats: the material's base colour (r, g, b, a: 0..255), its
- * specular colour (r, g, b) and power (0: none), the light set's number, 1 when the material takes
- * no lights, two spare. A light set, VIEW_GPU_LIGHTSET_FLOATS floats: the ambient colour (r, g, b,
- * 0), then 15 lights of 16 floats: colour (r, g, b), flags (1 on, 2 point, 4 linear fall);
+/* a strip record, VIEW_GPU_LIT_FLOATS floats: the material's base color (r, g, b, a: 0..255), its
+ * offset color (r, g, b: the highlight's) and the highlight's power (0: none), the light set's
+ * number, 1 when the material takes no lights, 1 when its polygons have an offset color, one
+ * spare. A light set, VIEW_GPU_LIGHTSET_FLOATS floats: the ambient color (r, g, b), 1 when light
+ * over full goes into the offset color (docs/design.md sections 93 and 98), then 15 lights of 16
+ * floats: colour (r, g, b), flags (1 on, 2 point, 4 linear fall);
  * direction (x, y, z), fall a; position (x, y, z), fall b; cone k, cone b, diffuse mode, routing */
 #define VIEW_GPU_LIT_FLOATS 12
 #define VIEW_GPU_LIGHTSET_FLOATS 244
@@ -213,6 +215,12 @@ void view_host_rt(int on);
  * (rt_mirror). For a host whose ray tracing mirrors the scene on those polygons. Any thread; the
  * next pass takes it */
 void view_host_rt_mirror(int on);
+
+/* recomp: --light-census (docs/design.md section 92): from now on (on 1) the light commands
+ * the game sends are counted by kind. view_light_census_line writes the i-th kind and its
+ * count into buf (n bytes) and returns 1; 0 when there is no i-th */
+void view_light_census(int on);
+int view_light_census_line(int i, char *buf, int n);
 
 /* called from hw_gfx.c, only while view_on is set */
 void view_list_segment(sh4 *c, u32 addr, u32 len);       /* a display list segment the ELAN is told to run */

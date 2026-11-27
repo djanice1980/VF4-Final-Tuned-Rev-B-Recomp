@@ -76,6 +76,8 @@
  *   --clock WHEN      for tests: what the board's clock shows as the machine starts, in place of
  *                     this PC's date and time (docs/design.md section 77): "fixed" (2004-11-10
  *                     07:18:24, with which every run is the same run) or YYYY-MM-DDThh:mm:ss
+ *   --light-census    for tests: counts the game's light commands by kind and writes the count
+ *                     into the log at the end (docs/design.md section 92)
  *   --water-over N    for tests: the traced water's mirror takes N percent of its angle's share over
  *                     the game's own water, on every stage (docs/design.md section 90)
  *   --mode-ask N      for tests: "Keep this screen mode?" waits N seconds for its answer, not 15
@@ -3762,6 +3764,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--pace-ppm") && v)
             frame_ns = (Uint64)((double)FRAME_NS / (1.0 + SDL_atof(argv[++i]) / 1e6));
         else if (!strcmp(a, "--sync-log") && v) sync_log = fopen(argv[++i], "w");
+        else if (!strcmp(a, "--light-census")) view_light_census(1);
         else if (!strcmp(a, "--water-over") && v) water_over_test = atoi(argv[++i]);
         else if (!strcmp(a, "--mode-ask") && v) {
             mode_ask_seconds = atoi(argv[++i]);
@@ -4985,6 +4988,11 @@ int main(int argc, char **argv)
         logf_("audio: %u frames dropped (boot, unpaced or a stall); last queue %.0f ms", audio_dropped,
               audio_level / 44.1);
         SDL_DestroyAudioStream(audio);
+    }
+    {
+        char line[480];     /* --light-census */
+        for (int i = 0; view_light_census_line(i, line, sizeof line); i++)
+            logf_("lights: %s", line);
     }
     {
         unsigned gf, gt, gv;

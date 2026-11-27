@@ -8409,3 +8409,787 @@ one behind it.
 **Nothing is changed.** A fade that only took what stands in front of
 the nearer fighter would be a departure from the game, to be made only if
 it is wanted.
+
+## 92. A census of the game's light commands (2026-11-26)
+
+**Why.** After the cone (section 89) the maintainer asked what else of
+the lighting is still to be done. Section 64 lists what the renderer does
+not do with a light: the diffuse and specular modes, the routings other
+than the two it knows, the fog routings, a second ambient color, the
+masks it merges. Whether any of that matters depends on what the game
+sends, which nobody had counted.
+
+**What is done.** `--light-census` (`runtime/machine/view.c`,
+`light_cmd`) counts every light set header and every light the game
+sends, by kind, and the game writes the count into its log as it ends
+(`lights:` lines). The names of a header's bits are the Flycast
+emulator's reading of the chip (read, not copied).
+
+**The count** (every stage from its snapshot: the stage's intro and the
+start of a fight):
+
+| Sent | Times | Stages |
+|---|---|---|
+| Parallel light, to the base color | 492,135 | all 24 |
+| Point light that falls with distance, to the base color | 67,674 | 3, 16, 17, 20, 21, 22 |
+| Point light with a cone, to the base color | 29,592 | 3 |
+| Point light with a fall and a cone, to the base color | 26,970 | 0, 7, 22 |
+| Point light with a fall and a cone, its amount off the alpha (section 64's) | 19,098 | 0, 1, 2, 3, 4, 16, 19, 20, 22 |
+
+Every light that goes to a color has diffuse mode 0 and specular mode 0
+and routing 0. No light goes to the offset color or to the fog, none is
+taken away from a color, and no header has an ambient for the offset
+color or masks that differ. So of section 64's list nothing is used in
+these runs, and with the cone every kind of light the game sends here is
+one the renderer works out.
+
+**What the count turned up instead.** Every light set header, on every
+stage, has one bit set that the renderer does not look at: by Flycast's
+reading, light over full brightness is carried into the offset color (it
+calls the bit `useBaseOver`). Beside it stands how the renderer holds
+the sum: it adds the ambient and the lights, holds the sum to 1, and then
+multiplies the material's color by it. Flycast multiplies first and
+holds the product to 1, with what is over going to the offset color when
+that bit is set.
+
+The two differ wherever the lights sum to more than 1, which the game
+arranges on purpose: the rooftop's ambient is 0.89 to 0.98 and its sun
+1.25 (section 89's trace). Held to 1 before the material, every face the
+sun reaches at all comes out at the material's own color and every face
+it does not at nine tenths of it: a stage with next to no shading. That
+fits what players say of the picture: flat, the colors muted.
+
+**This is a suspicion, not a finding.** Nothing was changed and no
+picture was made. What would settle it is a picture of the game from an
+emulator that does it Flycast's way, beside ours, and the change tried
+behind a switch.
+
+**Not covered.** The stages later in a fight, the other rounds, the
+attract mode and the menus (other light sets may come there). The
+specular light: where the game's routing sends it (to the base color, by
+Flycast's names) against where the renderer puts it (the offset color)
+was not looked into.
+
+## 93. Light over full brightness: a trial (2026-11-26)
+
+**Why.** Section 92's suspicion, tried: the renderer holds the lights'
+sum to 1 and then multiplies the material's color by it, and it does not
+read the bit every light set of the game has set, by which light over
+full brightness goes into the offset color.
+
+**What is done.** Behind `--light-over`, and only there:
+
+- The material's color is multiplied by the ambient and the lights
+  first, and the product is held to full.
+- Where the light set's header has bit 9 and the polygon has an offset
+  color, what the product had over full is added to the offset color,
+  which the texture's stage adds after the texture.
+
+In the processor's lighting (`runtime/machine/view.c`) and the graphics
+chip's (`scene.vert`; the strip's record says whether it has an offset
+color, the light set's fourth number which of the three ways it is).
+The ray tracers' own sums are not changed, so the trial is to be looked
+at with ray tracing off. Without the option nothing is different.
+
+**What it does** (every real stage from its snapshot, one picture in a
+fight, with and without, side by side):
+
+- The stages get a little brighter where the sun or a lamp reaches: the
+  harbor, the rooftop and the wall stage most (their pictures' mean
+  brightness rises by 7 to 10 of 255), most others by 0 to 5.
+- The fighters change most. Their cloth and skin take a sheen in the
+  color of the light, and on stages with strong colored lights they are
+  tinted by them: in the cave and in the snow a fighter's dark trousers
+  come out blue and a red shirt pink; on the Shrine at sunset the
+  trousers go dark blue.
+- The graphics chip's lights give the processor's picture to the pixel
+  on three of four stages compared, and within two color steps on the
+  cage.
+
+**The highlight: the trial's second part.** A picture the maintainer
+supplied set the direction: a frame of a video of the game, Akira in his
+white gi against Sarah on the ruins (a wide picture whose 3D view is wide
+too, so most likely from an emulator and not from a cabinet). Beside ours
+of the same match the gi is white there and middle gray in ours, and the
+first part of the trial makes it only a little lighter.
+
+The scene's numbers (a temporary dump of every material with its lights,
+taken out again): the gi's base color is 0xCC (80 %), its offset color
+0x7F (half), its gloss byte 0x60. The fighters' lights: ambient 0.40, a
+white parallel light of full strength from above, a blue one (0.30, 0.50,
+0.76) from below and behind, two small spots of 0.24. The stage's:
+ambient 0.27, a white parallel light of 0.90 and a faint blue one, and no
+offset colors. So the cloth is made to be lit over full (0.8 x 1.4) and
+to take a wide highlight on top of that.
+
+How the renderer makes the highlight, and the other reading of the chip's
+words (the one section 92 took the header's bit from):
+
+- Its width. The renderer: the library's own table (`object_put_init`):
+  with c the cosine between the normal and the direction half way between
+  light and eye, (2c^2 - 1)^2 to the power N, N the table's row for the
+  material's byte. The other reading: the cosine between the eye's
+  direction mirrored at the surface and the way to the light, to the
+  power the gloss byte holds as a small float (3 bits of exponent e, 5 of
+  fraction f: 2^(e-1) (1 + f/32)). That float is N itself: the library's
+  table of bytes (`material_param_byte_table`) holds its rows' numbers in
+  that form (0x20 is 1, 0x40 2, 0x50 3, 0x60 4, 0x68 5, 0x88 10). And
+  2c^2 - 1 is about that mirrored cosine, so the renderer's highlight has
+  twice the power: it is about 0.7 times as wide.
+- Where it goes. The renderer: times the material's offset color, into
+  the offset color, which is added after the texture; only where the
+  polygon has an offset color and the light reaches the surface from the
+  front. The other reading: times the material's offset color, into the
+  BASE color (routing 0, which every color light of the game has), before
+  the base color is held to full, what is over going into the offset
+  color; with no condition on the polygon or on the light's side.
+
+Behind `--light-spec N` (it turns `--light-over` on): the other reading,
+with the power the byte says (N = 1) or twice it (N = 2, the library's
+table). In the processor's lighting only: with the option a strip that
+has a highlight is lit by the processor, whatever Lighting says.
+
+What it does:
+
+- Akira's gi comes out white with gray folds and a bluish edge away from
+  the main light, as in the picture; with N = 2 it lies between. The
+  whole picture beside the maintainer's is close; the stage is a little
+  lighter and softer there, which a video's levels can do.
+- All 15 real stages, one picture each, with and without (N = 1): every
+  run ends well and nothing breaks. In daylight (rooftop, ruins, harbor,
+  wall stage, temple) the fighters get brighter and rounder. Under strong
+  colored lights (snow, cave, Shrine, scaffold) dark trousers come out
+  blue and a red shirt pink, as in the first part: that is the light over
+  full, not the highlight.
+
+Measured against the maintainer's picture (ours with N = 1, both at one
+scale, patches blurred alike so that the cloth's weave, which the video
+has smoothed away, does not count):
+
+- What no light touches is the same in both, so the video's levels are
+  ours: the life bar's green 245 against 242, the sky's median and 90th
+  level 151 and 240 against 144 and 239.
+- The same floor tile between the fighters (a material with no highlight
+  color): 168 as the game is, 189 with the trial, 191 in the picture.
+- A patch of the gi over the hip that is cloth all over: mean color 151
+  151 163 against 151 151 164; the levels a quarter, half and three
+  quarters of its pixels lie under 133, 147, 170 against 130, 146, 170.
+  With N = 2 the patch's mean is 138, as the game is 120.
+- The picture's brightest twentieth of that patch is a little brighter
+  (215 against 209). Eight of our pictures 0.2 s apart, as Akira sways in
+  his stance, go from 204 to 215 there: the stance does more than that.
+- Not the cause of anything: the internal resolution (1, 2 and 4 give the
+  same levels) and bump maps (the scene has none).
+
+**Against the real board.** The maintainer then supplied three frames of
+a video whose title says it was recorded from the real hardware (4:3, with
+the stair-stepped edges of 480 lines; the first picture, wide and of
+another match, cannot be from it): Jacky against Goh in the snow, twice,
+and Jacky against Brad in the cave. The same two matches in ours (the
+same costumes), as the game is and with the trial:
+
+- The life bar's green is the same in the video and in ours (249 against
+  247 of 255), so its levels are ours.
+- The cave. As the game is, Brad's trousers and shoes are black and his
+  shirt plain red; Jacky's jacket and trousers are black leather. On the
+  board the trousers are blue where the light reaches and dark where it
+  does not, the shoes blue, the shirt red with a pink sheen, Jacky blue
+  all over. With the trial they are that. The same pieces of Brad, as the
+  game is, with the trial, on the board: the shirt 106 11 11, 106 14 43,
+  111 19 48; the front shoe 28 34 34, 42 103 154, 33 71 119; the lit
+  front thigh 40 46 44, 40 49 84, 68 91 121.
+- The snow. As the game is, Jacky's leather is black and a band on Goh's
+  sleeve a black block; on the board and with the trial both are blue.
+- So the colored light on dark cloth, which the first part left open as
+  perhaps too much, is what the board shows.
+- These pieces were read off each picture by eye, at places that are not
+  the same in both. Two differences they seemed to show (Brad's lit thigh
+  and the open snow brighter on the board) went away when the frames
+  were laid on ours place by place: see "The board's frames laid on
+  ours" below.
+
+**Against the emulator, running.** The emulator this reading comes from
+was then run itself on the same two matches: the maintainer's own build,
+in a headless desktop, on copies of its settings, with no network and no
+sound; its script interface presses the buttons and sets the game's stage,
+characters and costumes as the headless game's script does. At 960 lines,
+beside ours of the same moment:
+
+- The stage is the same in both to a few counts: the cave's rock 67 76 68
+  against 68 76 68, the snow stage's wall 45 58 71 in both, the open snow
+  84 106 148 against 80 101 140.
+- The fighters, with the trial's first two parts, are the same where the
+  material is plain cloth (Brad's shirt 106 14 43 against 107 14 42, his
+  lit thigh 40 49 84 against 41 52 85) and too bright in ours on shiny
+  parts: his shoe 42 103 154 against 34 70 103, the board's 33 71 119.
+- The cause of that: the emulator gives the polygons of an
+  environment-mapped material (the material's select bit 11) no offset
+  color, and lets their texture's and their vertices' alpha count. The
+  renderer added the highlight and the light over full there as anywhere.
+
+**The trial's third part.** Behind `--light-env`: that rule, where a strip
+is queued (the polygon word's offset bit cleared, the two alpha bits
+set). With it Brad's shoe is 35 74 108, and of a dozen pieces of both
+fighters and the stage ten lie within 8 of the emulator's, seven of them
+within 5; the other two (the back of Jacky's jacket 11 darker, a sleeve
+of his 23) are on parts that sway.
+
+What else the emulator's source does differently, and makes no difference
+in these scenes (by a dump of every material of the three matches):
+
+- A vertex's two own color words. The emulator: the base colors outside
+  and inside a shadow volume, used when the material's select bits 0 and 4
+  are clear, and lit unless bit 9 says constant. The renderer: base and
+  offset color, not lit. Only the cave's baked stage has them (half its
+  vertices, constant); the second word is 0 there, or black on one
+  material.
+- Polygons with no texture, whose offset color the emulator adds into the
+  base: there are none; nor lit polygons without the offset bit.
+- A light's direction: 12 bits and brought to length 1 there, 8 bits here.
+- The same in both: the matrices' turned axes, the fall with distance, a
+  spot's cone (for the cones the game sends), shadows by the scale
+  register, fog by the table.
+
+**The board's frames laid on ours.** The HUD is drawn alike by the board
+and by ours, and no light touches it. That gives two things.
+
+Where the frames lie. From the two life bars' ends, and then from where
+the two HUDs' brightness agrees best, ours' pixel (x, y) is the video's
+(1.5926 x - 21.6, 1.583 y - 17.0), the same in all three frames: the
+video is the same picture, without 14 columns at the left, 11 at the
+right, 11 lines at the top and 74 at the bottom of ours' 1280 x 960.
+Brought to ours' geometry by that, the board's frames lie on ours pole
+for pole: the camera is the same.
+
+Its colors. Anchors the video's blur cannot touch: lines of the life bars
+and of their frame that have one color for hundreds of pixels and
+neighbors of nearly the same color, and the time box's black and white
+(0 and 255 in the emulator's digital picture): 74 of them, from 3 to 254.
+A straight line per channel through them: ours = -0.3 + 1.001 x for red,
+-5.2 + 1.024 x for green, -1.7 + 1.008 x for blue. The video's colors are
+right to about 5 of 255 as they are, and the correction moves nothing
+further than that. (An earlier reading here, that the capture lifts the
+dark tones and tints the middle ones, took the video's blur at the HUD's
+sharp edges for a tone curve: wrong.)
+
+The same boxes, at the same place in every picture: as the game is, with
+the trial's three parts, the emulator, the board's frame corrected:
+
+    the cave
+    bamboo floor, left     76  82  75    82  95  96    87 100 101    89  96 103
+    bamboo floor, center  111 107  87   111 107  87   117 112  91   120 108  93
+    rock                  100 112 109   107 116 109   107 116 110   110 113 112
+    ice behind Jacky      150 171 175   158 175 175   158 176 176   158 166 172
+    Brad's shirt          111  12  12   111  21  54   111  18  51   110  14  44
+    Brad's front thigh     44  49  47    44  58  87    45  60  89    47  49  70
+    Brad's back leg        26  25  23    26  26  26    25  26  27    34  29  31
+    Brad's front shoe      23  29  29    25  57  90    25  54  86    29  64 114
+    the snow
+    open snow             101 128 179   101 128 179   100 127 177   100 121 181
+    the fighters' shadow   59  75 105    59  75 105    58  74 104    60  70 107
+    tower wall             41  53  60    41  53  60    42  53  61    47  52  64
+    Goh's trousers         42  79 137    42  87 157    49 101 171    48  93 169
+
+- The stage is the board's to within 10 with the trial. As the game is it
+  is so too, but for what is lit over full: the cave's floor at the left
+  is 28 short of blue, its rock and ice 8 to 10 dark.
+- The fighters, as far as two frames a moment apart can say (they sway):
+  with the trial Brad's shirt is 10 from the board's, his shoe 24, Goh's
+  trousers 12; as the game is they are 32, 85 and 32 away. Brad's thigh
+  is 17 away with the trial and 23 as the game is.
+- The shadow is as dark in all of them: 0.58 of the lit snow.
+- The two differences read off by eye before are gone: at the same place
+  Brad's thigh is 47 49 70 on the board and 44 58 87 with the trial; the
+  open snow 100 121 181 against 101 128 179.
+- What is left: the board's snow has 7 less green than ours and the
+  emulator's. The video's light gray is as much short of green against
+  its red and blue (the HUD frame's 221 221 221 comes as 227 220 226), so
+  this is most likely the capture's, at the edge of what the anchors can
+  tell.
+- The first picture (the other source) by the same method: its low reds
+  and blues are lifted even on flat lines (42 comes as 50 to 61), and its
+  lines are ours = -15 + 1.09 x for red and blue, -6 + 1.03 x for green.
+  Corrected, the gi's patch over the hip is 149 150 164 against the
+  trial's 151 151 163.
+
+**How far off, in numbers.** Against the board's corrected frames, over
+the stage: every pixel below the HUD band and above the bottom strip,
+with the time box, the round's letters and a generous rectangle around
+each fighter left out (a fifth of the picture stays), both pictures
+averaged over 33 x 33 pixels so that the video's softness does not
+count. The mean difference per channel of 255, the signed mean (picture
+minus board), and the median CIEDE2000 distance:
+
+    the cave
+    as the game is    8.5 2.9 4.3    -8.4 -0.9 -4.0    5.1
+    with the trial    6.6 2.9 4.3    -6.3 +0.1 -4.0    4.7
+    the emulator      4.0 3.6 2.7    -3.2 +2.6 -1.7    4.6
+    the snow
+    as the game is    3.1 5.6 9.4    -1.0 +4.6 -8.3    3.8
+    with the trial    3.1 5.6 4.5    -1.0 +4.7 -2.9    3.1
+    the emulator      2.2 5.2 4.7    -0.5 +5.1 -3.3    2.9
+
+- With the trial the stage is 1.7 to 1.8 % of the full range from the
+  board; the emulator 1.3 to 1.6 %; as the game is 2.1 to 2.4 %. The
+  trial against the emulator, measured the same way: 1.0 to 1.1 %, a
+  median distance of 0.6 to 0.8.
+- Most of what is left is one shift that ours and the emulator share:
+  against its red and blue the board has 5 to 7 less green than either.
+  The HUD keeps the same after the correction (its light gray,
+  221 221 221, stays 227 220 226), so it comes with the board's output
+  or the capture, not with the lighting. The correction's lines miss
+  their own anchors by 5.0, 3.2 and 6.5 (root mean square; red, green,
+  blue), and the anchors are few colors (black, the bars' greens, one
+  light gray, white): no red or blue between 50 and 130 is pinned. A
+  difference of 5 is at the edge of what these frames can tell.
+- The fighters' cloth, by the boxes above (Brad's four and Goh's
+  trousers), the largest channel's difference averaged: 14 with the
+  trial, 14 for the emulator, 36 as the game is.
+- One difference is not the capture's. The cave's bamboo floor is darker
+  in ours than in the emulator, away from the fighters and their
+  shadows, with the trial or without. Ours, the emulator, the board:
+  far left 98 101 95, 105 106 100, 110 104 104; far right 83 81 70,
+  90 87 75, 92 83 75; behind the fighters 97 92 77, 104 97 80,
+  102 91 79. The rock walls behind are alike in ours and the emulator
+  (26 30 22, 27 30 22), and so is the snow's stage. Looked into since:
+  section 94.
+- (An earlier whole-picture measure left only the right half of the time
+  box out; this one leaves all of it.)
+
+**Not decided** (then; decided since: section 98, simply so). Whether this
+becomes the game's lighting, and how (a setting, or simply so). For it now: the real board's frames on two stages
+with strong colored lights, the emulator's own pictures of the same
+matches, and that the materials' numbers make no sense without it (a
+white gi has an 80 % base under 140 % of light). Which width the
+highlight has on the chip is not settled by the board's frames; the
+emulator's is the byte's own power (`--light-spec 1`).
+
+**Not covered.** The graphics chip's lights (`scene.vert`) and the ray
+tracers with the second part (the third works with both lightings: it
+changes the polygon's words); ray tracing with the first. The Windows
+game (it builds).
+
+## 94. Vertex colors across a triangle: on the screen here, with the perspective on the board (2026-11-26)
+
+**Found here; changed in section 95.**
+
+**What was seen.** Section 93's last measure left one difference that was
+not the capture's: the cave's bamboo floor is darker in ours than in the
+emulator and on the board, most in a band across the middle of the raft,
+with the trial or without.
+
+**What it is not** (each tried):
+
+- The lights. The raft's poles have colors of their own in every vertex
+  (baked; they take no light). With the point lights' fall with distance
+  off, the point lights off, both sides of a face lit, or the parallel
+  light without the surface's angle, not a number on the floor changes.
+- The texture's smaller levels. The floor's texture (128 x 128, with
+  levels) has the same mean color in every level (160.5 142.3 121.7 at
+  128, 160.7 142.4 121.9 at 64, 160.6 141.9 121.2 at 32), and the
+  software renderer, which takes the levels, draws the floor as dark as
+  the GPU renderer, which takes the largest only (at internal resolution
+  1 and 2 alike).
+- Fog. The difference is a gain (dark, middle and bright poles go by the
+  same factor: 1.01 near the camera, 1.10 further, 1.15 in the band),
+  not a step toward one color.
+
+**What it is.** Both renderers carry a vertex's colors across a triangle
+on the screen: the software rasterizer steps them a pixel at a time
+(`raster()` in `runtime/machine/view.c`), and the GPU's shaders declare
+them `noperspective` to match it (`scene.vert`, `scene.frag`). The
+emulator carries them with the perspective, as it does the texture's
+coordinates: its shaders multiply the colors by 1/w at the vertex and
+divide in the pixel (read, not copied). On a long triangle that runs away
+from the camera with different colors at its ends the two ways agree at
+the ends and differ in between: the raft's poles.
+
+**The test.** The two `noperspective` words taken off the colors (the
+depth keeps its own), the shaders made again, the cave and the snow
+drawn. The poles' mean color in a box: as the game is, the test, the
+emulator, the board:
+
+    far left, lines 650-700     94  88  74   106  98  83   108 100  85   108  96  89
+    far left, lines 700-750    122 114 101   135 124 110   135 125 111   134 118 110
+    far right, lines 700-760   116 107  92   126 115  98   126 115  99   120 105  95
+    behind the fighters         98  92  77   103  96  80   104  97  80   102  91  79
+    near, lines 760-850        111 103  89   114 105  91   113 104  90   123 107  99
+
+- Over the cave's stage, by section 93's measure, the trial with the
+  test is 0.6 % of the full range from the emulator (1.1 % before; 97 %
+  of it within a distance of 2) and 1.5 % from the board (1.8 % before;
+  the emulator 1.3 %).
+- In the five floor boxes of section 93, in red and in blue (the
+  capture's green apart), the board is nearer the test than the game as
+  it is in all ten.
+- The snow does not change.
+
+**What else it would change** (every real stage from its snapshot, one
+picture in a fight, the test against the build before): the cave (20:
+17 % of the pixels by more than 2 of 255, an area by up to +22 +17 +14),
+22 (19 %; -3 -11 -8), 16 (9 %; -19 -15 -12), 18 (5 %), 3 (4 %), 19 (3 %);
+the other nine in 0.3 % of their pixels or less.
+
+**What a change needs** (as it stood when this was written, before
+section 95; none of it done here; the test is taken out again
+and the shaders are what they were, byte for byte):
+
+- The GPU renderer: the two words, and a guard for rounding. The test
+  darkens every stage by a fraction of a step (a mean of 0.1 to 0.4 of
+  255): a color that is the same in all three vertices no longer comes
+  out exact, and the shader cuts it to the whole number below.
+- The software rasterizer the same way (its colors exact every eighth
+  pixel, as its texture coordinates are), or the two renderers part.
+- The reference pictures of the stages above made again.
+
+**Not covered.** The test did all four parts of both colors (base and
+offset, the alpha with them), as the emulator does; whether the board
+does it for each was not told apart. One camera and one frame a stage. A
+statement of the chip's maker was looked for and not found: the
+emulator's reading and the board's frame are what this rests on. The ray
+tracers' own pictures were not looked at.
+
+**Is ours darker everywhere?** Asked of the floor's table, where the
+emulator and the board are brighter in every row. By part of the picture
+and by tone level (the stage as in section 93, averaged over 9 x 9; ours
+with the trial minus the emulator, then the emulator minus the board):
+
+    the cave, walls and scaffold    -0.9 -0.8 -0.8     -3.7 +1.7 -2.1
+    the cave, floor                 -7.3 -5.6 -5.1     -2.9 +3.6 -1.7
+    the cave, floor, with the test  -1.7 -1.3 -1.4
+    the snow, buildings and sky     -1.3 -1.2 -0.4     -1.6 +3.8 -3.0
+    the snow, ground                +0.1 +0.3 +0.9     +0.7 +7.0 -2.6
+
+- Against the emulator ours is about 1 of 255 darker nearly everywhere,
+  at every tone level alike, the floor apart. The HUD has it too (a life
+  bar 76 248 73 against 77 248 73), so it is not the lights. The pixel's
+  sum is cut to the whole number below at three places (the color, the
+  filtered texel, their product: `scene.frag`, after `raster()`), and
+  the emulator keeps the fractions to the end. Tried (the fractions kept
+  through the GPU shader's color sums and rounded once, by the picture's
+  own 8 bits; taken out again, the shaders byte for byte what they were):
+  ours minus the emulator goes to 0.0 +0.2 0.0 on the cave's walls and
+  -0.3 -0.1 +0.7 on the snow's buildings, the HUD's boxes come out the
+  emulator's to the number (77 248 73; 205 98 90), and a whole picture
+  gets 0.8 to 0.9 brighter. So the 1 is the cutting. It is not known to
+  be the chip's rule: it is how the software rasterizer was written (its
+  blend rounds to the nearest, its texture times color cuts), and the
+  GPU's shader follows it. Which the chip does a step of 1 cannot be read
+  off a video good to 5.
+- Against the board the emulator and ours differ alike, and by tone: in
+  the darkest fifth of the range the board's frame is brighter (the cave:
+  6.7 1.5 3.7; the snow: 4.0 -0.4 4.4), in the bright tones it has 7 less
+  green and red and blue within 3. The HUD's known colors go the same way
+  in the corrected frames (black reads 3 0 5, light gray 227 220 226), so
+  most of this comes with the board's output or the capture; the HUD has
+  no red or blue between 50 and 130 to say how much.
+
+## 95. Vertex colors with the perspective; the pixel's sum keeps its fractions (2026-11-27)
+
+**Why.** Section 94 found two things the renderers did that the board and
+the emulator do not. A vertex's colors were carried across a triangle on
+the screen, not with the perspective (the cave's floor too dark in a
+band). And the pixel's color sum was cut to the whole number below at
+every step, which made every picture about 1 of 255 darker than a sum
+that keeps its fractions. The maintainer's word on both: fix them, in
+every renderer.
+
+**What is done.**
+
+*The software rasterizer* (`raster()` in `runtime/machine/view.c`):
+
+- The colors with the perspective, the way the texture's coordinates
+  already went: color / w runs straight on the screen; every eighth
+  pixel a stretch's two ends are worked out exactly (each its color / w
+  over its own 1 / w) and the pixels between go straight. The base color
+  and the offset color both. A triangle of one depth (the HUD, a
+  picture) or of one color keeps the plain way, which is the same there.
+- The pixel's sum carries 8 more bits below the point (0 to 65280 for 0
+  to 255) from the vertex color to the write, and is rounded once, to the
+  nearest, as the pixel is written: the vertex color; the four texels'
+  mix (across in 16 bits a channel, down in 32, nothing cut between);
+  texture times color (the product over 65280, to the nearest); the
+  mix by the texture's alpha; the offset color's sum; the fog's step;
+  the shadow's scale on the translucent list; the three blends. The
+  alpha test compares with its reference times 256.
+- The opaque list's shadows (the color times the scale, after the list)
+  round to the nearest. The background plane (`target_clear`) keeps its
+  fractions through its fog and rounds once.
+
+*The GPU renderer:*
+
+- `scene.vert`, `scene.frag`: the two colors are no longer
+  `noperspective` (the depth still is). The pixel's sum has no `floor`
+  left in it: the vertex colors are taken to the nearest 256th, as
+  `raster()` carries them; the texel's mix, the product, the mix by
+  alpha, the fog's step keep what they have; the picture's own 8 bits
+  round once.
+- A vertex's colors go to the GPU as bytes: to the nearest now
+  (`gpu_rgba`), and the colors the GPU lights itself (section 67) round
+  the same way, so the two lightings stay the same picture.
+- `background.frag` as `target_clear`.
+
+*The ray tracers:* nothing to change. What a ray hits is shaded on the
+triangle in space (with the perspective by nature) and in fractions
+already (`rt_light.comp`, `rt_light.hlsl`); what the eye sees first is
+the rasterized picture, so it takes the change from the two shaders
+above.
+
+**Kept as they were.** The weights, which are not colors: the texels'
+mix in 256ths of a texel, the fog table's step with its `f + f / 128`,
+the whole-number amount of the fog by vertex. The blends other than the
+three common ones take their weights from the colors rounded.
+
+**Checked** (the Linux dev build in headless desktops; the cave and snow
+matches of section 93 at 7450, and every real stage from its snapshot at
+7600):
+
+- Against the emulator, the trial's three parts on (section 93's measure,
+  the stage averaged over 33 x 33): the cave 1.1 % of the full range
+  before, 0.3 % now (ours minus the emulator -0.2 +0.0 -0.1; its walls
+  -0.1 +0.1 -0.0, its floor -0.3 +0.1 +0.0, where it was -7.3 -5.6
+  -5.1). The HUD's boxes are the emulator's to the number (a life bar
+  77 248 73, a name plate 205 98 90). The snow: 1.0 % before, 1.2 % now
+  (see "Left").
+- Against the board's corrected frames: the cave 1.8 % before, 1.4 % now
+  (the emulator 1.3 %); the snow 1.7 % and 1.7 % (the emulator 1.6 %).
+- The lights on the GPU against the processor's: the same picture, pixel
+  for pixel (the cave, the snow).
+- The software renderer against the GPU's at internal resolution 1: the
+  cave before: ours 0.2 darker, 62.7 % of the pixels not the same, 4.5 %
+  by more than 2. Now, on stages 0, 3, 16, 20, 22: within 0.06 on
+  average, 34 to 46 % not the same (by one step), 2.7 to 4.1 % by more
+  than 2 (edges). The two were never the same to the pixel; they are
+  nearer now.
+- Every stage against the build before: brighter by 0.2 to 1.4 on
+  average (22's green and blue stay level: the perspective takes there
+  what the rounding gives); more than that in places where the
+  perspective counts: the cave (20: a
+  fifth of its pixels by more than 2, an area by +23 +17 +15), 22 (17 %;
+  -2 -10 -7), 16 (8 %; -18 -14 -10), 3 (8 %; -14 -4 -4), 19 (9 %), 4
+  (11 %), 0 (9 %).
+- Ray tracing (Vulkan, Medium and High) on stages 20, 22 and 3: runs; the
+  pictures of 20 and 22 looked at beside the plain ones. There are no
+  pictures of the build before to lay them on (section 80's are older
+  than section 89).
+- The Windows build compiles. It was not run.
+
+**What it costs.** The software renderer: 6.1 ms a frame before, 7.1 ms
+now (the cave match's 599 frames as fast as they go, four runs each in
+turn, 6.01 to 6.12 against 7.05 to 7.23; the renderer before built beside
+the tree from the file at HEAD, its picture the old build's to the
+pixel). The time is the wider sum, not the perspective: with the
+perspective switched off it is the same 7.0. A shortcut tried and taken
+out again: the plain way for triangles where the perspective could not
+move a color by a quarter of a step; it brought nothing. The GPU
+renderer's time was not measured (two words less to interpolate flat, a
+few `floor` less).
+
+**Left.**
+
+- Every reference picture of an earlier release is off by about 1 now,
+  and stages 20, 22, 16, 3, 19, 4, 0 by more: the next release's picture
+  checks need all of them new.
+- With the cutting gone, what the lights reach is about 0.7 brighter
+  than the emulator's on the snow's ground (ours minus the emulator, the
+  bright ground, as the game is: -0.5 -0.4 -0.7 before, +0.7 +0.8 +0.7
+  now), where baked colors (the cave) are level. A guess, not tried: a
+  light's color is its byte over 127 here and twice its byte over 255 in
+  the emulator (0.4 % apart), and a light's direction is 8 bits not
+  brought to length 1 here (up to 0.8 % long). Which the board does is
+  not known. Looked into: section 96.
+- The software renderer's speed, if it matters: the four texels' mix and
+  the product are where SSE2 would pay.
+
+**Not covered.** Whether the board rounds or cuts (a step of 1 cannot be
+read off a video good to 5: section 94); rounding to the nearest is the
+choice that leans neither way. One frame a stage, 4:3, internal
+resolution 2 (and 1 for the software pair). The ray tracers' pictures
+against any before. DirectX 12. Windows itself.
+
+## 96. A light's direction: 12 bits in its command, 8 read here (2026-11-27)
+
+**Status.** Found here and changed the same day ("Changed", below).
+
+**Why.** Section 95 left one thing open: with the cutting gone, what the
+lights reach read brighter than the emulator's picture, where baked
+colors were level. The maintainer asked for it to be looked into.
+
+**How the game's library sends a light** (read in the decomp:
+`elan_light_cmd_build`, `elan_light_pack_directional`,
+`elan_light_pack_point`, `elan_light_pack_spot`):
+
+- The color: each float times 127 into a byte. So 127 is a light of 1,
+  and a byte reaches 2.
+- The direction: each float times 65535, and from that, for the newer
+  ELAN (which the runtime says it is: `hw_gfx.c`, revision 2), 12 bits a
+  component: the 8 high bits in the direction's word, the 4 below them
+  in the command's first word (bits 16 to 19 for x, 4 to 7 for y, 0 to 3
+  for z).
+- `elan_light_pack_spot` then measures the direction as it packed it,
+  the 12 bits over 2048, and multiplies the cone's two cosines by that
+  length before it makes the cone's two numbers from them. That only has
+  a purpose if the chip takes the direction as sent and does not bring
+  it to length 1; and it says what the chip's 1 is: 2048.
+
+**What the renderer reads** (`light_cmd`): the direction's byte over
+127, and the 4 bits in the first word not at all. The byte is the 12
+bits cut downward, so a component below zero comes out larger than it
+was, and 127 is not the scale: a direction with all three components
+below zero (a sun that shines down and away) is read 1 to 2 % too
+long. The snow match's sun, from its commands: 1.013 to 1.019 by the
+byte, 1.0003 to 1.0005 by the 12 bits. A parallel light's amount goes
+with that length; so does the cosine a cone is cut by, while the cone's
+two numbers were made for the 12 bits' length.
+
+**What the emulator reads:** the 12 bits, brought to length 1; and the
+color as twice the byte over 255, which is 0.4 % under the byte over
+127.
+
+**Tried** (a switch in `light_cmd` for the test, taken out again; the
+snow and cave matches of section 93 at 7450, the trial's three parts
+on; ours minus the emulator):
+
+| The lights read | Snow's bright ground (three boxes) | Snow, whole stage | Cave, whole stage |
+|---|---|---|---|
+| As now | +1.8 +2.1 +3.0 | 1.2 % (+0.8 +0.9 +1.8) | 0.3 % |
+| The color as the emulator | +1.3 +1.7 +2.5 | 1.1 % (+0.5 +0.6 +1.2) | 0.3 % |
+| The direction by the 12 bits | +0.2 +0.2 +0.3 | 0.8 % (-0.2 -0.3 -0.2) | 0.3 % |
+| Both | -0.1 -0.2 -0.3 | 0.8 % (-0.5 -0.6 -0.7) | 0.3 % |
+| Both, and length 1 | as both, to a step's rounding | the same | 0.3 % |
+
+So the direction's length is more than four fifths of it and the color's
+scale the rest. Section 95's "about 0.7" was the stage's average; on the
+bright ground itself it is about 2. Two of section 93's boxes are no
+measure of the light and are left out here: the fighters' shadows lie in
+other places in the two pictures (the poses are not the same to the
+frame).
+
+**What the 12 bits change** (the test build; every real stage from its snapshot at
+7600, the game as it is): every stage a little darker (0.03 to 0.9 of
+255 on average), most on stage 2 (17 % of its pixels by more than 2) and
+stage 4 (16 %). Larger in two places, neither taken apart further: a
+roof's sheen on stage 4 (an area by -14 -10 -11; a highlight would go
+with the direction itself, which 4 more bits move), and on stage 22 a
+sign that loses most of a spot light (-44 -30 -23), which is what a
+cone's edge moved looks like: the edge is where the library put it only
+when the direction has the length the library measured, and by the byte
+over 127 the cosine a cone is cut by is 1 % and more too large, against
+a cone whose soft edge is a few hundredths of a cosine wide. The lights
+on the GPU and the processor's stay the same picture, pixel for pixel
+(the snow match).
+
+**Changed** (the maintainer's word: fix it). `light_cmd` reads each
+component as its byte times 16 plus its 4 bits, over 2048, not brought
+to length 1. The GPU's lights and the ray tracers take a light from the
+same record, so every renderer follows. The color stays the byte over
+127, the library's own scale.
+
+Checked (the Linux dev build in a headless desktop; the snow and cave
+matches at 7450):
+
+- As built against the test build's pictures with the 12 bits: the same,
+  pixel for pixel (both matches, as the game is and with the trial). So
+  the table's third row is the game now.
+- The lights on the GPU against the processor's: the cave the same; the
+  snow 5 pixels of 1,228,800 by one step (none before).
+- The software renderer against the GPU's at internal resolution 1: as
+  near as in section 95 (the snow within 0.08 on average, 3.6 % of the
+  pixels by more than 2; the cave 0.02, 3.4 %).
+- The Windows build compiles. It was not run, and ray tracing was not
+  run again (it reads the same record).
+- Section 95's word on the reference pictures holds the more: all of
+  them new for the next release.
+
+**Not covered.** The board's frames cannot tell these readings apart
+(each is 1.7 % from the corrected frame, the emulator 1.6 %; a
+difference of 2 is under what the video is good for). Whether the chip
+divides a color's byte by 127, by 127.5 or by 128 is not known. Whether
+it brings a parallel light's direction to length 1 is not known either,
+and with 12 bits it is 0.05 % at most. The older ELAN's packing (8 bits,
+measured over 127 by the library) never runs here.
+
+## 98. The trial's lighting is the game's lighting (2026-11-27)
+
+**Why.** The maintainer's word on section 93's trial: no options; its
+three parts are right and what the renderer did before is not. The case
+for it is in section 93: the board's own frames on two stages, the
+emulator run on the same matches, and the materials' own numbers (a
+white cloth of 80 % made to stand under 140 % of light).
+
+**What is done.** The three options (`--light-over`, `--light-spec N`,
+`--light-env`) are gone, and what they switched is what the renderer
+does:
+
+- The material's color times the ambient and the lights, plus its offset
+  color times the highlight, and that product held to full; what is over
+  goes into the polygon's offset color where the light set's header asks
+  for it and the polygon has one. Before: the lights' sum was held to 1
+  and the material's color multiplied by that.
+- The highlight: the eye's direction mirrored at the surface, against
+  the way to the light, to the power the gloss byte holds, whichever
+  side the light is on; into the base color. Before: the library's own
+  table (`object_put_init`), which is twice that power, into the offset
+  color, and only for a light before the surface. The power is the
+  byte's own (the trial's N = 1): the emulator's reading, which the
+  first picture's cloth agreed with to a count (151 151 163 against
+  151 151 164); the board's frames do not settle the width.
+- An environment-mapped material's polygons have no offset color, and
+  their texture's and their vertices' alpha count.
+
+In every renderer:
+
+- *The processor's lights* (`strip_job` in `runtime/machine/view.c`):
+  the trial's code without its switches; the old highlight and the old
+  hold are taken out. The software renderer draws from the same
+  vertices.
+- *The lights on the GPU* (`scene.vert`, the default since section 79):
+  the same sum. The trial had left every strip with a highlight to the
+  processor; now the shader works the highlight out too, from the
+  strip's record (its eighth number is the gloss's power).
+- *The ray tracers* (`rt_light.comp`, `rt_light.hlsl`): what a ray meets
+  (the light that comes back from around, what glass and water mirror)
+  is its color times the lights with the product held to full, where the
+  sum was held. The light's ratio on the picture itself is as it was:
+  the traced sum over the game's, which is the right factor for a
+  product that is not held, and nearer the truth than before for one
+  that is.
+
+**Found on the way: a cut triangle lit by the GPU.** With the highlight
+on the GPU, the wooden ring's floor (stage 17) came out up to 20 of 255
+brighter with the GPU's lights than with the processor's, over a quarter
+of the picture, and the cage's floor up to 4. The cause is older than
+this section (section 79 noted 96,271 pixels of the cage a step apart):
+a triangle that the near plane or the guard band cuts gets new corners,
+and for a strip the GPU lights those carried a normal and a place
+between the two vertices', so the GPU lit the cut point itself. The
+board lights a model's vertices and cuts afterwards: a cut point's color
+lies between its two vertices' colors. Near a highlight or a spot's cone
+that is another color. Now a strip with a triangle that needs cutting
+is lit by the processor (`tri_view` says so, `strip_job` does the strip
+again): the floor under the camera and little else.
+
+**Checked** (the Linux dev build in headless desktops):
+
+- The snow and cave matches of section 93 at 7450, as the game is now,
+  against the build before with the trial's three options: the same,
+  pixel for pixel.
+- The lights on the GPU against the processor's, every real stage at
+  7600 and the two matches: the same on 13 stages and the cave match;
+  22 pixels of 1,228,800 a step apart on stage 16, 1 on stage 22, 5 in
+  the snow match. Before the cut triangles' fix: 354,152 pixels on stage
+  17 (up to 20) and 342,625 on stage 22 (up to 4).
+- The software renderer against the GPU's at internal resolution 1: as
+  near as in section 95 (the snow within 0.08 on average, 3.8 % of the
+  pixels by more than 2; the cave 0.02, 3.4 %).
+- Ray tracing through Vulkan, Medium and High, on stages 20, 22 and 3:
+  every run ends well.
+- The software renderer's time on the cave match, four runs each in
+  turn: 6.74 to 6.93 ms a frame before, 6.75 to 6.99 now.
+- The Windows build compiles and both tracers' shaders are made again.
+
+**Not covered.** The DirectX 12 tracer and the Windows game were not run
+here (the release's check runs them under Proton). The ray traced
+pictures were not laid on any before: the pictures of earlier sections
+have the old lighting. The fighters' cloth on the other thirteen stages
+against the board or the emulator: section 93 has two matches.
