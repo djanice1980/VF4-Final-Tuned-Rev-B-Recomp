@@ -121,9 +121,10 @@
  * Test mode: Test starts the game's test program (runtime/native/rt_native.c),
  * where Service moves the cursor and Test chooses; its EXIT starts the game
  * again. Nothing in it is changed from the board's.
- * The menu (menu.c): Insert or Esc, a gamepad's Guide button, or View + Menu
- * held for a second; the game pauses. Settings, the operator's test menu,
- * restart and quit are in it. Closing the window quits too. The first start
+ * The menu (menu.c): Insert or Esc, or a gamepad's View + Menu held for half
+ * a second (not its Guide button, which Steam's overlay takes: section 97);
+ * the game pauses. Settings, the operator's test menu, restart and quit are
+ * in it. Closing the window quits too. The first start
  * shows a notice about the author's Ko-fi page in it, once (user/kofi-notice
  * marks it shown; docs/design.md section 26).
  *
@@ -1982,6 +1983,7 @@ static unsigned pads_raw;               /* the buttons of both players' gamepads
 static unsigned pad_raw[2];             /* each player's gamepad's buttons */
 static SDL_JoystickID pad_id[2];        /* each player's gamepad now (0: none): ui_pad_players */
 #define CHORD ((1u << SDL_GAMEPAD_BUTTON_BACK) | (1u << SDL_GAMEPAD_BUTTON_START))     /* View + Menu: the menu */
+#define CHORD_MS 500                    /* held this long (section 97) */
 
 /* the log says whose gamepad is whose, each time that changes */
 static void pads_note(const SDL_JoystickID ids[2])
@@ -4365,12 +4367,9 @@ int main(int argc, char **argv)
                 int face = ui_pad_face(ev.gbutton.which, b);    /* A selects, B goes back: by label */
                 if (menu_took)
                     break;                      /* a controls cell's button (section 72) */
-                if (b == SDL_GAMEPAD_BUTTON_GUIDE) {
-                    if (menu_on)
-                        menu_do(menu_command(MENU_ESCAPE));
-                    else
-                        menu_show();
-                } else if (menu_on && face == UI_IN_OK) {
+                /* recomp (section 97): the Guide button is not the menu's any more: Steam's
+                 * overlay and the system's own take it (View + Menu held, below) */
+                if (menu_on && face == UI_IN_OK) {
                     if (!menu_do(menu_command(MENU_OK)))
                         running = 0;
                 } else if (menu_on && (face == UI_IN_BACK || b == SDL_GAMEPAD_BUTTON_START)) {
@@ -4470,11 +4469,17 @@ int main(int argc, char **argv)
                 if (key_ignore[i] && !k[i])
                     key_ignore[i] = false;
         }
-        /* View + Menu held for a second opens the menu (once a hold) */
+        /* View + Menu held for half a second opens the menu (once a hold). Held, because View
+         * is the coin and Menu the start button, and the two tapped one after the other overlap.
+         * A hold that began in the menu opens nothing: its Menu button went back there, and
+         * may have closed it (section 97) */
+        static int menu_was;
         if ((pad & CHORD) == CHORD) {
-            if (!chord_since)
+            if (!chord_since) {
                 chord_since = now_ms;
-            if (!chord_used && now_ms - chord_since >= 1000) {
+                chord_used = menu_on || menu_was;
+            }
+            if (!chord_used && now_ms - chord_since >= CHORD_MS) {
                 chord_used = 1;
                 if (!menu_on) {
                     logf_("menu: View + Menu held");
@@ -4485,6 +4490,7 @@ int main(int argc, char **argv)
             chord_since = 0;
             chord_used = 0;
         }
+        menu_was = menu_on;
         /* the operator bar: A the Test switch, X Service; it ends with B or
          * when the test program's EXIT starts the game again */
         int program = SDL_GetAtomicInt(&program_now);

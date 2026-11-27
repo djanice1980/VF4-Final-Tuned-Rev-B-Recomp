@@ -126,8 +126,8 @@ the Linux launcher's pages; the Windows release is the same program.
 | <img src="docs/images/launcher-cards.png" alt="The launcher's Settings, Cards tab: three cards, Kage given to player 1 and Lau to player 2, with Kage's character, rank, ring name, record, games left and items"> | <img src="docs/images/launcher-card-editor.png" alt="The card editor's Costume 1 tab: four color parts, hair and eye color, and the item slots"> |
 | Each player's card, as on a cabinet. New makes a ready card with every item. | Ring name, character, rank, and each costume's colors and worn items. |
 
-**The game's menu**, over the paused game: Insert or Esc, a gamepad's Guide
-button, or View + Menu held for a second. The keys and buttons at its foot
+**The game's menu**, over the paused game: Insert or Esc, or a gamepad's
+View + Menu held for half a second. The keys and buttons at its foot
 are the ones you last used, here a DualSense's. Settings that apply at the
 next start keep a dot until then.
 
@@ -151,8 +151,8 @@ Playable with sound, built on your PC from your own set by the builder
 (M5): from the command line or with the launcher. M6 added saves, free
 play, the card units, a settings page with rebinding, the GPU renderer at
 up to 4 times the resolution, the Steam Deck route, and the operator's
-test mode. The game has its own menu over the picture (Insert, Esc, a
-gamepad's Guide button, or View + Menu held): it pauses the game, changes
+test mode. The game has its own menu over the picture (Insert, Esc, or a
+gamepad's View + Menu held): it pauses the game, changes
 settings, reaches test mode from a gamepad, restarts and quits. Two
 players can play each other on two PCs on one network, and a PC can join
 a game going on with the host's join code. The latest
@@ -372,7 +372,7 @@ works: design.md sections
 
 On the Deck's controls the game's defaults are the PlayStation 2 versions'
 layout: X guard, Y and A punch, B kick, L1 throw (P+G), R1 P+K, L2 P+K+G,
-R2 K+G, Menu start, View coin (not needed with free play). Holding View + Menu for a second opens the game's menu (below,
+R2 K+G, Menu start, View coin (not needed with free play). Holding View + Menu for half a second opens the game's menu (below,
 "Playing"): settings, the operator's test mode, restart and quit. The Steam
 button stays Steam's.
 
@@ -519,7 +519,7 @@ puts P+G, P+K, P+K+G and K+G on L1, R1, L2 and R2), by position on any pad:
 | Coin | 5 (slot 1), 6 (slot 2) | View |
 | Test / Service (the operator's) | F2 / F3 | A / X on the operator bar (the menu's Operator test menu) |
 | Fullscreen | F11 or Alt+Enter | |
-| The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Guide (the Xbox, PS, Home or Steam button), or hold View + Menu for a second |
+| The game's menu (pause, settings, test mode, restart, quit) | Insert or Esc | Hold View + Menu for half a second (Share + Options on a PlayStation pad, - and + on a Switch one). Not the Guide button (Xbox, PS, Home): Steam's overlay and the system take that one |
 
 The launcher's Settings and the game's menu have a Gamepad tab and a
 Keyboard tab, each a
@@ -794,7 +794,7 @@ neither with `--host` or `--join`), `--press LIST`
 DIR, as Add to Steam makes them; [design.md s36](docs/design.md#36-steams-pictures-for-the-entry-from-the-players-own-build-2026-11-13)),
 `--shot N FILE` (the picture at vertical blank N to a BMP file) and
 `--keys LIST` (keys and virtual gamepad buttons one after another from a
-vertical blank on, as `6400:Insert,Down,shot=menu.bmp,pad:guide`, with
+vertical blank on, as `6400:Insert,Down,shot=menu.bmp,pad:back+start=40`, with
 `shot=FILE` saving the window, menu included). Every 600
 frames `vf4ft.log` (beside the program) records how long the machine took
 per frame, on average and at most, how much audio is queued, how many

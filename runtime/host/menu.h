@@ -1,6 +1,6 @@
 /* The game's own menu, over the picture (docs/design.md sections 21, 22):
- * Insert or Esc, a gamepad's Guide button, or View + Menu held for a second
- * open it, and the game pauses while it is open. Its tabs (Game, Cards,
+ * Insert or Esc, or a gamepad's View + Menu held for half a second, open it
+ * (not the Guide button: section 97), and the game pauses while it is open. Its tabs (Game, Cards,
  * Picture, Sound, Gamepad, Keyboard) are switched with Q and E or the shoulder buttons, or
  * clicked; the mouse chooses the row under it (menu_mouse). The Cards tab
  * opens the card editor in the tabs' place (docs/design.md section 42). The
@@ -29,7 +29,7 @@
 #define MENU_KOFI_URL "https://ko-fi.com/P5P81EV1M0"
 #define MENU_KOFI_SHOWN "ko-fi.com/P5P81EV1M0"      /* as the menu shows it, to type in elsewhere */
 
-/* what the player asks of it. MENU_ESCAPE: Esc, Insert or Guide (it closes
+/* what the player asks of it. MENU_ESCAPE: Esc or Insert (it closes
  * the menu, or the card editor or its note first); MENU_ERASE: Backspace
  * (back to the game; the editor's Undo; a letter less in the note);
  * MENU_UNDO: a pad's Y (the editor's Undo); MENU_CLEAR: a pad's X or Delete

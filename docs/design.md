@@ -9109,6 +9109,49 @@ it brings a parallel light's direction to length 1 is not known either,
 and with 12 bits it is 0.05 % at most. The older ELAN's packing (8 bits,
 measured over 127 by the library) never runs here.
 
+## 97. The menu from a gamepad: View + Menu held, not the Guide button (2026-11-27)
+
+**Why.** The maintainer: the Guide button (the Xbox, PS or Home button)
+as a rule opens Steam's overlay, so it should not be the game's menu as
+well; a combination instead: View + Menu, which is Share + Options on a
+PlayStation pad and - and + on a Switch one.
+
+**What was there.** Both. Guide opened and closed the menu at once, and
+View + Menu held for a second opened it.
+
+**What is done** (`runtime/host/main.c`):
+
+- The Guide button is not the menu's any more, in the game or in the
+  menu.
+- The hold is half a second (`CHORD_MS`), where it was a second: it is
+  the only way in from a gamepad now. It stays a hold and is not a press
+  of the two together, because View is the coin and Menu the start
+  button, and the two tapped one after the other overlap.
+- A hold that begins in the menu opens nothing. Menu goes back a step
+  there, and from the menu's first page that closes it; before, the same
+  hold opened the menu again when its time was up.
+
+As before: from the turn both are down until they are let go the two
+buttons are kept from the game; the one pressed first is the game's
+until the other comes down (a coin, or start). Insert and Esc are as
+they were.
+
+**Checked** (the Linux dev build in a headless desktop, at the game's
+own pace, SDL's virtual gamepad, the snow match):
+
+- Guide for a third of a second: no menu.
+- View + Menu held for a second: the menu opens 30 vertical blanks after
+  both are down (6908 to 6938: half a second), and Esc closes it.
+- View + Menu for a fifth of a second: no menu.
+- In the menu, View + Menu held for a second and a half: the menu
+  closes with the press and is not opened again.
+- The second run with a DualSense's ids: the same, the menu's foot
+  showing that pad's buttons.
+
+**Not covered.** Steam itself (that the overlay opens and the menu no
+longer does). A real gamepad. Windows (the build compiles; not run). The
+launcher has nothing that reads Guide.
+
 ## 98. The trial's lighting is the game's lighting (2026-11-27)
 
 **Why.** The maintainer's word on section 93's trial: no options; its
