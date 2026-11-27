@@ -9247,3 +9247,158 @@ here (the release's check runs them under Proton). The ray traced
 pictures were not laid on any before: the pictures of earlier sections
 have the old lighting. The fighters' cloth on the other thirteen stages
 against the board or the emulator: section 93 has two matches.
+
+## 99. An audit of the renderer: the library's source, a census, the emulator on every stage (2026-11-27)
+
+**Why.** Two faults of one week (a light's direction read short, colors
+not carried with the perspective) had one thing in common: nobody had
+laid that part of the renderer beside anything. The maintainer asked for
+the rest to be laid beside the game's own library and beside the Flycast
+emulator on every stage, the DirectX tracer included.
+
+**How.**
+
+- *Three readings of the sources*, each of one area: every ELAN command
+  and field (what the library's packers write, what `view.c` reads, what
+  the emulator reads); the pixel's path on the PowerVR chips (`raster()`,
+  the GPU renderer's shaders, the emulator's); and environment maps, bump
+  maps, the model compiler and the shadows. Between them some thirty
+  places where `view.c` and the emulator or the library do not do the
+  same.
+- *A census of what the game sends* (`--state-census`, `view.c`,
+  `state_census`): for every strip of a model and every polygon sent
+  already transformed, by list, each value of each field of its control
+  words, the strip's format and its material's flags; and the registers a
+  frame is drawn by. Every real stage, from its intro into the fight. It
+  sorts the thirty places into what this game does and what it never
+  does.
+- *The emulator on every stage, at the same game moment as ours.* The
+  same pair of fighters and costumes forced on all 15 stages in both; no
+  button pressed once the match is forced; pictures 111, 171 and 231
+  vertical blanks after the fight begins (the game's main mode 3, sub
+  mode 10: found in ours by the headless game's script, in the emulator
+  by its own script). The emulator at 960 lines in a window of 1280 x
+  960: its own pixels, not scaled. Compared outside the HUD and a
+  rectangle around each fighter, both averaged over 9 x 9. (A first round
+  without the same moment was no use on three stages: the camera had
+  moved.)
+- *The DirectX 12 tracer against Vulkan's*, the release's Windows game
+  under Proton, every stage at Medium.
+
+**Two faults found, and mended here** (not in release 0.5.26):
+
+1. *A mip-mapped texture that is not compressed was read 2 texels
+   early.* Its levels start at texel 3 (then 4, 8, 0x18, ...);
+   `tex_decode` took the compressed kind's numbers (1, 2, 6, ...), which
+   count index bytes. Every level was the right picture with its texels
+   shuffled inside each block of four. The census has such textures on
+   stages 1, 2, 11, 20 and 22; on the rooftop (stage 1) the office
+   buildings' windows were streaks. With the 2 texels: 75,444 pixels of
+   stage 1 change, 28,211 of stage 2, 20 of stage 11, and the windows
+   are the emulator's.
+2. *A vertex with colors of its own got no coordinates from its normal.*
+   A material can ask for its texture to be laid on by the normals
+   (environment mapping) on a strip whose vertices carry their own
+   colors (format 0x42, the material's flags 0x1e00: stages 18, 20, 22).
+   `strip_job` made those coordinates only for a vertex the lights
+   reach, so every vertex of such a strip had the texture's corner. The
+   cage's lamp is one: a glow in its own colors, blended by adding, with
+   the glow's texture laid on by the normals. It was dark; it shines now
+   as in the emulator (the same box of the picture at three moments:
+   101 44 25 before at all three; 197, 169, 181 red now; the emulator
+   209, 162, 189: it pulses).
+
+Checked with both in: the lights on the GPU against the processor's on
+stages 1, 2, 18, 20 (the same to the pixel) and 22 (one pixel a step
+apart); the software renderer against the GPU's as near as before; of
+the 15 stages' pictures of section 98's check, stages 1, 2, 11 and 22
+change and the other eleven are the same to the pixel. The Windows build
+compiles.
+
+**Ours against the emulator, the same moments, both faults mended** (the
+mean difference of the stage as a share of the full range, the best of
+the three moments):
+
+| Stage | Apart | | Stage | Apart | | Stage | Apart |
+|---|---|---|---|---|---|---|---|
+| 18 | 0.0 % | | 16 | 0.3 % | | 20 | 0.7 % |
+| 11 | 0.2 % | | 1 | 0.4 % | | 23 | 0.8 % |
+| 21 | 0.2 % | | 3 | 0.4 % | | 2 | 0.9 % |
+| 4 | 0.3 % | | 5 | 0.5 % | | 19 | 0.9 % |
+| | | | 0 | 0.6 % | | 22 | 1.1 % |
+| | | | | | | 17 | 1.2 % |
+
+What is left on the two last: stage 22's crowd and lamp move (they are
+not at one phase in two runs); stage 17's floor is the next item.
+
+**Found, and not changed: which of two ways is the board's is not
+known.**
+
+- *Cut first or light first.* The emulator cuts a strip at the near
+  plane on the processor and lights the cut's new corners themselves;
+  `strip_job` lights a model's vertices and lets a cut point's color lie
+  between its two (section 98 brought the GPU's lights to that too). On
+  a floor under the camera that has a highlight the two differ: stage
+  17's wooden floor is 8 to 15 of 255 darker here than in the emulator,
+  the snow's ground (stage 2) 7 to 17 at the picture's foot. A frame of
+  a real board on either stage, at the foot of the picture, would
+  settle it.
+- *The depth test of the translucent list.* Every translucent polygon of
+  this game is sent with "greater" (or "never", below), and so it is
+  tested. The emulator tests "greater or equal" whatever is sent, in a
+  list the chip sorts (this game's lists are: the feed register is
+  0x00800408). A difference only where a translucent polygon lies
+  exactly on what is behind it; none was seen in the 15 pictures.
+- *The order of translucent triangles:* by the mean of their three
+  depths here, by the nearest in the emulator.
+- *The offset color's sum is held to full before the fog* here; the
+  emulator holds nothing until the end. It matters more since section 98
+  (light over full goes into the offset color), and only under fog.
+- *Which mip level.* Here the level follows the polygon's D number as a
+  factor (D / 4: stage 22 sends 10 for most of its polygons, which is
+  1.3 levels softer); the emulator takes D above 4 for 4. The usual
+  description of that field is a factor in quarters.
+- *A shadow volume that the near plane cuts is left open* (the library's
+  own software sender closes the hole; the emulator presses the volume
+  flat onto the plane). It can only show with the camera low and close
+  to a fighter; not looked for.
+- *The far plane* in the matrix command is not read (the emulator drops
+  a strip wholly beyond it).
+- *The background plane's depth* (the emulator draws it at its depth;
+  here the depth starts empty).
+- Stage 11 alone sends trilinear filter modes, the second buffer's bits
+  and a one-plus-one blend on a few strips a frame. Neither renderer
+  does anything with the first two; the pictures agree to 0.2 %.
+- From before: a light's color is its byte over 127 (the library's own
+  scale; the emulator's is 0.4 % under); the highlight's width.
+
+**What the census shows this game never sends** (so that a difference
+there cannot show): bump maps; palette and YUV textures; fog by vertex
+and the fog mode that replaces the color; polygons with two sets of
+parameters; a depth test other than "greater"; depth writes switched
+off; anything in the punch-through list or with "never" but the shadow
+volumes' own models, which the library queues into every list; a user
+clip. The color clamp's bit is set on a few strips a frame, with the two
+clamp registers at 0 and 0xffffffff, which clamp nothing.
+
+**Not faults.** Stage 18's fighters are translucent blue shapes in the
+emulator too. On stage 0 a statue stands at the left in ours and
+mirrored at the right in the emulator at the same moment, and nowhere in
+the emulator's first round: the game places it, not the renderer (ours
+sends it with the stage's own matrix).
+
+**The DirectX 12 tracer against Vulkan's** (all 15 stages, Medium): on
+twelve stages 1,143 to 6,977 pixels of 1,228,800 differ, by 1 to 3
+steps. On stages 18, 19 and 20 the pictures differ widely: the water's
+traced mirror, which the DirectX tracer does not have (known). A
+DirectX 12 renderer does not exist: the picture itself is drawn through
+Vulkan with either tracer.
+
+**Not covered.** One pair of fighters; the first four seconds of a
+fight; no hit, no throw, no ring-out, no replay, no victory pose, no
+menu, no attract sequence: effects and materials that come only there
+were neither counted nor compared. The fighters themselves are left out
+of the comparison with the emulator (they sway, and the two are not at
+one frame). The emulator is a second reading, not the board: where the
+two agree both can be wrong. The ray tracers' own handling of a strip
+with colors and an environment map was not changed.

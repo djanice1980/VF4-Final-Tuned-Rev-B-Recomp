@@ -221,6 +221,12 @@ void view_host_rt_mirror(int on);
  * count into buf (n bytes) and returns 1; 0 when there is no i-th */
 void view_light_census(int on);
 int view_light_census_line(int i, char *buf, int n);
+/* recomp: --state-census (docs/design.md section 99): from now on (on 1) the values of the fields of
+ * every polygon's control words are counted by list, for models' strips and for polygons sent
+ * already transformed. view_state_census_line writes the i-th count as "models|polygons | list |
+ * field | value (hex) | count" into buf (n bytes) and returns 1; 0 when there is no i-th */
+void view_state_census(int on);
+int view_state_census_line(int i, char *buf, int n);
 
 /* called from hw_gfx.c, only while view_on is set */
 void view_list_segment(sh4 *c, u32 addr, u32 len);       /* a display list segment the ELAN is told to run */

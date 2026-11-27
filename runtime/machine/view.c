@@ -551,14 +551,19 @@ static void tex_decode(tex *t, const u8 *src, u32 avail)
                 t->pix[y * w + x] = texel16(px[(u32)y * stride + x], fmt);
         return;
     }
-    if (((u32)w * h + (mip ? mip_skip(k) : 0)) * 2 > avail) {
+    /* recomp (docs/design.md section 99): the levels of a mip-mapped texture that is not
+     * compressed start 2 texels further on than mip_skip says (the smallest at texel 3, then 4, 8,
+     * 0x18, ...; mip_skip's numbers are the compressed kind's index bytes, which start at 1).
+     * Read 2 texels early, every level of such a texture was the right picture with its texels
+     * shuffled within each block of four: the rooftop stage's office windows were streaks */
+    if (((u32)w * h + (mip ? mip_skip(k) + 2 : 0)) * 2 > avail) {
         memset(t->pix, 0x80, (size_t)w * h * 4);
         t->levels = 1;
         return;
     }
     for (int l = 0; l < t->levels; l++) {
         int lw = w >> l, lh = h >> l;
-        const u16 *px = (const u16 *)(src + (mip ? mip_skip(k - l) * 2 : 0));
+        const u16 *px = (const u16 *)(src + (mip ? (mip_skip(k - l) + 2) * 2 : 0));
         u32 *out = t->lv[l];
         for (int y = 0; y < lh; y++)
             for (int x = 0; x < lw; x++)
@@ -600,7 +605,7 @@ static const tex *tex_find(u32 tsp, u32 tcw)
     u32 avail = VRAM_SIZE - addr;
     u32 n = (tcw >> 30 & 1) ? 2048 + (u32)(w / 2) * (h / 2) : (stride ? (u32)h * stride : (u32)w * h) * 2;
     if (tcw >> 31)
-        n += n / 3;
+        n += n / 3 + (tcw >> 30 & 1 ? 0 : 8);   /* recomp (section 99): and the 3 texels before the levels */
     if (n > avail)
         n = avail;
     u32 sum = tex_sum(src, n);
@@ -1626,6 +1631,21 @@ again:;
             v.og = (float)(co >> 8 & 255);
             v.ob = (float)(co & 255);
             v.oa = (float)(co >> 24);
+            if (j->env) {
+                /* recomp (docs/design.md section 99): and its coordinates from its normal when
+                 * the material asks for them, as for a vertex the lights reach (below). Without
+                 * them every vertex of such a strip had the texture's corner: the cage's lamp
+                 * (a glow in its own colors, the texture laid on by the normals) was dark */
+                float nx = (float)(s8)ctl, ny = (float)(s8)(ctl >> 8), nzz = (float)(s8)(ctl >> 16);
+                float gx = nx * nm[0] + ny * nm[1] + nzz * nm[2];
+                float gy = nx * nm[3] + ny * nm[4] + nzz * nm[5];
+                float gz = nx * nm[6] + ny * nm[7] + nzz * nm[8];
+                float len = sqrtf(gx * gx + gy * gy + gz * gz);
+                if (len > 0) {
+                    v.u = (gx / len + 1.0f) * 0.5f + xf->env_u;
+                    v.v = (gy / len + 1.0f) * 0.5f + xf->env_v;
+                }
+            }
         } else if (j->unlit && !j->env) {
             v.r = br;
             v.g = bg;
@@ -1877,11 +1897,93 @@ static inline int list_slot(int list)
     return list == 0 ? 0 : list == 4 ? 1 : list == 2 ? 2 : -1;
 }
 
+/* recomp (docs/design.md section 99): --state-census, for the audit of the renderer: how often each
+ * value of each field of a polygon's control words comes, by list, for the strips of models (a
+ * strip a count) and for the polygons sent to the chips already transformed (a triangle a count) */
+#define SCENSUS_MAX 4096
+static struct { u32 key, n; } scensus[SCENSUS_MAX];
+static int scensus_on, scensus_n;
+#define SREG_MAX 64
+static struct { u32 reg, value, n; } sreg[SREG_MAX];       /* the first chip's registers at each frame's start */
+static int sreg_n;
+static const char *const scensus_name[] = {
+    "depth compare", "depth write off", "culling", "fog", "color clamp", "blend source and destination",
+    "second buffer bits", "polygon word's low byte", "user clip", "use alpha and ignore the texture's",
+    "filter", "shading", "clamp and flip", "texture kind (word >> 25)", "mip D of a mip-mapped texture",
+    "supersample", "strip format", "material flags",
+};
+
+static void scensus_add(int kind, int src, int list, u32 value)
+{
+    u32 key = (u32)kind << 26 | (u32)src << 25 | (u32)list << 23 | (value & 0x7fffff);
+    for (int i = 0; i < scensus_n; i++)
+        if (scensus[i].key == key) {
+            scensus[i].n++;
+            return;
+        }
+    if (scensus_n < SCENSUS_MAX) {
+        scensus[scensus_n].key = key;
+        scensus[scensus_n++].n = 1;
+    }
+}
+
+static void state_census(const rstate *st, int list, int src, u32 format, u32 mat_flags)
+{
+    scensus_add(0, src, list, st->isp >> 29);
+    scensus_add(1, src, list, st->isp >> 26 & 1);
+    scensus_add(2, src, list, st->isp >> 27 & 3);
+    scensus_add(3, src, list, st->tsp >> 22 & 3);
+    scensus_add(4, src, list, st->tsp >> 21 & 1);
+    scensus_add(5, src, list, st->tsp >> 26);
+    scensus_add(6, src, list, st->tsp >> 24 & 3);
+    scensus_add(7, src, list, st->pcw & 0xff);
+    scensus_add(8, src, list, st->pcw >> 16 & 3);
+    if (st->textured) {
+        scensus_add(9, src, list, st->tsp >> 19 & 3);
+        scensus_add(10, src, list, st->tsp >> 13 & 3);
+        scensus_add(11, src, list, st->tsp >> 6 & 3);
+        scensus_add(12, src, list, st->tsp >> 15 & 15);
+        scensus_add(13, src, list, st->tcw >> 25);
+        if (st->tcw >> 31)
+            scensus_add(14, src, list, st->tsp >> 8 & 15);
+        scensus_add(15, src, list, st->tsp >> 12 & 1);
+    }
+    if (src == 0) {
+        scensus_add(16, src, list, format);
+        scensus_add(17, src, list, mat_flags & 0x1fff);
+    }
+}
+
+void view_state_census(int on)
+{
+    scensus_on = on;
+    scensus_n = 0;
+    sreg_n = 0;
+}
+
+int view_state_census_line(int i, char *buf, int n)
+{
+    static const char *const lists[3] = { "opaque", "punch-through", "translucent" };
+    if (i >= scensus_n && i < scensus_n + sreg_n) {
+        int k = i - scensus_n;
+        snprintf(buf, (size_t)n, "register | %03x | %08x | %u frames", sreg[k].reg, sreg[k].value, sreg[k].n);
+        return 1;
+    }
+    if (i < 0 || i >= scensus_n)
+        return 0;
+    u32 k = scensus[i].key;
+    snprintf(buf, (size_t)n, "%s | %s | %s | %x | %u", k >> 25 & 1 ? "polygons" : "models", lists[k >> 23 & 3],
+             scensus_name[k >> 26], k & 0x7fffff, scensus[i].n);
+    return 1;
+}
+
 /* a triangle sent to the chips already transformed */
 static void emit(const rv *a, const rv *b, const rv *c, const rstate *st)
 {
     scene *sc = cur;
     int k = list_slot(es.list);
+    if (scensus_on && k >= 0)
+        state_census(st, k, 1, 0, 0);
     if (k < 0 || (st->isp >> 29) == 0)
         return;
     GROW(sc->tris[k], sc->tris_cap[k], sc->tris_n[k] + 1);
@@ -2080,6 +2182,8 @@ static u32 model_strip(u32 addr, u32 end)
     /* textured with coordinates of its own, or with the ones the ELAN makes from the normals */
     st.textured = (h[0] >> 3 & 1) && (has_uv || (es.mat_flags >> 11 & 3));
     memcpy(st.clip, es.clip, sizeof st.clip);
+    if (scensus_on)
+        state_census(&st, k, 0, format, es.mat_flags);
     if ((st.isp >> 29) == 0)
         return next;
     if (es.xf_new) {
@@ -4215,6 +4319,23 @@ static void scene_draw(scene *sc, int to_texture)
      * parameters for its shadowed part, which this game never sends */
     u32 shad = view_core_reg(0, 0x74);
     tg.shadow_scale = shad & 0x100 ? (int)(shad & 0xff) : 256;
+    if (scensus_on) {       /* recomp (section 99): the registers a frame is drawn by, each value once */
+        static const u16 regs[] = { 0x74, 0x7c, 0x98, 0xbc, 0xc0, 0x11c, 0xe4, 0x18 };
+        for (unsigned i = 0; i < sizeof regs / sizeof regs[0]; i++) {
+            u32 v = view_core_reg(0, regs[i]);
+            int k = 0;
+            while (k < sreg_n && !(sreg[k].reg == regs[i] && sreg[k].value == v))
+                k++;
+            if (k == sreg_n && sreg_n < SREG_MAX) {
+                sreg[k].reg = regs[i];
+                sreg[k].value = v;
+                sreg[k].n = 0;
+                sreg_n++;
+            }
+            if (k < sreg_n)
+                sreg[k].n++;
+        }
+    }
 
     tables_once();
     /* recomp (section 78): the host draws a pass into a texture too, when it is of the kind it takes */
