@@ -1100,8 +1100,12 @@ void menu_draw(SDL_Renderer *r, int pw, int ph, SDL_Texture *backdrop)
         ctl_draw(s, &ctl, X + 30, ry, W - 60, rh, ROW_H);
     } else {
         /* the rows */
-        ui_row rows[ACT_COUNT];
-        char vals[ACT_COUNT][160];
+        /* recomp: ROWS of them, a tab's most (tab_rows). They were ACT_COUNT, 15, which is the
+         * controls' count and nothing of a tab's: the Picture tab's sixteenth row (the frame
+         * rate display, section 88) was written past both, and the release's Linux game fell
+         * over on that tab */
+        ui_row rows[ROWS];
+        char vals[ROWS][160];
         int n = rows_in(tab);
         for (int i = 0; i < n; i++) {
             int id = row_id(i);

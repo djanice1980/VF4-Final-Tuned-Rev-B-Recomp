@@ -8265,6 +8265,17 @@ PC, and Frame skip, where the numbers matter most: the headless desktop
 gave a steady 60. The numbers were read from pictures, not compared with
 another counter.
 
+**A fault found by the next release's check (2026-11-27).** The display's
+row is the Picture tab's sixteenth, and the game's menu kept a tab's rows
+in two arrays of 15: `ACT_COUNT`, the controls' count, taken for the
+rows' when the controls came into the menu (section 72). The sixteenth
+row was written past both. The development builds and the Windows game
+went on by luck; the Linux game that the release's own builder makes
+fell over as the Picture tab was drawn (in `ui_text_in`, a row's text no
+pointer). The arrays are `ROWS` now, the size of the table the rows come
+from, so a tab cannot have more rows than they hold. Release 0.5.26's
+check of its fresh zip found it, before anything was published.
+
 ## 89. A spot light's cone, for a light that goes to the color (2026-11-26)
 
 **Why.** Players say some stages' lighting looks flat and their colors
