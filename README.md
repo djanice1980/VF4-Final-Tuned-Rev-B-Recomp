@@ -928,6 +928,51 @@ decompilation changes, refresh it with
 `python3 -I tools/sync_meta.py ../vf4ft-decomp` and translate again; the
 build makes the runtime's tables (`tables.c`, `tables_test.c`) from it.
 
+## Native Linux (without Proton)
+
+The game and the launcher also build and run natively on Linux. This is a
+supported release target (docs/design.md section 11), not only a development
+target: the same runtime, built with the system's compiler and SDL3.
+
+Dependencies (install before building):
+
+- Arch / CachyOS: `sudo pacman -S --needed cmake ninja clang sdl3 pkgconf python`
+- Debian / Ubuntu: `sudo apt install cmake ninja-build clang libsdl3-dev pkg-config python3`
+- Fedora: `sudo dnf install cmake ninja-build clang SDL3-devel pkgconf python3`
+
+Build the launcher (no game data needed):
+
+```bash
+cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/linux --target vf4ft-launcher
+build/linux/vf4ft-launcher
+```
+
+Build the game from your own set (native target):
+
+```bash
+python3 -I tools/make_game.py --set ~/Games/naomi2 --out ~/Games/vf4ft --target linux
+~/Games/vf4ft/vf4ft
+```
+
+Or rebuild an existing install:
+
+```bash
+python3 -I tools/make_game.py --update ~/Games/vf4ft
+```
+
+Notes:
+
+- Vulkan is used natively; ray tracing is available through Vulkan only
+  (DirectX 12 stays Windows-only).
+- The native release is a portable folder. After extracting a release zip,
+  run `tools/install_linux_desktop.sh` (packaged in `builder/tools/`) to add a
+  desktop entry pointing at the launcher.
+- Steam integration for the native build is being improved: Add to Steam and
+  Steam artwork generation are currently Windows-only in the launcher.
+- Lockstep tests need 32-bit support: `sudo pacman -S gcc lib32-glibc lib32-gcc-libs`
+  on Arch (multilib enabled).
+
 ## License
 
 MIT, for this project's own work: see [LICENSE](LICENSE). The game and
