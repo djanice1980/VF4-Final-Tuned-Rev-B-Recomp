@@ -433,7 +433,7 @@ static int rt_vk_trace(const view_gpu_frame *f, int w, int h, const rt_quality *
     rt_scene sc;
     rt_scene_count(f, &sc);
     if (!sc.ntri)
-        return SDL_SetError("ray tracing: the frame has no scene"), -1;
+        return 1;       /* nothing for the rays in this frame (rt.h): no fault */
     size_t bytes[B_KINDS] = { (size_t)sc.ntri * 36, (size_t)sc.ntri * sizeof(rt_tri), (size_t)f->nrt_strips * sizeof *f->rt_strips,
                               (size_t)f->nst * sizeof *f->st, (size_t)f->nlights * sizeof(float),
                               4 * sizeof(VkAccelerationStructureInstanceKHR) };

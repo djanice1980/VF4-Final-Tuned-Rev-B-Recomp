@@ -334,6 +334,7 @@ static const rt_quality rt_levels[3] = { { 1, 1, 1, 1, 2, 3 }, { 4, 4, 2, 1, 2, 
 static int rt_level = 1;        /* asked for: Medium, as the setting's default */
 static int rt_said_level = -1, rt_said_w, rt_said_h;    /* what the log last said was traced */
 static int rt_whole, rt_failed, t_rt_made;
+static int rt_said_empty;       /* the log has its one line about a frame with nothing for the rays */
 static int ds_sampled;          /* the depth buffer can be one a shader reads (ambient occlusion and the fill need it) */
 static SDL_GPUShader *sh_copy_f, *sh_rt_apply_f, *sh_rt_fill_f;
 static SDL_GPUGraphicsPipeline *pl_copy, *pl_rt_apply, *pl_rt_fill, *pl_copy_flat;
@@ -1420,15 +1421,23 @@ static void draw(SDL_GPUCommandBuffer *cmd, const packet *pkt)
             rt_said_w = (int)rw;
             rt_said_h = (int)rh;
         }
-        if (xm && rt_run->trace(f, (int)rw, (int)rh, rq, &light, &refl, rdiv > 1 ? &reach : NULL) == 0) {
+        /* 1: nothing in this frame for the rays, which is no fault (section 108): the first frame of
+         * a scene comes with vertices that are not numbers, and stopping for that stopped ray
+         * tracing for the rest of the run. The frame is drawn as one with no 3D is */
+        int traced = xm ? rt_run->trace(f, (int)rw, (int)rh, rq, &light, &refl, rdiv > 1 ? &reach : NULL) : 1;
+        if (traced == 0) {
             SDL_memcpy(xm, light, bytes);
             SDL_memcpy(xm + bytes, refl, bytes);
             if (reach)
                 SDL_memcpy(xm + 2 * bytes, reach, bytes);
             rt = 1;
-        } else if (xm && !rt_failed) {
+        } else if (traced < 0 && !rt_failed) {
             SDL_Log("gpu_render: ray tracing stopped: %s", SDL_GetError());
             rt_failed = 1;      /* the wish stays; this run draws without */
+        } else if (traced > 0 && xm && !rt_said_empty) {
+            SDL_Log("gpu_render: a frame with nothing for the rays (vertical blank %u, %u triangles): drawn without traced "
+                    "light; said once", f->frame, f->nrt_tris);
+            rt_said_empty = 1;
         }
         if (xm)
             SDL_UnmapGPUTransferBuffer(gpu, xfer_rt);

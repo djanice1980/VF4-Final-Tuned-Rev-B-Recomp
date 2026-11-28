@@ -10341,3 +10341,64 @@ game. Windows itself. A real Steam Deck. Whether a PC's chip can trace
 rays at all: the launcher cannot tell, so the RT profiles are offered
 everywhere and the game's log says when ray tracing could not start
 (the text under Ray tracing says so).
+
+## 108. Ray tracing stopped for the rest of the run when the attract demo began (2026-11-28)
+
+**How it was found.** Release 0.5.29's check of the fresh zip was
+changed to step the new Profile row to RT Performance in the built
+game's menu, in the attract mode, and to let the game run on. In both
+release games (the Linux one, and the Windows one under Proton) the log
+said, ten seconds later: "ray tracing stopped: ray tracing: the frame
+has no scene". Every earlier check of ray tracing had begun from a
+saved state in the middle of a fight.
+
+**The cause.** The development build with a temporary line in the
+tracer (removed) at the same moment: the frame at vertical blank 3324,
+the first of the attract mode's demo fight, has 44,983 triangles for
+the rays, and every corner of every one is not a number. The positions
+are the game's own vertices through the game's own matrices
+(`rt_export` in `view.c`): on a demo fight's first frame the game sends
+matrices that are not numbers, the same ones its own picture of that
+frame is drawn through. `classify` in `rt_scene.c` leaves a
+triangle of no size out, which such a triangle is, so the scene for the
+rays was empty; both tracers answered an empty scene with an error; and
+`gpu_render.c` takes a tracer's error as a fault that ends ray tracing
+for the run ("the wish stays; this run draws without"). It began again
+only when the renderer was started again (another renderer, GPU or
+internal resolution in the menu) or the Ray tracing setting was
+changed.
+
+The same frame comes with every demo fight (vertical blank 12469 is the
+next). A fight that is played does not begin with one: a one-player
+game started by scripted presses, at the game's own pace with ray
+tracing on from the start, traced 3,179 frames and met none. So a
+player who pressed Start before the first demo kept ray tracing, and
+one who let the demo begin lost it without a word but the log's. The
+code is the same in every release that has ray tracing.
+
+**As built.** A frame that holds nothing for the rays is no fault. The
+tracers' `trace` answers 1 for it (`rt.h`), and `gpu_render.c` draws
+the frame as it draws one with no 3D in it, without traced light, and
+keeps the tracer. The log says so once a run ("a frame with nothing
+for the rays ..."). A real fault (-1) still ends ray tracing for the
+run.
+
+**Checked** (the development Linux game on a headless desktop):
+
+- The attract mode from the game's start with ray tracing on, to
+  vertical blank 16,000 as fast as it goes: the frame at 12469 is met
+  and said, and 2,265 frames are traced; ray tracing is still on at the
+  end.
+- The same at the game's own pace to 7,200: the frame at 3421 is met,
+  3,433 frames traced.
+- A one-player game started by scripted presses, to 7,400: no such
+  frame, 3,179 frames traced.
+- The release's own games in the check of its fresh zip (Vulkan's
+  tracer in both), and the Windows game under Proton with the DirectX
+  12 tracer from the game's start: in the release's notes.
+
+**Not covered.** Why the game's matrices are not numbers on a demo's
+first frame was not looked for, nor what the board shows for that one
+frame. Other scenes' first frames (a replay, the ending, a two-player
+game's) were not gone through one by one; each would now be drawn
+untraced for that one frame and no more.

@@ -84,7 +84,9 @@ typedef struct rt_backend {
     /* traces the frame for a picture w x h; the results, w * h words each (rt_light.comp's two
      * outputs), stay good until the next call. reach, when not NULL: how far each pixel's eye
      * ray went as well (w * h floats; 0: it met nothing), which the renderer needs to fill a
-     * traced picture smaller than its own in. 0, or -1 */
+     * traced picture smaller than its own in. 0; 1 when the frame holds nothing for the rays
+     * (no results: the frame is drawn without traced light and the tracer goes on; docs/design.md
+     * section 108); -1 for a fault, with SDL's error */
     int (*trace)(const struct view_gpu_frame *f, int w, int h, const rt_quality *q, const Uint32 **light, const Uint32 **refl,
                  const float **reach);
 } rt_backend;
