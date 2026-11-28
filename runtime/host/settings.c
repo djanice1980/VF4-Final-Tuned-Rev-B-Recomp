@@ -35,6 +35,74 @@ const char *const settings_occlusion_name[OCCLUSIONS] = { "off", "ssao" };
 const char *const settings_raytracing_name[RAYTRACINGS] = { "off", "vulkan", "directx" };
 const char *const settings_rayquality_name[RAYQUALITIES] = { "low", "medium", "high" };
 const char *const settings_graphics_name[GRAPHICS_KINDS] = { "vulkan", "directx" };
+const char *const settings_profile_name[PROFILES] = { "default", "arcade", "lowspec", "rtperformance", "rtquality",
+                                                      "rtultra", "deck", "custom" };
+const char *const settings_profile_text[PROFILES] = { "Default", "Original Arcade", "Low spec", "RT Performance",
+                                                      "RT Quality", "RT Ultra", "Steam Deck", "Custom" };
+
+/* What each profile owns beside the GPU renderer and the GPU's lighting (docs/design.md section
+ * 107): the internal resolution, ambient occlusion, ray tracing on (1) or off, its quality (-1:
+ * not owned), frame skip, the picture's shape (-1: not owned). Default is the game as installed.
+ * Low spec is what brought a two-core laptop to full speed (section 71). RT Quality is Medium at
+ * three times the size, RT Ultra High at that: the maintainer's choices. */
+static const struct profile {
+    int scale, occlusion, rt, quality, skip, picture;
+} profiles[PROFILE_CUSTOM] = {
+    [PROFILE_DEFAULT] = { 2, OCCLUSION_OFF, 0, -1, SKIP_OFF, -1 },
+    [PROFILE_ARCADE] = { 1, OCCLUSION_OFF, 0, -1, SKIP_OFF, PICTURE_4_3 },
+    [PROFILE_LOW] = { 1, OCCLUSION_OFF, 0, -1, SKIP_HALF, -1 },
+    [PROFILE_RT_PERFORMANCE] = { 2, OCCLUSION_OFF, 1, RAYQUALITY_MEDIUM, SKIP_OFF, -1 },
+    [PROFILE_RT_QUALITY] = { 3, OCCLUSION_OFF, 1, RAYQUALITY_MEDIUM, SKIP_OFF, -1 },
+    [PROFILE_RT_ULTRA] = { 3, OCCLUSION_OFF, 1, RAYQUALITY_HIGH, SKIP_OFF, -1 },
+    [PROFILE_DECK] = { 2, OCCLUSION_OFF, 0, -1, SKIP_OFF, PICTURE_16_10 },
+};
+
+int settings_profile_matches(const settings *s, int p)
+{
+    if (p < 0 || p >= PROFILE_CUSTOM)
+        return p == PROFILE_CUSTOM;
+    const struct profile *q = &profiles[p];
+    return s->renderer == RENDERER_GPU && s->lighting == LIGHTING_GPU && s->scale == q->scale &&
+           s->occlusion == q->occlusion && (s->raytracing != RAYTRACING_OFF) == q->rt &&
+           (q->quality < 0 || s->rayquality == q->quality) && s->skip == q->skip &&
+           (q->picture < 0 || s->picture == q->picture);
+}
+
+void settings_profile_apply(settings *s, int p)
+{
+    if (p < 0 || p >= PROFILES)
+        return;
+    if (p < PROFILE_CUSTOM) {
+        const struct profile *q = &profiles[p];
+        s->renderer = RENDERER_GPU;
+        s->lighting = LIGHTING_GPU;
+        s->scale = q->scale;
+        s->occlusion = q->occlusion;
+        s->skip = q->skip;
+        /* on: the player's own choice of Vulkan or DirectX 12 stays; none made: Vulkan, never DirectX */
+        if (!q->rt)
+            s->raytracing = RAYTRACING_OFF;
+        else if (s->raytracing == RAYTRACING_OFF)
+            s->raytracing = RAYTRACING_VULKAN;
+        if (q->quality >= 0)
+            s->rayquality = q->quality;
+        if (q->picture >= 0)
+            s->picture = q->picture;
+    }
+    s->profile = p;
+}
+
+void settings_profile_settle(settings *s)
+{
+    if (s->profile >= 0 && s->profile < PROFILE_CUSTOM && settings_profile_matches(s, s->profile))
+        return;
+    for (int p = 0; p < PROFILE_CUSTOM; p++)
+        if (settings_profile_matches(s, p)) {
+            s->profile = p;
+            return;
+        }
+    s->profile = PROFILE_CUSTOM;
+}
 
 int settings_card_name_ok(const char *name)
 {
@@ -235,6 +303,7 @@ void settings_defaults(settings *s)
     s->raytracing = RAYTRACING_OFF;
     s->rayquality = RAYQUALITY_MEDIUM;
     s->graphics = GRAPHICS_VULKAN;
+    s->profile = PROFILE_DEFAULT;
     /* keyboard, player 1 (M3's keys); player 2 has none until bound */
     binding *k = s->key[0];
     set(&k[ACT_UP], "Up", "W");
@@ -612,6 +681,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
             } else if (!strcmp(name, "graphics")) {
                 if ((ok = choice(v, settings_graphics_name, GRAPHICS_KINDS, &x)))
                     s->graphics = x;
+            } else if (!strcmp(name, "profile")) {
+                if ((ok = choice(v, settings_profile_name, PROFILES, &x)))
+                    s->profile = x;
             } else if (!strcmp(name, "pacing")) {
                 if ((ok = choice(v, settings_pacing_name, PACINGS, &x)))
                     s->pacing = x;
@@ -664,6 +736,9 @@ int settings_load(settings *s, const char *path, void (*say)(const char *msg))
     /* a file from before the GPU's lighting was the default: its cpu was the default then */
     if (layout < 3 && lighting_cpu)
         s->lighting = LIGHTING_GPU;
+    /* the profile: the file's word while the settings are still that profile's, else what they are
+     * (a file from before profiles has no word: the first profile its settings are, or custom) */
+    settings_profile_settle(s);
     return 0;
 }
 
@@ -774,6 +849,15 @@ int settings_save(const settings *s, const char *path)
         "                       # Windows game's alone (the native Linux game takes it as vulkan), and\n"
         "                       # nothing chooses it by itself\n",
         settings_graphics_name[s->graphics]);
+    {
+        settings named = *s;
+        settings_profile_settle(&named);
+        PUT("profile = %s      # default | arcade | lowspec | rtperformance | rtquality | rtultra | deck | custom:\n"
+            "                       # the Profile row's name for the settings above (renderer, scale, lighting,\n"
+            "                       # frameskip, occlusion, raytracing, and for some rayquality or picture). It\n"
+            "                       # only names them: to take a profile, choose it in Settings or in the menu\n",
+            settings_profile_name[named.profile]);
+    }
     PUT("\n# Controls: SDL's key names, and its gamepad names (a b x y are the positions of an\n"
         "# Xbox pad: south, east, west, north). Several inputs: \"Up, W\". None: \"-\".\n");
     char b[200];

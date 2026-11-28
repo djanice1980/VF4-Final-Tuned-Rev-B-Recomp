@@ -233,7 +233,8 @@ and Play. The Play page
 also has Settings (the game's settings and controls, in tabs), Add to Steam
 (adds the launcher as a non-Steam game, or recreates that entry; with
 Steam open it asks for Steam to be closed first; under Wine on Linux it
-adds it to the Linux Steam, set to Proton), Build again, an
+adds it to the Linux Steam, set to Proton), Build again and Game files
+(Back on either of those pages leads to the Play page again), an
 Update card when the builder is newer than the game it built, and **Start
 the game directly**: with it on, the launcher starts hidden, opens the
 game and closes with it, so its Steam entry plays the game; it still shows
@@ -550,7 +551,17 @@ changes an option back (elsewhere it closes the menu), the wheel moves
 through the rows, and the tabs, the Q and E caps, the Ko-fi badge and the
 first start's notice buttons can be clicked. The keys or buttons for each are shown
 at its foot, as the keyboard or the gamepad last used names them, and the
-panel on the right says what the chosen row does. Picture is 4:3, 16:10
+panel on the right says what the chosen row does. The Picture tab begins
+with Profile, which sets several of its settings in one step: Default
+(the game as installed), Original Arcade (the cabinet's 640 x 480, 4:3),
+Low spec (that size, with every other frame drawn), RT Performance, RT
+Quality and RT Ultra (ray tracing: Medium at twice the cabinet's size,
+Medium at three times, High at three times) and Steam Deck (16:10). It
+says Custom once one of those settings is changed by hand, and no profile
+chooses DirectX. What a profile does not set stays as you had it: the
+picture's shape (but under Original Arcade and Steam Deck), the ray
+tracing quality (but under the RT ones), and whether ray tracing is
+Vulkan's or DirectX 12's. Picture is 4:3, 16:10
 (the Steam Deck), 16:9 or 21:9 without stretching (the 3D scene goes on
 at the sides; the HUD and the 2D screens stay 4:3 in the middle), or
 Stretch. Window size is Maximized by default: the game's window fills
@@ -576,7 +587,9 @@ graphics chip with ray tracing; it is off by default. Ray tracing quality
 says how much work that is: High traces every pixel of the picture, Medium
 (the default) a quarter of them and fills the picture in, which looks
 nearly the same for much less work, and Low does that with fewer rays, for
-a slow chip. Lighting says which chip works out the lights with the GPU
+a slow chip. Internal resolution counts as much as the quality: ray
+tracing's cost follows the size it traces, and with ray tracing on both
+rows' notes say that size. Lighting says which chip works out the lights with the GPU
 renderer: GPU, the default, is the graphics chip, which takes that work off
 the processor; CPU is the processor, as before 0.5.24 (the picture is the
 same). For a PC whose

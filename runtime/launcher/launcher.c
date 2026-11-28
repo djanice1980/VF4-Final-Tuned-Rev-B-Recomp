@@ -111,6 +111,12 @@ static char found_path[1024];       /* a set find_set found: offered, used once 
 static char saves_from[1024];       /* the install before Change: its user/ goes into the new one at Build */
 static char game_note[400];         /* the Build page's line about the install folder */
 static int game_note_bad;
+/* The way back from the Build page and from the Game files page (docs/design.md section 107).
+ * Entered from the Play page (Build again, Game files), Back leads there again, and an install
+ * folder changed on the Build page meanwhile is put back, with the saves that were to follow it:
+ * nothing was built there. In the first run's order (files, then build) Back is the step before. */
+static int build_from_play, files_from_play;
+static char game_before[1024], saves_before[1024];
 static int steam_started;           /* Steam started the launcher: Add to Steam asks for Steam closed first */
 static int plain_wine;              /* the Windows launcher under Wine, not Proton: Play warns first */
 static int wine_warned;             /* that warning was answered with Play anyway (this run) */
@@ -1686,7 +1692,12 @@ static int page_buttons(int *ids)
         return n;
     }
     switch (page) {
-    case P_FILES: ids[n++] = B_CHOOSE; ids[n++] = found_offered() ? B_USE_FOUND : B_CONTINUE; break;
+    case P_FILES:
+        if (files_from_play)
+            ids[n++] = B_BACK;
+        ids[n++] = B_CHOOSE;
+        ids[n++] = found_offered() ? B_USE_FOUND : B_CONTINUE;
+        break;
     case P_BUILD:
         ids[n++] = B_GAME_DIR;
 #ifndef _WIN32
@@ -1745,13 +1756,13 @@ enum { T_GAME, T_CARDS, T_PICTURE, T_SOUND, T_PAD, T_KEYS, T_COUNT };
 static const char *const tab_names[T_COUNT] = { "Game", "Cards", "Picture", "Sound", "Gamepad", "Keyboard" };
 /* the option tabs' rows (the Cards tab lists the card profiles, the
  * controls tabs the actions) */
-#define ST_ROWS 17      /* a tab's rows at most, with the -1 that ends them */
+#define ST_ROWS 18      /* a tab's rows at most, with the -1 that ends them */
 static const int tab_rows[T_COUNT][ST_ROWS] = {
     [T_GAME] = { OPT_CREDITS, OPT_CARDS, OPT_NETWORK, OPT_REGION, OPT_LATENCY, -1 },
     [T_CARDS] = { -1 },
-    [T_PICTURE] = { OPT_FULLSCREEN, OPT_SCREENMODE, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER,
-                    OPT_GPU, OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_LIGHTING, OPT_SKIP,
-                    OPT_PACING, OPT_STATS, -1 },
+    [T_PICTURE] = { OPT_PROFILE, OPT_FULLSCREEN, OPT_SCREENMODE, OPT_DISPLAY, OPT_WINDOW, OPT_PICTURE, OPT_FILTER,
+                    OPT_RENDERER, OPT_GPU, OPT_SCALE, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_LIGHTING,
+                    OPT_SKIP, OPT_PACING, OPT_STATS, -1 },
     [T_SOUND] = { OPT_SOUND, OPT_VOLUME, -1 },
     [T_PAD] = { -1 }, [T_KEYS] = { -1 },
 };
@@ -2306,6 +2317,7 @@ static void settings_open(void)
         st.raytracing = RAYTRACING_OFF;     /* a native Linux game's file with the Windows game's value: off, as the game takes it */
     if (st.graphics == GRAPHICS_DIRECTX && !directx_here())
         st.graphics = GRAPHICS_VULKAN;      /* the same for the renderer's own way (section 103) */
+    settings_profile_settle(&st);           /* the Profile row: what these settings are (section 107) */
     st_tab = st_row = st_top = 0;
     ctl.capturing = 0;
     cp_refresh(NULL);
@@ -2576,7 +2588,7 @@ static void st_change(int o, int d)
     option_change(&st, o, d);
     if (o == OPT_DISPLAY)
         modes_refresh();        /* another display's modes */
-    if (o == OPT_RENDERER || o == OPT_GPU)
+    if (o == OPT_RENDERER || o == OPT_GPU || o == OPT_PROFILE)     /* (a profile sets the GPU renderer) */
         renderer_follow(&st, "Settings");
 }
 
@@ -2793,6 +2805,23 @@ static void two_unwrite(void)
     two_written[0] = 0;
 }
 
+/* Back on a Build page come to from the Play page (section 107): an install folder chosen there
+ * meanwhile is given up. The Change button takes the new folder at once and leaves the saves'
+ * copy to the build; with no build, Settings would write into the new folder and the old
+ * folder's saves would then never follow. */
+static void build_left(void)
+{
+    if (!game_before[0] || !strcmp(game, game_before))
+        return;
+    SDL_strlcpy(game, game_before, sizeof game);
+    SDL_SaveFile(game_file, game, strlen(game));
+    SDL_strlcpy(saves_from, saves_before, sizeof saves_from);
+    game_note[0] = 0;
+    say("install folder: %s (as before: the Build page was left with Back)", game);
+    load_install();
+    follow_renderer("the install folder as before");
+}
+
 static void press(int b)
 {
     if (!enabled(b))
@@ -2803,11 +2832,15 @@ static void press(int b)
     case B_CHOOSE:
         SDL_ShowOpenFolderDialog(on_folder, NULL, win, set_path[0] ? set_path : NULL, false);
         break;
-    case B_CONTINUE: go(P_BUILD); break;
+    case B_CONTINUE:
+        build_from_play = 0;        /* Back there is this page again */
+        go(P_BUILD);
+        break;
     case B_USE_FOUND:
         SDL_strlcpy(set_path, found_path, sizeof set_path);
         SDL_SaveFile(set_file, set_path, strlen(set_path));
         say("set: %s (the one found, chosen)", set_path);
+        build_from_play = 0;
         go(P_BUILD);
         break;
     case B_GAME_DIR: {
@@ -2825,14 +2858,35 @@ static void press(int b)
         SDL_ShowOpenFolderDialog(on_game_folder, NULL, win, at[0] ? at : NULL, false);
         break;
     }
-    case B_BACK: go(page == P_FAIL && built ? P_PLAY : page == P_FAIL ? P_BUILD : P_FILES); break;
+    case B_BACK:
+        /* section 107: back to where the page was come to from */
+        if (page == P_FAIL)
+            go(built ? P_PLAY : P_BUILD);
+        else if (page == P_BUILD && build_from_play) {
+            build_left();
+            go(P_PLAY);
+        } else if (page == P_FILES)
+            go(P_PLAY);
+        else
+            go(P_FILES);
+        break;
     case B_TARGET: target_linux = !target_linux; break;
     case B_BUILD: do_build(0); break;
     case B_RETRY: do_build(last_kind == K_UPDATE); break;
     case B_UPDATE: do_build(1); break;
     case B_CANCEL: cancel(); break;
-    case B_REBUILD: go(P_BUILD); break;
-    case B_FILES: go(P_FILES); break;
+    case B_REBUILD:
+        build_from_play = 1;
+        SDL_strlcpy(game_before, game, sizeof game_before);
+        SDL_strlcpy(saves_before, saves_from, sizeof saves_before);
+        if (built)
+            target_linux = built_linux;     /* Program: the kind this game is, not always Windows */
+        go(P_BUILD);
+        break;
+    case B_FILES:
+        files_from_play = 1;
+        go(P_FILES);
+        break;
     case B_SETTINGS:
         settings_open();
         settings_from = page;
@@ -3012,6 +3066,8 @@ static void press(int b)
 
 static void go(int p)
 {
+    if (p == P_PLAY)
+        build_from_play = files_from_play = 0;      /* the Play page: the ways back begin there again */
     page = p;
     focus = default_focus();
 }
@@ -3179,12 +3235,14 @@ static void draw_files(void)
     ui_wrap(UI_REGULAR, 14, CX, 420, CW, 22, UI_FAINT,
             "Nothing from your set leaves this computer, and the game the builder makes is yours alone: "
             "never share it.");
-    static const int ids[] = { B_CHOOSE, B_CONTINUE };
-    static const int ids_offer[] = { B_CHOOSE, B_USE_FOUND };
-    static const char *const labels[] = { "Choose folder\xE2\x80\xA6", "Continue" };
-    static const char *const labels_offer[] = { "Choose another folder\xE2\x80\xA6", "Use this set" };
-    static const int styles[] = { 0, 1 };
-    buttons_right(offer ? ids_offer : ids, offer ? labels_offer : labels, styles, 2);
+    /* come to from the Play page (Game files): Back leads there again (section 107) */
+    static const int ids[] = { B_BACK, B_CHOOSE, B_CONTINUE };
+    static const int ids_offer[] = { B_BACK, B_CHOOSE, B_USE_FOUND };
+    static const char *const labels[] = { "Back", "Choose folder\xE2\x80\xA6", "Continue" };
+    static const char *const labels_offer[] = { "Back", "Choose another folder\xE2\x80\xA6", "Use this set" };
+    static const int styles[] = { 0, 0, 1 };
+    int skip = files_from_play ? 0 : 1;
+    buttons_right((offer ? ids_offer : ids) + skip, (offer ? labels_offer : labels) + skip, styles + skip, 3 - skip);
     hints_bottom();
 }
 
@@ -3454,7 +3512,7 @@ static void draw_play(void)
     x += button(B_SETTINGS, x, y + 14, 0, BTN_H, "Settings", 0, -1) + 14;
     if (!built_linux)
         x += button(B_STEAM, x, y + 14, 0, BTN_H, "Add to Steam", 0, -1) + 14;
-    x += button(B_REBUILD, x, y + 14, 0, BTN_H, "Build again", 0, -1) + 14;
+    x += button(B_REBUILD, x, y + 14, 0, BTN_H, built ? "Build again" : "Build the game", 0, -1) + 14;
     button(B_FILES, x, y + 14, 0, BTN_H, "Game files", 0, -1);
     float sy = y + 110, ry = y + 96;
     if (direct_shown()) {
@@ -3649,8 +3707,13 @@ static void draw_settings(void)
             note = "The game's alone: the launcher stays borderless.";
         else if (renderer_note(o, whole, sizeof whole))
             note = whole;           /* what this window draws with now (section 53) */
+#ifndef _WIN32
+        else if (o == OPT_RENDERER && !directx_here())
+            /* where DirectX 12 is: the Build page's Program is the only place that says (section 107) */
+            note = "DirectX 12 is the Windows game's: Build again with Program set to Windows (for Steam).";
+#endif
         else if (option_note(&st, o, whole, sizeof whole))
-            note = whole;           /* GPU's or Display's whole name: the row cuts a long one short */
+            note = whole;           /* GPU's or Display's whole name; a profile's settings; what is traced */
         else if (options[o].at_start || o == OPT_CREDITS)
             note = "The game reads it when it starts.";
         ui_about(604, ry, LW - 40 - 604, rh, options[o].label, option_about(o), note);
@@ -3986,7 +4049,7 @@ static void page_event(const SDL_Event *e)
     } else if (k == SDLK_ESCAPE || face == UI_IN_BACK) {
         if (pop)
             press(B_POP_OK);
-        else if (page == P_BUILD || page == P_FAIL)
+        else if (page == P_BUILD || page == P_FAIL || (page == P_FILES && files_from_play))
             press(B_BACK);
         else if (k == SDLK_ESCAPE && page != P_WORK)
             quit_asked = 1;

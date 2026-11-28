@@ -13,6 +13,7 @@ enum {
     OPT_CREDITS, OPT_CARDS, OPT_FULLSCREEN, OPT_WINDOW, OPT_PICTURE, OPT_FILTER, OPT_RENDERER, OPT_SCALE,
     OPT_SOUND, OPT_VOLUME, OPT_NETWORK, OPT_REGION, OPT_CARD1, OPT_CARD2, OPT_DISPLAY, OPT_GPU, OPT_LATENCY,
     OPT_PACING, OPT_LIGHTING, OPT_SKIP, OPT_OCCLUSION, OPT_RAYTRACING, OPT_RAYQUALITY, OPT_SCREENMODE, OPT_STATS,
+    OPT_PROFILE,
     OPT_COUNT
 };
 
@@ -50,7 +51,9 @@ void options_screen_modes(const char *const *names, int n);
 /* GPU and Display: the whole name of the choice (a row cuts a long one
  * short), for the description panel's note: "NAME." (with "not found" or
  * "not connected" when it is not there), or NULL for Auto and the other
- * options. buf holds it (n bytes) */
+ * options. Profile: what the profile sets. Internal resolution and Ray
+ * tracing quality while ray tracing is on with the GPU renderer: the size
+ * that is traced (docs/design.md section 107). buf holds it (n bytes) */
 const char *option_note(const settings *s, int o, char *buf, size_t n);
 
 /* Ray tracing's DirectX 12 (docs/design.md section 75) is the Windows game's alone: offered (1)

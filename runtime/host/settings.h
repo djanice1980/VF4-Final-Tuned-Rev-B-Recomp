@@ -98,6 +98,15 @@ enum { GRAPHICS_VULKAN, GRAPHICS_DIRECTX, GRAPHICS_KINDS };
  * internal resolution each way), filled in over the picture by its depth. Low: that with a
  * quarter of the rays. What each is in numbers: gpu_render.c. */
 enum { RAYQUALITY_LOW, RAYQUALITY_MEDIUM, RAYQUALITY_HIGH, RAYQUALITIES };
+/* Profile (docs/design.md section 107): a named set of the picture's settings, taken in one step.
+ * Every profile owns the renderer (the GPU), the lighting (the GPU's), the internal resolution,
+ * ambient occlusion, frame skip, and whether ray tracing is on; some own the ray tracing's
+ * quality or the picture's shape too. None says which of Vulkan and DirectX 12 draws or traces:
+ * a profile that turns ray tracing on leaves a choice the player made and takes Vulkan
+ * otherwise, and `graphics` is never touched. CUSTOM: the settings are no profile's. The word in
+ * the file only names what the settings are: settings_profile_settle sets it right. */
+enum { PROFILE_DEFAULT, PROFILE_ARCADE, PROFILE_LOW, PROFILE_RT_PERFORMANCE, PROFILE_RT_QUALITY, PROFILE_RT_ULTRA,
+       PROFILE_DECK, PROFILE_CUSTOM, PROFILES };
 
 typedef struct settings {
     int coins;              /* COINS_*: free play is the default */
@@ -133,6 +142,7 @@ typedef struct settings {
     int raytracing;         /* RAYTRACING_*: off by default */
     int rayquality;         /* RAYQUALITY_*: medium by default */
     int graphics;           /* GRAPHICS_*: vulkan by default, and never directx unless the player says so */
+    int profile;            /* PROFILE_*: which profile the settings above are (settings_profile_settle) */
     binding key[2][ACT_COUNT];      /* keyboard, player 1 and player 2 */
     binding pad[2][ACT_COUNT];      /* gamepad, player 1's and player 2's (the same by default) */
     char pad_wish[2][PAD_WISH_MAX]; /* the controller each player asks for: "" Auto (the pads in the
@@ -235,6 +245,15 @@ extern const char *const settings_occlusion_name[OCCLUSIONS]; /* "off", "ssao" *
 extern const char *const settings_raytracing_name[RAYTRACINGS]; /* "off", "vulkan", "directx" */
 extern const char *const settings_rayquality_name[RAYQUALITIES]; /* "low", "medium", "high" */
 extern const char *const settings_graphics_name[GRAPHICS_KINDS]; /* "vulkan", "directx" */
+extern const char *const settings_profile_name[PROFILES];     /* "default", "arcade", ... "custom" (settings.txt's) */
+extern const char *const settings_profile_text[PROFILES];     /* "Default", "Original Arcade", ... "Custom" */
+/* 1 when s has every setting profile p owns at p's value (CUSTOM: always) */
+int settings_profile_matches(const settings *s, int p);
+/* s takes profile p: what p owns is set, and s->profile is p (CUSTOM changes nothing else) */
+void settings_profile_apply(settings *s, int p);
+/* s->profile made true: left when the settings are still that profile's, else the first profile
+ * whose they are, else CUSTOM */
+void settings_profile_settle(settings *s);
 extern const char *const settings_pacing_name[PACINGS];       /* "game", "screen", "off" (settings.txt's) */
 
 /* the Picture setting's name in settings.txt ("4:3", "16:10", "16:9",

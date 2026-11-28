@@ -10135,3 +10135,209 @@ other polygon has the filter word 0 or 1.
 frame), among them the 32 x 32 one whose second pass is blended by its
 alpha. A second frame of the board on stage 11: the level is fitted to
 one. Windows itself.
+
+## 107. Profiles, ray tracing's cost said where it is set, the way back from the Build page, and where DirectX 12 is on a Linux PC (2026-11-27)
+
+**What was asked.** The maintainer's list after the test play of
+section 104: say in the program that the internal resolution greatly
+affects ray tracing's speed; the launcher's Build page reached with
+Build again has no way out but to close the program or to build; the
+"DirectX files' download" shows up in the update only and cannot be
+found otherwise; and basic profiles: Original Arcade, Low spec, RT
+Performance, RT Quality, Steam Deck, Custom. His answers to what the
+plan left open: Low spec draws every other frame; Original Arcade uses
+the GPU renderer; RT Quality is Medium at three times the cabinet's
+size, and a further RT Ultra is High at that; the Profile row is in the
+launcher's Settings and in the game's menu; a new install is a profile
+of its own, named Default.
+
+**1. Profiles.** A row named Profile begins the Picture page of the
+launcher's Settings and the Picture tab of the game's menu. Each
+profile sets the GPU renderer, the GPU's lighting, no ambient
+occlusion, and:
+
+    profile           internal resolution   ray tracing   its quality   frame skip    picture
+    Default           x2                    off           -             off           -
+    Original Arcade   x1                    off           -             off           4:3
+    Low spec          x1                    off           -             every other   -
+    RT Performance    x2                    on            Medium        off           -
+    RT Quality        x3                    on            Medium        off           -
+    RT Ultra          x3                    on            High          off           -
+    Steam Deck        x2                    off           -             off           16:10
+
+A dash is a setting the profile leaves alone. Default is what
+`settings_defaults` gives. Low spec is what brought a two-core laptop
+to full speed in section 71. Steam Deck is Default with the Deck's
+picture, which a Deck has from its first start anyway (section 44): on
+a Deck the two are the same settings, and the row keeps the name it was
+given.
+
+No profile sets `graphics`, the renderer's way to the chip (Vulkan or
+DirectX 12): DirectX is nobody's default, the maintainer's rule of
+section 103. A profile that turns ray tracing on takes the tracer the
+player's own settings named, and Vulkan when they named none; never
+DirectX 12 of its own.
+
+*What the row says.* `settings.txt` has a line `profile = NAME`
+(default, arcade, lowspec, rtperformance, rtquality, rtultra, deck,
+custom). It is a label: the game reads the settings themselves, never
+this line. `settings_profile_settle` (after the file is read, before it
+is written, after every change by hand) keeps the stored name while the
+settings still are that profile's, else takes the first profile they
+are, else Custom. So a file edited by hand, or one from an older
+release, shows what it is. The note under the row's text says it in
+numbers: "1280 x 960, no ray tracing.", "640 x 480, no ray tracing,
+every other frame.", "1920 x 1440, ray tracing Medium.", "Your own
+settings: no profile's."
+
+*The row's steps* (`profile_change` in `options.c`): the profiles in
+the table's order. Custom is among them only once the player's settings
+have been no profile's in this run of the program: it brings exactly
+those back.
+
+*What a profile leaves alone is the player's own.* As first built, a
+step only wrote what the profile owns, and the rest stayed as the step
+before had left it. Stepping the row one press at a time showed what
+that does: after Steam Deck, Default and every profile after it had
+16:10; after RT Ultra, the quality stayed High; and a player's DirectX
+12 tracer was Vulkan after one step through a profile without ray
+tracing. So `options.c` keeps the player's own (`own`) and what the
+row's last step left (`left`). When the row is stepped from settings
+that are not as its last step left them (the first time, from the file,
+after a change by hand), the player's own are taken: all of them when
+the settings are no profile's, else those of the three loose ones (the
+picture's shape, the quality, the tracer) that a hand has changed
+since. A step then writes the player's own three first and what the
+profile owns over them. Ray tracing turned off by hand is the player's
+own too: a later RT profile then takes Vulkan. One set for the
+program's run, not stored: after a restart the file's settings are the
+player's own.
+
+**2. The cost of ray tracing, said where it is set.** The cost follows
+the number of pixels traced: the internal resolution, or a quarter of
+it below High. On the development PC (an RTX 5070 Ti, the temple
+garden, the development Linux game in a headless desktop at the game's
+pace, the log's own figure for a traced frame):
+
+    internal resolution, quality    traced          a traced frame   pictures a second
+    x2, Medium (RT Performance)     640 x 480        8.7 ms          52
+    x3, Medium (RT Quality)         960 x 720       10.9 ms          58
+    x2, High                        1280 x 960      12.3 ms          55
+    x3, High (RT Ultra)             1920 x 1440     19.3 ms          35
+    x4, High                        2560 x 1920     29.0 ms          23
+
+A frame at 60 a second is 16.7 ms. The game kept its own speed in all
+five (the same stretch took 13.3 s) and showed fewer pictures where the
+tracing took longer. The pictures a second are rough: a headless
+desktop's screen is not a steady one (the lightest setting shows fewer
+than the next two), and a real screen may do better. The milliseconds
+are the tracer's own. So on that chip RT Quality holds 60 and RT Ultra
+does not: Ultra is for a faster chip yet, or for a player who takes the
+sharper shadows over the pictures a second. The maintainer named the
+two; the figures are for him to weigh.
+
+The texts under Internal resolution and Ray tracing quality now say so
+("Ray tracing's cost follows it most of all."; "Internal resolution
+counts as much: each step down is far less to trace."), and with ray
+tracing on a note under each names the size traced as the settings
+stand: "Ray tracing is on and traces 1920 x 1440 of this.", "Traces 640
+x 480 now. A lower Internal resolution traces less." (`option_note`;
+the game's menu shows the same note.)
+
+*The launcher's panel.* Its help panel holds about eleven lines of
+text, or nine over a two-line note, or eight over three. Both texts
+were cut to eight lines for their notes. Counting them showed a fault
+that release 0.5.28 has too: Ray tracing's text (ten lines, eleven where
+DirectX 12 is offered) and Ambient occlusion's (eleven) ran out of the
+panel's foot when the Software renderer's two-line note ("The Software
+renderer does not use it.") stood under them. Both are nine lines now,
+with nothing of substance lost (the Ray tracing text still says what is
+traced, what it needs, where a failure is told, and that it replaces
+ambient occlusion).
+
+**3. The way back from the Build and the Game files pages.** The Play
+page's Build again opened the Build page, whose Back led to the Game
+files page always, which had no Back; Esc there asks whether to quit.
+The two pages were a loop with one door, the build. Now the launcher
+keeps where each page was come to from (`build_from_play`,
+`files_from_play`, as `settings_from` does for Settings): Back on the
+Build page leads to the Play page when it was opened from there, and
+the Game files page has a Back (and Esc) to the Play page when it was
+opened from there. In the first run's order, files then build, Back is
+the step before, as it was. A failed build's Back is unchanged.
+
+*An install folder changed and then given up.* The Build page's Change
+takes the new install folder at once (it is written to the launcher's
+own file) and leaves the saves' copy to the build. Left with Back, the
+Play page would have shown the new, empty folder, Settings would have
+written a file into it, and the old folder's saves would never have
+followed. `build_left` puts the folder and the saves' source back as
+they were when Build again was pressed, and reads the install again.
+
+*Program.* On Linux the Build page's Program (Windows, for Steam, or
+Native Linux) began at Windows every time: a player with the native
+game who pressed Build again and Build got the Windows game. It now
+opens on the kind that is installed.
+
+**4. Where DirectX 12 is on a Linux PC.** The maintainer confirmed what
+he had seen: the Build page, with its Program switch and the first
+Windows build's download of the compiler (about 90 MB). There is no
+download of DirectX files in the program. The DirectX 12 choices
+(Renderer and Ray tracing) belong to the Windows game, which on Linux
+runs under Proton; the launcher offers them when the installed game, or
+before a first build the Program chosen, is the Windows one
+(`directx_here`). With a native Linux game nothing said so: the choices
+were simply not there. On such an install the note under Renderer now
+says: "DirectX 12 is the Windows game's: Build again with Program set
+to Windows (for Steam)." With item 3 that road can also be walked back.
+
+**As built.** `settings.h`, `settings.c`: the profiles' table,
+`settings_profile_matches`, `_apply`, `_settle`, the `profile` line.
+`options.h`, `options.c`: `OPT_PROFILE`, its text and note, the notes
+under Internal resolution and Ray tracing quality, the shorter texts,
+`profile_change`. `launcher.c`: the Profile row, the Renderer row's
+note on a native Linux install, the ways back, `build_left`, Program on
+the installed kind, the Play page's button reads "Build the game" while
+there is none. `menu.c`: the Profile row (a step applies at once, like
+the rows it sets), the notes. `README.md`.
+
+**Checked** (the development builds; the launchers' pictures by SDL's
+software renderer in a headless desktop, the Windows launcher under
+Wine):
+
+- Both launchers, the Profile row at each value: the row, its text and
+  its note inside the panel. What each saves: Low spec `scale = 1`,
+  `frameskip = half`; RT Ultra `scale = 3`, `raytracing = vulkan`,
+  `rayquality = high`; a change by hand after a profile saves `profile
+  = custom`.
+- The steps, one press at a time, twelve cases in each launcher (the
+  saved file read after each): from a file that said 16:9, Original
+  Arcade has 4:3, Low spec 16:9, Steam Deck 16:10, and once round
+  Default has 16:9 again; from a file that said quality Low, RT Ultra
+  has High and Steam Deck after it Low; from a file that said the
+  DirectX 12 tracer at Low, the Windows launcher's RT Performance has
+  DirectX 12 at Medium and, once round, Custom has the player's own
+  again (in the Linux launcher with a native game, where that file's
+  DirectX is off, the RT profiles have Vulkan); the picture set by hand
+  under Original Arcade is the player's own on the next step, and so is
+  one set by hand under Low spec; ray tracing turned off by hand, then
+  an RT profile: Vulkan.
+- A native Linux install's Renderer row has the DirectX note, inside
+  the panel (eight lines over three). The Windows launcher's Renderer,
+  Ray tracing and Ambient occlusion panels, the last two with the
+  Software renderer's note: inside the panel.
+- The Linux launcher where it finds the builder: Build again from a
+  native game opens with Program on Native Linux; Back gives the Play
+  page as it was, to the pixel; Game files has Back, and Back from it
+  gives the Play page as it was, to the pixel.
+- The game's menu (the development Linux game, the temple garden): the
+  Profile row is first on the Picture tab; stepped to RT Ultra the
+  renderer starts again at three times the size and ray tracing at
+  High; the file says `profile = rtultra`.
+
+**Not covered.** The install folder put back after Change and Back (it
+needs the desktop's folder dialog). The game's menu under the Windows
+game. Windows itself. A real Steam Deck. Whether a PC's chip can trace
+rays at all: the launcher cannot tell, so the RT profiles are offered
+everywhere and the game's log says when ray tracing could not start
+(the text under Ray tracing says so).

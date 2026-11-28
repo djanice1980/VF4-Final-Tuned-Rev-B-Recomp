@@ -5,12 +5,13 @@
 #define NB "\xc2\xa0"
 
 /* Ray tracing's text, around the sentence about DirectX 12 that is said only where DirectX 12 is
- * offered (options_directx). No longer than this: the launcher's box holds eleven lines, and the
- * text with the sentence fills them. */
-#define RT_ABOUT_1 "Off: the game's own light. Vulkan: the graphics chip traces rays through the scene: soft " \
-                   "shadows under the fighters, shade from what is near, reflections in glass. "
-#define RT_ABOUT_2 "It needs a fast graphics chip with ray tracing; the log says if it could not start. A " \
-                   "change applies at once. Replaces ambient occlusion. Software has none."
+ * offered (options_directx). No longer than this: the launcher's box holds nine lines over the two
+ * of "The Software renderer does not use it." (docs/design.md section 107: with eleven, that note
+ * ran out of the box). */
+#define RT_ABOUT_1 "Off: the game's own light. Vulkan: the graphics chip traces rays: soft shadows under " \
+                   "the fighters, shade from what is near, reflections in glass. "
+#define RT_ABOUT_2 "It needs a fast chip with ray tracing; the log says if it could not start. Replaces " \
+                   "ambient occlusion."
 static const char rt_about_directx[] = RT_ABOUT_1 "DirectX 12: the same through DirectX. " RT_ABOUT_2;
 /* Renderer's text where the game can draw through DirectX 12 too (docs/design.md section 103). No longer
  * than the other one: the launcher's panel holds eight lines of it over a note of three. (That a change
@@ -84,11 +85,11 @@ const option_info options[OPT_COUNT] = {
                   "The graphics card the game and the launcher draw on. Auto takes the first in this list that "
                   "works. One chosen that is missing or cannot draw gives way to the first that works; when "
                   "none works, Software is used.", 0 },
+    /* eight lines in the launcher's panel, for the note under it (docs/design.md section 107) */
     [OPT_SCALE] = { "Internal resolution",
-                    "The size the GPU renderer draws the game at, before the picture is scaled to the window "
-                    "or the screen: 1 to 4 times the cabinet's 640 x 480, or a wide picture's (854 x 480 for "
-                    "16:9). Higher is sharper and needs a faster GPU. A change applies at once. Software does "
-                    "not use it.", 0 },
+                    "The size the GPU renderer draws the game at, before it is scaled to the window: 1 to 4 "
+                    "times the cabinet's 640 x 480 (854 x 480 at 16:9). Higher is sharper and needs a faster "
+                    "GPU. Ray tracing's cost follows it most of all. A change applies at once.", 0 },
     [OPT_SOUND] = { "Sound",
                     "The sound processor and its effects. Off saves processor time, and the game is "
                     "silent.", 1 },
@@ -125,24 +126,29 @@ const option_info options[OPT_COUNT] = {
                     "a frame and the slowest of the last two seconds. Numbers and graph adds a bar for "
                     "each of the last 120 pictures: the line across is one frame at 60 a second, and "
                     "a slow one is marked.", 0 },
+    /* nine lines in the launcher's panel at most, for the Software renderer's note under it (section 107) */
     [OPT_OCCLUSION] = { "Ambient occlusion",
                         "Off: the picture as the cabinet draws it. SSAO: corners, folds and the places where things "
-                        "meet (a foot on the floor) are a little darker, which gives the picture more depth. The GPU "
-                        "renderer works it out of the picture's own depth; it needs a little more of the graphics "
-                        "chip. The scores, bars and other flat parts are not touched. A change applies at once. "
-                        "Software has none.", 0 },
+                        "meet (a foot on the floor) are a little darker, which gives the picture more depth. It "
+                        "needs a little more of the graphics chip. The scores and bars are not touched. A change "
+                        "applies at once.", 0 },
     /* option_about has this text with DirectX 12's sentence where that is offered */
     [OPT_RAYTRACING] = { "Ray tracing", RT_ABOUT_1 RT_ABOUT_2, 0 },
+    /* eight lines in the launcher's panel, for the note under it (docs/design.md section 107) */
     [OPT_RAYQUALITY] = { "Ray tracing quality",
-                         "How much work ray tracing is for the graphics chip. High: every pixel of the picture is "
-                         "traced. Medium: a quarter of them, filled in over the picture: much less work, and the "
-                         "shadows' edges a little softer. Low: that with fewer rays, for a slow chip. A change "
-                         "applies at once. Internal resolution counts too: the lower, the less to trace.", 0 },
+                         "High traces every pixel of the internal resolution. Medium: a quarter of them (half "
+                         "each way), filled in: much less work, shadows a little softer. Low: that with fewer "
+                         "rays. Internal resolution counts as much: each step down is far less to trace.", 0 },
     [OPT_LIGHTING] = { "Lighting",
                        "Which chip works out the lights with the GPU renderer. GPU: the graphics chip, which "
                        "takes that work off the processor. CPU: the processor, as before 0.5.24: choose it "
                        "if the picture looks wrong with GPU. The picture is the same. The software renderer "
                        "always uses the processor.", 0 },
+    /* eight lines in the launcher's panel at most: the note under it says what the profile sets */
+    [OPT_PROFILE] = { "Profile",
+                      "Several of the settings below in one step. Default is the game as installed. Original "
+                      "Arcade and Low spec draw at the cabinet's size; the RT ones turn ray tracing on, each "
+                      "heavier than the last. Change a setting by hand and this says Custom.", 0 },
 };
 
 static int wrap(int v, int d, int n)
@@ -329,6 +335,15 @@ static void card_change(settings *s, int side, int d)
     SDL_strlcpy(s->card[side], next, sizeof s->card[side]);
 }
 
+/* the profile s's settings are (settings_profile_settle, on a copy) */
+static int profile_of(const settings *s)
+{
+    static settings t;
+    t = *s;
+    settings_profile_settle(&t);
+    return t.profile;
+}
+
 void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
 {
     static const char *const fs[] = { "Auto", "Off", "Borderless window", "Exclusive" };
@@ -454,19 +469,107 @@ void option_row(const settings *s, int o, ui_row *row, char *buf, size_t n)
         row->level = s->volume;
         row->off = !s->sound;
         break;
+    case OPT_PROFILE: SDL_strlcpy(buf, settings_profile_text[profile_of(s)], n); break;
     }
+}
+
+/* ray tracing as the game will take it: on with the GPU renderer, and not DirectX 12's where that
+ * is not offered */
+static int tracing(const settings *s)
+{
+    return s->renderer == RENDERER_GPU && s->raytracing != RAYTRACING_OFF &&
+           !(s->raytracing == RAYTRACING_DIRECTX && !directx_offered);
 }
 
 const char *option_note(const settings *s, int o, char *buf, size_t n)
 {
+    /* the size ray tracing traces: the internal resolution, or half of it each way below High */
+    int div = s->rayquality == RAYQUALITY_HIGH ? 1 : 2;
+    int tw = (settings_picture_width(s->picture) * s->scale + div - 1) / div, th = (480 * s->scale + div - 1) / div;
     if (o == OPT_GPU && s->gpu[0])
         SDL_snprintf(buf, n, name_in(gpu_names, gpu_n, s->gpu) >= 0 ? "%s." : "%s: not found.", s->gpu);
     else if (o == OPT_DISPLAY && s->display[0])
         SDL_snprintf(buf, n, name_in(display_names, display_n, s->display) >= 0 ? "%s." : "%s: not connected.",
                      s->display);
-    else
+    else if (o == OPT_SCALE && tracing(s))
+        SDL_snprintf(buf, n, "Ray tracing is on and traces %d x %d of this.", tw, th);
+    else if (o == OPT_RAYQUALITY && tracing(s))
+        SDL_snprintf(buf, n, "Traces %d x %d now. A lower Internal resolution traces less.", tw, th);
+    else if (o == OPT_PROFILE) {
+        if (profile_of(s) == PROFILE_CUSTOM)
+            SDL_strlcpy(buf, "Your own settings: no profile's.", n);
+        else if (tracing(s))
+            SDL_snprintf(buf, n, "%d x %d, ray tracing %s%s.", settings_picture_width(s->picture) * s->scale, 480 * s->scale,
+                         s->rayquality == RAYQUALITY_HIGH ? "High" : s->rayquality == RAYQUALITY_MEDIUM ? "Medium" : "Low",
+                         s->skip == SKIP_HALF ? ", every other frame" : "");
+        else
+            SDL_snprintf(buf, n, "%d x %d, no ray tracing%s.", settings_picture_width(s->picture) * s->scale, 480 * s->scale,
+                         s->skip == SKIP_HALF ? ", every other frame" : "");
+    } else
         return NULL;
     return buf;
+}
+
+/* Profile (docs/design.md section 107). The settings a profile may set, as the player had them
+ * (own), and as the row's last step left them (left): one set of each for the program.
+ *
+ * A profile does not own everything: the picture's shape (but Original Arcade's and Steam Deck's),
+ * the ray tracing quality (but the RT ones'), and which tracer, Vulkan or DirectX 12. Those are
+ * the player's own under every profile that leaves them alone: without that, a step through Steam
+ * Deck left its 16:10 on every profile after it, and a step through Low spec turned a player's
+ * DirectX 12 tracer into Vulkan. (Never DirectX of a profile's doing: only what the player's
+ * settings said, and where this game has it.)
+ *
+ * The player's own are taken when the row is stepped from settings that are not as its last step
+ * left them (the first time, from the file, after a change by hand): all of them when they are no
+ * profile's (Custom then brings them back), else the three a hand has changed since. */
+typedef struct {
+    int have, renderer, lighting, scale, occlusion, raytracing, rayquality, skip, picture;
+} profile_set;
+static profile_set own, left;
+static int own_custom;      /* own were no profile's: the row offers Custom */
+
+static void set_take(profile_set *k, const settings *s)
+{
+    k->have = 1;
+    k->renderer = s->renderer; k->lighting = s->lighting; k->scale = s->scale; k->occlusion = s->occlusion;
+    k->raytracing = s->raytracing; k->rayquality = s->rayquality; k->skip = s->skip; k->picture = s->picture;
+}
+
+static int set_same(const profile_set *k, const settings *s)
+{
+    return k->renderer == s->renderer && k->lighting == s->lighting && k->scale == s->scale &&
+           k->occlusion == s->occlusion && k->raytracing == s->raytracing && k->rayquality == s->rayquality &&
+           k->skip == s->skip && k->picture == s->picture;
+}
+
+static void profile_change(settings *s, int d)
+{
+    settings_profile_settle(s);
+    if (!left.have || (s->profile == PROFILE_CUSTOM && !set_same(&left, s))) {
+        set_take(&own, s);
+        own_custom |= s->profile == PROFILE_CUSTOM;
+    } else if (!set_same(&left, s)) {       /* a profile's still, or another's: what a hand has changed of the three */
+        if (s->picture != left.picture) own.picture = s->picture;
+        if (s->rayquality != left.rayquality) own.rayquality = s->rayquality;
+        if (s->raytracing != left.raytracing) own.raytracing = s->raytracing;
+    }
+    /* the profiles in their order, then Custom when there are settings of the player's own to go back to */
+    int p = wrap(s->profile, d, own_custom ? PROFILES : PROFILE_CUSTOM);
+    if (p == PROFILE_CUSTOM) {
+        s->renderer = own.renderer; s->lighting = own.lighting; s->scale = own.scale; s->occlusion = own.occlusion;
+        s->raytracing = own.raytracing; s->rayquality = own.rayquality; s->skip = own.skip; s->picture = own.picture;
+        s->profile = PROFILE_CUSTOM;
+        settings_profile_settle(s);     /* (the player's own may be a profile's by now) */
+    } else {
+        /* the player's own first, then what the profile owns over them: ray tracing off, or on
+         * with the player's tracer (Vulkan when they had none) */
+        s->picture = own.picture;
+        s->rayquality = own.rayquality;
+        s->raytracing = own.raytracing == RAYTRACING_DIRECTX && !directx_offered ? RAYTRACING_OFF : own.raytracing;
+        settings_profile_apply(s, p);
+    }
+    set_take(&left, s);
 }
 
 void option_change(settings *s, int o, int d)
@@ -514,5 +617,7 @@ void option_change(settings *s, int o, int d)
         if (s->volume < 0) s->volume = 0;
         if (s->volume > 100) s->volume = 100;
         break;
+    case OPT_PROFILE: profile_change(s, d); return;
     }
+    settings_profile_settle(s);     /* a setting changed by hand: the Profile row says what the settings are now */
 }
