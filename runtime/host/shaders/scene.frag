@@ -11,6 +11,7 @@ layout(location = 1) in vec4 v_ofs;
 layout(location = 2) in vec2 v_uv;
 layout(location = 3) noperspective in float v_z;
 layout(location = 4) flat in uint v_state;
+layout(location = 5) flat in vec4 v_rect;       // a sprite's own texture coordinates (x above z: not a sprite)
 layout(location = 0) out vec4 o_col;
 
 struct State {
@@ -35,6 +36,7 @@ layout(set = 3, binding = 0) uniform FU {
 } fu;
 
 const float PI = 3.14159265358979;
+const float TRI_LOD_UP = 1.0;   // view.c's TRI_LOD_UP (docs/design.md section 106)
 
 int tex_at(int t, int size, bool clampit, bool flip)
 {
@@ -133,12 +135,25 @@ void main()
         int lv = 0;
         float dadj = float(tsp >> 8 & 15u) * 0.25;
         int maxl = dadj == 0.0 ? 0 : int(s.tex_levels) - 1;
+        // The chip's tri-linear filter comes in two passes, filter word 2 and then 3 (docs/design.md
+        // section 106): each draws one mip level by its share of the pixel's level of detail, the
+        // first the level below times (1 - f), the second the level above times f. The two levels
+        // lie TRI_LOD_UP above the level of detail (view.c has the number, and why).
+        uint filt = tsp >> 13 & 3u;
+        float share = 1.0;
         if (maxl > 0) {
             vec2 sz = vec2(tw0, th0);
             vec2 ax = dx * sz, ay = dy * sz;
             float r2 = max(dot(ax, ax), dot(ay, ay)) * dadj * dadj;
             if (r2 > 2.0)
                 lv = min(int((floatBitsToUint(r2) >> 23) - 126u) >> 1, maxl);
+            if (filt >= 2u && !bump) {
+                float lam = clamp(0.5 * log2(max(r2, 1e-12)) + TRI_LOD_UP, 0.0, float(maxl));
+                int n = int(lam);
+                float fr = lam - float(n);
+                lv = filt == 3u ? min(n + 1, maxl) : n;
+                share = filt == 3u ? fr : 1.0 - fr;
+            }
         }
         uint at = s.tex_at;
         for (int l = 0; l < lv; l++)
@@ -146,7 +161,18 @@ void main()
         int tw = tw0 >> lv, th = th0 >> lv;
         vec4 t;
         if ((tsp >> 13 & 3u) != 0u && !bump) {
-            float fu_ = v_uv.x * float(tw) + 16383.5, fv = v_uv.y * float(th) + 16383.5;
+            // A sprite on a picture larger than the game's: the four texels are its own (docs/design.md
+            // section 104). At the game's own size a sprite's pixels lie on its texels' middles, and
+            // the texel beyond its edge (the next picture of the same page) counts for nothing;
+            // between the middles it would shine in at the edge.
+            vec2 uv = v_uv;
+            if (v_rect.z >= v_rect.x && scale > 1.0) {
+                vec2 h = 0.5 / vec2(tw, th), lo = v_rect.xy + h, hi = v_rect.zw - h;
+                if (lo.x > hi.x) lo.x = hi.x = 0.5 * (v_rect.x + v_rect.z);
+                if (lo.y > hi.y) lo.y = hi.y = 0.5 * (v_rect.y + v_rect.w);
+                uv = clamp(uv, lo, hi);
+            }
+            float fu_ = uv.x * float(tw) + 16383.5, fv = uv.y * float(th) + 16383.5;
             int ix = int(fu_), iy = int(fv);
             float wx = floor((fu_ - float(ix)) * 256.0) / 256.0, wy = floor((fv - float(iy)) * 256.0) / 256.0;
             int x0 = tex_at_u(ix - 16384, tw, clamp_u, flip_u), x1 = tex_at_u(ix - 16383, tw, clamp_u, flip_u);
@@ -158,6 +184,7 @@ void main()
             int ix = int(v_uv.x * float(tw) + 16384.0) - 16384, iy = int(v_uv.y * float(th) + 16384.0) - 16384;
             t = texel(at, tw, tex_at_u(ix, tw, clamp_u, flip_u), tex_at(iy, th, clamp_v, flip_v));
         }
+        t *= share;     // a tri-linear pass's share (1: any other polygon)
         if (bump) {
             // the texel is two angles, the offset color the light: K1 + K2 sin S + K3 cos S cos (R - Q)
             float s_ang = t.g * (PI / 2.0 / 256.0), r_ang = t.b * (2.0 * PI / 256.0);

@@ -45,6 +45,9 @@ struct VOut {
     float2 v_uv : TEXCOORD2;
     noperspective float v_z : TEXCOORD3;
     nointerpolation uint v_state : TEXCOORD4;
+    // a sprite's own texture coordinates: the lowest u and v, the highest u and v (x above z: not a
+    // sprite). scene.frag.hlsl holds a filtered pixel's texels to them (docs/design.md section 104)
+    nointerpolation float4 v_rect : TEXCOORD5;
     // precise: the position's sum is done as written, step by step, as the twin's is (DirectX's
     // compiler may otherwise join a product and a sum, and an edge then falls a pixel aside)
     precise float4 pos : SV_Position;
@@ -161,5 +164,6 @@ VOut main(VIn v)
     o.v_uv = v.a_uv;
     o.v_z = v.a_pos.z;
     o.v_state = v.a_state;
+    o.v_rect = v.a_lit == 0u && v.a_l.y != 0.0 ? float4(v.a_n, v.a_l.x) : float4(1.0, 0.0, 0.0, 0.0);
     return o;
 }

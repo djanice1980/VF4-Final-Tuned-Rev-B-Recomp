@@ -149,7 +149,12 @@ static struct wide_tex {
 } wide_tex[WIDE_TEX];
 static u32 wide_screen_n, wide_serial;
 static float keep_left;
-#define EDGE_SLACK 16.0f                /* a 2D triangle "from side to side" may overhang this much */
+#define EDGE_SLACK 16.0f                /* a 2D triangle that reaches a side may overhang it this much */
+/* recomp (docs/design.md section 106): how many mip levels above its own level of detail a
+ * tri-linear polygon's two levels are mixed. Not from the chip's papers: fitted to a frame of the
+ * board (stage 11's far floor), which is that much softer than the level of detail alone gives.
+ * scene.frag and its DirectX twin have the same number */
+#define TRI_LOD_UP 1.0f
 static u32 gen = 1;                     /* counts renders: a texture is looked at again after each */
 static u32 screens, screen_renders, pictures, target_pictures, png_written, pipe_frames;
 static u64 tri_count;
@@ -283,6 +288,7 @@ typedef struct dtri {
                                          * vertices' colours hold the normal (r, g, b) and the point lit at (or, og, ob) */
     float key;
     s16 ylo, yhi;                       /* the rows it can touch */
+    u32 spr;                            /* recomp (section 104): 1: one of a sprite's two triangles */
 } dtri;
 
 typedef struct run {                    /* a stretch of a list's triangles */
@@ -395,8 +401,10 @@ typedef struct scene {
     u32 order_n, order_cap;
     u64 *sortv;                         /* recomp: order_sort's keys and numbers, twice */
     u32 sortv_cap;
-    u32 *edge;                          /* recomp: the 2D triangles from side to side (list << 30 | index) */
+    u32 *edge;                          /* recomp: the 2D triangles that reach a side (list << 30 | index) */
     u32 edge_n, edge_cap;
+    u8 *edge_go;                        /* recomp: which of them go on to a wide picture's side (edge_mark) */
+    u32 edge_go_cap;
 } scene;
 
 #define SCENES 12
@@ -917,6 +925,15 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
         maxl = 0;
     /* four texels blended where the chip filters (bits 13-14 of the third word) */
     int smooth = t && (tsp >> 13 & 3) && !bump;
+    /* recomp (docs/design.md section 106): the chip's tri-linear filter comes in two passes, filter
+     * word 2 and then 3. The game sends a polygon once with each (stage 11's floor: the second in
+     * the translucent list, one plus one, at the same depth). Each pass draws one mip level by its
+     * share of the pixel's level of detail: the first the level below, times (1 - f), the second
+     * the level above, times f. So the second pass's "greater" lets the same depth through */
+    int tri = smooth && maxl && (tsp >> 13 & 3) >= 2 ? (int)(tsp >> 13 & 3) : 0;
+    float tri_w = 1.0f;
+    if (tri == 3 && mode == 2)
+        pass_eq = 1;
     int plain_depth = pass_gt && !pass_lt, wrap_uv = !clamp_u && !clamp_v && !flip_u && !flip_v;
     int icr = (int)(drx * 65536.0f), icg = (int)(dgx * 65536.0f), icb = (int)(dbx * 65536.0f), ica = (int)(dax * 65536.0f);
     int ior = (int)(dorx * 65536.0f), iog = (int)(dogx * 65536.0f), iob = (int)(dobx * 65536.0f), ioa = (int)(doax * 65536.0f);
@@ -1040,6 +1057,17 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
                         if (l > maxl)
                             l = maxl;
                     }
+                    if (tri) {              /* recomp (section 106): the two levels and this pass's share */
+                        float lam = (r2 > 1e-12f ? 0.5f * log2f(r2) : -64.0f) + TRI_LOD_UP;
+                        if (lam < 0)
+                            lam = 0;
+                        if (lam > (float)maxl)
+                            lam = (float)maxl;
+                        int n = (int)lam;
+                        float fr = lam - (float)n;
+                        l = tri == 3 ? (n + 1 > maxl ? maxl : n + 1) : n;
+                        tri_w = tri == 3 ? fr : 1.0f - fr;
+                    }
                     if (l != lv) {
                         lv = l;
                         tpix = t->lv[l];
@@ -1104,6 +1132,12 @@ static void raster(const dtri *d, const rstate *st, int mode, int band_lo, int b
                     tg_ = (int)(c >> 8 & 255) << 8;
                     tb = (int)(c & 255) << 8;
                     ta = (int)(c >> 24) << 8;
+                }
+                if (tri) {                  /* recomp (section 106): the texel by this pass's share */
+                    tr = (int)((float)tr * tri_w);
+                    tg_ = (int)((float)tg_ * tri_w);
+                    tb = (int)((float)tb * tri_w);
+                    ta = (int)((float)ta * tri_w);
                 }
                 if (bump) {
                     /* a bump map: the texel is two angles (up from the surface, round it), the
@@ -1445,6 +1479,7 @@ static inline int tri_fill(dtri *d, const rv *a, const rv *b, const rv *c, u32 s
     d->v[2] = *c;
     d->st = st;
     d->gl = gl;
+    d->spr = 0;
     d->key = (a->z + b->z + c->z) * (1.0f / 3);
     d->ylo = (s16)(loy < 0 ? 0 : (int)loy);
     d->yhi = (s16)(hiy > FBH - 1 ? FBH - 1 : (int)hiy);
@@ -1999,11 +2034,14 @@ static void emit(const rv *a, const rv *b, const rv *c, const rstate *st)
     }
     if (!tri_fill(d, a, b, c, state_add(sc, st), 0))
         return;
-    /* recomp: the wide screen: a 2D triangle from side to side of the
-     * game's screen (scene_shift takes it to the target's sides) */
+    d->spr = es.kind == 2;              /* recomp (section 104): gpu_tri marks its corners for the host */
+    /* recomp: the wide screen: a 2D triangle that reaches a side of the
+     * game's screen (edge_mark says which of them scene_shift takes on to
+     * the target's side). One side is enough here (section 104): a bar
+     * across the screen may be two sprites, a left half and a right half */
     if (keep_left < 0) {
         float lx = fminf(a->x, fminf(b->x, c->x)), hx = fmaxf(a->x, fmaxf(b->x, c->x));
-        if (lx <= 0 && hx >= VW && lx >= -EDGE_SLACK && hx <= VW + EDGE_SLACK) {
+        if ((lx <= 0 || hx >= VW) && lx >= -EDGE_SLACK && hx <= VW + EDGE_SLACK) {
             GROW(sc->edge, sc->edge_cap, sc->edge_n + 1);
             sc->edge[sc->edge_n++] = (u32)k << 30 | sc->tris_n[k];
         }
@@ -3718,6 +3756,9 @@ static void gpu_tri(const scene *sc, const dtri *d, u32 list, float *zmax, u32 s
     u32 depth = st->isp >> 29;
     if (!depth)
         return;
+    /* recomp (section 106): a tri-linear filter's second pass comes at the first pass's own depth */
+    if (list == 2 && (st->tsp >> 13 & 3) == 3 && (st->tsp >> 8 & 15) && st->t && st->t->levels > 1 && (st->tcw >> 27 & 7) != 4)
+        depth |= 2;
     view_gpu_draw k = { gpu_v_n, 3, list, depth, list != 2 && !(st->isp >> 26 & 1), list == 2 ? st->tsp >> 29 : 1,
                         list == 2 ? st->tsp >> 26 & 7 : 0, list != 2 && (st->pcw >> 7 & 1), solid };
     view_gpu_draw *last = gpu_d_n ? &gpu_d[gpu_d_n - 1] : NULL;
@@ -3748,6 +3789,13 @@ static void gpu_tri(const scene *sc, const dtri *d, u32 list, float *zmax, u32 s
             o->col = gpu_rgba(p->r, p->g, p->b, p->a);
             o->ofs = gpu_rgba(p->or_, p->og, p->ob, p->oa);
             o->n[0] = o->n[1] = o->n[2] = o->l[0] = o->l[1] = o->l[2] = 0;
+            if (d->spr) {               /* recomp (section 104): the texture coordinates the sprite spans */
+                o->n[0] = fminf(d->v[0].u, fminf(d->v[1].u, d->v[2].u));
+                o->n[1] = fminf(d->v[0].v, fminf(d->v[1].v, d->v[2].v));
+                o->n[2] = fmaxf(d->v[0].u, fmaxf(d->v[1].u, d->v[2].u));
+                o->l[0] = fmaxf(d->v[0].v, fmaxf(d->v[1].v, d->v[2].v));
+                o->l[1] = 1.0f;
+            }
         }
         if (p->z > *zmax && p->z < 1e30f)
             *zmax = p->z;
@@ -4092,26 +4140,79 @@ static int tex_flat_across(const tex *t, const dtri *d)
     return 1;
 }
 
+static inline void tri_box(const dtri *d, float *lx, float *hx, float *ly, float *hy)
+{
+    *lx = fminf(d->v[0].x, fminf(d->v[1].x, d->v[2].x));
+    *hx = fmaxf(d->v[0].x, fmaxf(d->v[1].x, d->v[2].x));
+    *ly = fminf(d->v[0].y, fminf(d->v[1].y, d->v[2].y));
+    *hy = fmaxf(d->v[0].y, fmaxf(d->v[1].y, d->v[2].y));
+}
+
+/* recomp (sections 39 and 104): which 2D triangles go on to a wide picture's
+ * sides. One that looks the same stretched sideways, lies along the top or
+ * the bottom of the game's screen (or covers all of it), and reaches from
+ * side to side: by itself, or as one half of a bar that the game sends as a
+ * left and a right half (another of the same look, on the same lines,
+ * reaches the other side, and the two meet). Those are the stage intros'
+ * black bars, the fades and flashes, the Game Over card's bands: without
+ * them the wide picture's sides would show what they are there to cover.
+ * What lies across the middle of the screen is a page's own content (the
+ * rankings table's lines and header) and stays in the 4:3 picture with the
+ * rest of the 2D. */
+static void edge_mark(scene *sc)
+{
+    GROW(sc->edge_go, sc->edge_go_cap, sc->edge_n + 1);
+    for (u32 i = 0; i < sc->edge_n; i++) {
+        const dtri *d = &sc->tris[sc->edge[i] >> 30][sc->edge[i] & 0x3fffffffu];
+        float lx, hx, ly, hy;
+        tri_box(d, &lx, &hx, &ly, &hy);
+        sc->edge_go[i] = (ly <= 0 || hy >= VH) && tex_flat_across(sc->st[d->st].t, d);
+    }
+    for (u32 i = 0; i < sc->edge_n; i++) {
+        const dtri *d = &sc->tris[sc->edge[i] >> 30][sc->edge[i] & 0x3fffffffu];
+        float lx, hx, ly, hy;
+        tri_box(d, &lx, &hx, &ly, &hy);
+        if (!sc->edge_go[i] || (lx <= 0 && hx >= VW))
+            continue;
+        /* one side only: the other half? (No half is ever struck off here whose own other half is
+         * still to be asked: the two find each other or neither does.) */
+        int found = 0;
+        for (u32 j = 0; j < sc->edge_n && !found; j++) {
+            const dtri *e = &sc->tris[sc->edge[j] >> 30][sc->edge[j] & 0x3fffffffu];
+            float elx, ehx, ely, ehy;
+            if (j == i || !sc->edge_go[j] || e->st != d->st || memcmp(&e->v[0].r, &d->v[0].r, 4 * sizeof(float)) != 0)
+                continue;
+            tri_box(e, &elx, &ehx, &ely, &ehy);
+            if (fabsf(ely - ly) > 0.5f || fabsf(ehy - hy) > 0.5f)
+                continue;
+            found = lx <= 0 ? ehx >= VW && fabsf(elx - hx) <= 0.5f : elx <= 0 && fabsf(ehx - lx) <= 0.5f;
+        }
+        if (!found)
+            sc->edge_go[i] = 0;
+    }
+}
+
 /* recomp: the wide screen. The scene was made for the game's 640 x 480;
  * every triangle, volume and clip rectangle moves right by ox, so the
  * game's screen lies in the middle of the wider target and what the
  * camera sees past its sides fills the rest. A clip rectangle that reaches
- * the game's left or right edge reaches the target's, and so does a 2D
- * triangle from side to side that looks the same stretched. A scene is
- * drawn once (render_started marks it unused), so nothing moves it back. */
+ * the game's left or right edge reaches the target's, and so do the 2D
+ * triangles edge_mark names. A scene is drawn once (render_started marks
+ * it unused), so nothing moves it back. */
 static void scene_shift(scene *sc, int ox, int w0)
 {
     float f = (float)ox;
-    /* a 2D triangle from side to side of the game's screen that looks the
-     * same stretched (the stage intros' black bars, fades, the rankings'
-     * lines) reaches the target's sides: its corners at the screen's edges
-     * move out */
-    for (u32 i = 0; w0 == VW && i < sc->edge_n; i++) {
-        dtri *d = &sc->tris[sc->edge[i] >> 30][sc->edge[i] & 0x3fffffffu];
-        if (!tex_flat_across(sc->st[d->st].t, d))
-            continue;
-        for (int j = 0; j < 3; j++)
-            d->v[j].x += d->v[j].x <= 0 ? -f : d->v[j].x >= VW ? f : 0.0f;
+    /* the 2D triangles that go on to the target's sides: their corners at
+     * the screen's edges move out */
+    if (w0 == VW) {
+        edge_mark(sc);
+        for (u32 i = 0; i < sc->edge_n; i++) {
+            dtri *d = &sc->tris[sc->edge[i] >> 30][sc->edge[i] & 0x3fffffffu];
+            if (!sc->edge_go[i])
+                continue;
+            for (int j = 0; j < 3; j++)
+                d->v[j].x += d->v[j].x <= 0 ? -f : d->v[j].x >= VW ? f : 0.0f;
+        }
     }
     for (int k = 0; k < 3; k++)
         for (u32 r = 0; r < sc->runs_n[k]; r++) {

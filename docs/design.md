@@ -9839,3 +9839,299 @@ Vulkan driver, so nothing here says what Intel's DirectX driver does
 with it, which is the question it was made for. Fullscreen, Exclusive
 and the screen's modes through Direct3D 12; a two-PC game; a Steam
 Deck; how fast it is beside Vulkan.
+
+## 104. Four faults from a test play: cloth seen from behind under ray tracing, a sprite's edge, the Game Over card's bands, a black row (2026-11-27)
+
+**What was reported.** The maintainer played release 0.5.28 through at
+16:9 and sent two pictures: Shun in his standing guard in the cave with
+a dark, hard-edged slab where the inside of his sleeve is ("z buffer
+issue?"), and the card that ends a game (white, two gray bands, "Game
+Over. Thank you for playing"), with "an alignment issue or something".
+They were four faults. None was the depth buffer.
+
+**1. The inside of a sleeve under ray tracing.** The slab is there only
+with ray tracing, at every quality. The frame's traced scene was dumped
+(a temporary dump, removed) and the rays of one pixel on the sleeve's
+inside followed by hand. The triangle is two-sided cloth seen from
+behind: the game's normal for it is (-0.27, 0.96, 0.05), the face's own
+normal towards the eye (-0.28, -0.36, 0.89), and the two point apart
+(their product is -0.22). The game has one normal for both sides of
+such cloth and lights the inside by it: ambient 0.4 and three parallel
+lights with shares 0.66, 0.30 and 0.72, of which the first two lie
+behind the face that is looked at. `rt_light.comp` cut each light's
+share by what a ray towards it meets, and began every ray 0.003 off the
+face on the eye's side: the rays to those two lights met the face
+itself, 0.0063 and 0.0035 on, and behind it the sleeve's other wall at
+0.13. So two of the three lights were cut to nothing: 55 108 185
+without ray tracing, 33 68 120 with it, and a hard edge where the
+cuff, which faces the eye, begins.
+
+The first remedy tried was the wrong one: beginning such a ray on the
+light's side of the face changed 150,000 pixels elsewhere and not one
+on the sleeve, since the wall behind is still in the way. What is done:
+`lights_sum` is given the face's own normal, and a light that lies
+behind a face whose normal (the game's) points away from the looker
+too keeps its share uncut. No ray from the side looked at can say
+anything about such a light, and the game's picture has it lit. The
+sleeve's inside is then 52 103 177; the shadows of the lights on the
+side looked at, the gathered ambient light and every other surface are
+as they were (a fighter's thigh keeps its traced shadow). The same in
+the DirectX 12 tracer (`rt_light.hlsl`), and for the light a bounced
+ray brings back. It is a choice for the game's look over the physics:
+the inside of a sleeve is in shadow in the world.
+
+**2. A line over "Game".** The lettering is two sprites; the left one
+(columns 72 to 328, lines 200 to 272) is filtered (four texels a
+pixel), and its top edge lies at v = 152 of a 256 x 256 page whose row
+152 is the bands' gray, opaque. At the game's own size a sprite's
+pixels lie on its texels' middles and the texel beyond the edge counts
+for nothing. On a larger picture the pixels lie between them: at four
+times the size the first two rows take 37.5 % and 12.5 % of the row
+beyond, which blended over the white gives 185 and 226 of 255, and
+that is what the two rows measure. At internal resolution 1: no line.
+
+What is done: a sprite's corners carry the texture coordinates the
+sprite spans (`view_gpu_vertex`: the fields a vertex lit by the
+machine's thread leaves empty), the vertex shader hands them on
+unchanged across the triangle, and `scene.frag` holds a filtered
+pixel's coordinates half a texel inside them when the picture is
+larger than the game's. In both shader sets (`scene.vert`,
+`scene.frag` and their DirectX twins). The software renderer draws at
+the game's size only and needs nothing. The card at four times the
+size: 2,048 pixels change (the line, 1,024 by 2); at the game's size:
+none.
+
+**3. The bands stop at the 4:3 picture's sides.** On a wide picture a
+2D triangle that looks the same stretched sideways was taken to the
+picture's sides when it reached from side to side of the game's screen
+(section 39). Each band is two sprites, columns 0 to 320 and 320 to
+640. The rule is now this (`edge_mark`): such a triangle goes on to the
+picture's sides when it lies along the top or the bottom of the game's
+screen (or covers all of it) and reaches from side to side, by itself
+or as one half of a bar that is sent as a left and a right half
+(another of the same state and color, on the same lines, reaches the
+other side, and the two meet). What lies across the middle of the
+screen is a page's own content and stays in the 4:3 picture with the
+rest of the 2D.
+
+That is narrower than section 39's rule, at the maintainer's word. The
+first form of this change let one side be enough, and took the
+rankings page's header bar (columns 0 to 452) to the picture's left
+side while its right end, a picture, stayed put. He asked for the
+whole table in the middle of the 4:3 picture, its lines too, which
+section 39 had taken to the sides. What the rule does was counted (a
+temporary log of every 2D triangle at a side, removed) through 14,000
+vertical blanks of the attract sequence, a lost game with its continue
+and Game Over, the ending's staff roll, and a two-player game with its
+winner's screen. On to the sides go: the full-screen black, fades and
+flashes; the bars above and below (a stage's intro, the two-player
+game's); the card's bands; the veil across the top of the rankings
+page. Taken to the sides before and now left in the 4:3 picture: the
+rankings table's lines, and the band behind the play-mode menu (lines
+191 to 311), which is now a panel in the middle. The rankings' header
+bar is where it was. The four tiles of a full-screen picture are not
+the same stretched and stay 4:3, as before.
+
+**4. A black row.** A 16:9 picture is 854 wide over 480, a third of a
+pixel more than 16:9, and the window placed it by its own shape: 3840 x
+2158 on a 3840 x 2160 screen (a black row above and below, which shows
+on the white card), 1920 x 1079 on 1920 x 1080 (the window's own
+picture has row 1079 black). `picture_rect` now fills the target when
+the picture misses its shape by less than half a hundredth; the 21:9
+picture on a 3440 x 1440 screen (3438 wide) with it.
+
+**Checked** (the development build, a headless desktop, the GeForce RTX
+5070 Ti):
+
+- The 15 fighting stages at 4:3 and twice the size, against release
+  0.5.28: the same to the pixel on all 15.
+- Shun's guard in the cave at four times the size. Without ray
+  tracing: the same to the pixel as before. With it, Medium and High:
+  the sleeve's inside 52 103 177.
+- The card: at the game's size the same to the pixel as before; at
+  four times the size the line's 2,048 pixels and no other; at 16:9
+  the bands reach the sides.
+- At 16:9: the rankings page's table (header and lines) lies within
+  the 4:3 picture; a stage's intro keeps its black bars from side to
+  side; the play-mode menu's band is a panel in the middle.
+- The window with a 16:9 picture in a 1920 x 1080 full screen: its
+  rows 0, 1, 1078 and 1079 are the picture's.
+- The Windows game under Proton: the card through DirectX 12 and
+  through Vulkan are the same to the pixel, and the Linux game's.
+  Shun's guard with ray tracing Medium: the Vulkan tracer's picture is
+  the Linux game's to the pixel; the DirectX 12 tracer has the same
+  52 103 177 on the sleeve and differs from the Vulkan tracer in 34,104
+  of 4.9 million pixels, by 9 of 255 at most and nearly all by 1 or 2
+  (how the two tracers differed on this pose before the change was not
+  measured).
+
+**Not covered.** Windows itself. Other fighters' cloth (only Shun's
+second costume was looked at). The band rule on the screens the count
+did not reach: name entry, the test menu, the card screens.
+
+## 105. Three more frames of the board: the corridor's floor, the cage, the terrace; and the two Durals (2026-11-27)
+
+**The frames.** The maintainer took three more frames from the same
+video of the board as section 100's, each as a round begins: Jacky
+against Lei-Fei on the terrace (stage 4), against Wolf in the cage
+(stage 22) and against Dural in the corridor (stage 11), for section
+102's three open items. Each match was forced as before (Jacky's
+second costume, the opponents' first), ours and the emulator drawn at
+the frame's own moment, the frame brought to ours' geometry by the HUD
+(ours' x, y lies at 1.59 x - 14.4, 1.58 y - 19.4 in the corridor's)
+and its colors fitted on the scene where ours and the emulator agree
+(a tenth to a quarter of the picture; the fit misses those pixels by 3
+to 5 of 255).
+
+**The corridor's floor: as bright as ours, and softer.** In the far
+floor beside the rails (the one place where ours and the emulator
+differ) the emulator is 19 and 9 of 255 brighter than ours in the two
+bands measured, and the board is 2.2 and 0.1 darker than ours. So the
+emulator's shares for the two filter passes, which sum above one, are
+not the chip's, and both passes in full even less. But the board's far
+floor is also softer than ours: its bright lane lines, sharp in ours,
+are nearly gone, where the rails and the curb beside them are as sharp
+as the rest of the frame. Measured on the pixels the second pass
+covers: the frame's fine detail is 7.9 where ours predicts 8.8 (the
+video keeps 0.78 of ours' detail elsewhere), and its pattern follows
+ours with 0.71 there against 0.90 on the rest of the picture. That is
+what two mip levels mixed by shares that sum to one would look like:
+the brightness of one level, the sharpness of neither. Ours shows the
+sharper level alone. The sample is small (1,244 pixels). Section 106
+builds the mix and holds it against this frame.
+
+**The cage: a lean towards ours, inside the scatter.** A D number
+above 4 as a factor (ours) or taken as 4 changes 16,755 pixels at the
+frame's moment, in the band of the crowd behind the fence. By section
+102's measure: 109 blocks that do not change give the line 0.63 + 0.57
+x (missing them by 1.09); in the 38 that change the board's detail is
+8.51, the line's value 8.49 for ours and 8.82 for the other reading;
+23 blocks are nearer ours, 15 the other. The cave's frame leaned the
+other way by 13 to 7. Two frames, two leans, both smaller than the
+line's own misses: a video frame does not settle this. Left as it is.
+
+**The white cloth: these frames do not show it.** The texture's color
+plus the offset color, held to full before the fog or only at the end,
+changes 1 pixel on the terrace at the frame's moment (and 60 and 111
+vertical blanks on), 24 in the cage (bright specks in the crowd) and
+none in the corridor. Lei-Fei's white trousers take no light over
+full. Still open: it needs a frame of the ruins (stage 0) in a fight,
+where Jacky's collar is such a part, or of a fighter with white hand
+wraps on the terrace or in the cage.
+
+**The terrace** had not been held against the board before: its floor
+is ours' within 3 of 255 in 13 of 15 bands (4.3 and 3.6 in the other
+two).
+
+**Dural is clear in a fast game and chrome otherwise: the game's own
+rule.** Ours drew Dural clear, like glass, in the forced match, and so
+did the emulator; the board's frame has her in chrome, as the
+maintainer knows her. The game has both. Its stage setup
+(`stage_screen.c` in the decomp) gives a side that is Dural on stage 11
+its alternative model, and one more screen for what is seen through
+her, while the course's time is within the rounds to win plus one,
+times 7,200 vertical blanks (six minutes where a match is won by two
+rounds). A forced match has a course time of nothing. With the time
+put to the video's own (11 minutes 18 seconds, 40,716) the game clears
+its mark for the alternative model and ours draws her in chrome, as
+the frame has her. Nothing to mend. With ray tracing both keep the
+game's own picture of what they mirror or show through (the chrome's
+is the game's environment texture, not the corridor): the rays change
+the light on her as on any fighter and mirror nothing. Rays that
+mirror the scene on her are not built. The clear one does let the
+rays' light through: a spot of the floor in her shadow is 120 107 93
+with ray tracing, where the chrome one's traced shadow is 69 62 54
+(the floor beside it about 246 215 181); without ray tracing both have
+the game's own shadow there, 117 105 90.
+
+## 106. The tri-linear filter's two passes: the corridor's far floor (2026-11-27)
+
+**What section 105 left.** The board's frame of stage 11 has the far
+floor beside the rails as bright as ours and softer. Section 102 had
+found that floor sent twice with the same corners: with the filter
+word 2, and again in the translucent list with the filter word 3 and a
+one-plus-one blend, both with the depth test "greater", so that the
+second lost to the first and `view.c` showed the first alone.
+
+**The polygons.** A count over all 15 stages (a temporary log,
+removed): the filter words 2 and 3 are used on stage 11 alone, by nine
+states of three mip-mapped textures: one of 128 x 128 (D number 2),
+one of 256 x 256 (D 1) and one of 32 x 32 (D 2). Each comes once with
+the filter word 2 (in the opaque list; the 32 x 32 one in the
+translucent list as a plain replace) and once more with the filter
+word 3 in the translucent list, added one plus one (the 32 x 32 one
+also by its alpha), with the same D number. A marker picture (the
+first pass in a flat color by its D number) shows the frame's far
+floor to be the 256 x 256 texture; the other two are not in the open
+there.
+
+**What the two passes are taken to be.** The chip's tri-linear filter,
+done in two passes: each draws one mip level by its share of the
+pixel's level of detail, the first the level below times (1 - f), the
+second the level above times f (f: the level of detail's fraction),
+and the blend adds them. The shares sum to one, which is the board's
+brightness. For it the second pass has to come through at the first
+pass's own depth: its "greater" is taken as "greater or equal", as
+section 102 thought likely. (The emulator gives the passes fixed
+shares by the D number's low two bits, and its floor is 19 of 255
+brighter than the board's.)
+
+**Which two levels: fitted to the frame.** With the software renderer
+at the frame's moment the level of detail was moved by a quarter of a
+level to three levels, and each picture held against the frame on the
+far floor's 575 pixels in the open: how well the frame's fine detail
+(brightness less its mean over 5 x 5) follows the picture's, pixel for
+pixel, and the picture's detail as the video would keep it (the video
+keeps 0.78 of ours' detail on the rest of the picture and follows it
+with 0.899):
+
+    level of detail moved by    the frame follows it    its detail, kept (the frame's: 8.33)
+    (the game as it was)              0.787                  11.10
+    0.25                              0.833                  10.45
+    0.5                               0.866                   9.76
+    0.75                              0.887                   9.37
+    1                                 0.883                   8.86
+    1.25                              0.851                   7.92
+    1.5                               0.793                   6.94
+    2                                 0.608                   5.31
+    3                                 0.091                   2.03
+
+The frame is best met between three quarters of a level and a level
+and a quarter up. One level is taken (`TRI_LOD_UP` in `view.c`, the
+same number in the two pixel shaders). It is not from the chip's
+papers, and why the chip's two levels should lie a level above the
+level of detail that `view.c` works out for every other polygon is not
+known. (The D number left out of the level of detail would be two
+levels up here, which the frame does not bear out.) One frame, one
+texture, 575 pixels.
+
+**As built.** `raster()` in `view.c` (the software renderer),
+`scene.frag` and its DirectX twin: for a mip-mapped texture with the
+filter word 2 or 3, the two levels and the pass's share as above, the
+texel (all four of its numbers) times the share. `gpu_tri` gives the
+second pass's draw "greater or equal". Nothing else is touched: every
+other polygon has the filter word 0 or 1.
+
+**Checked** (the development build, a headless desktop):
+
+- The corridor at the frame's moment, the software renderer: the
+  frame follows the far floor with 0.883 (0.787 before), the detail the
+  video would keep is 8.86 against the frame's 8.33 (11.10 before).
+  The picture is the trial's "moved by 1" but for 6 pixels.
+- Its brightness is unchanged: the far floor beside the rails is 2.2
+  and 0.2 of 255 above the board's in the two bands, as before, and
+  the floor's mean color over its 5,021 pixels moves by 0.4.
+- The GPU renderer at the game's size against the software renderer on
+  that floor: 580 of 5,021 pixels differ by more than 2 of 255, 9 by
+  more than 8 (on the rest of the picture 4.4 % and 1.2 %); the lights
+  on the GPU against the lights on the processor: 1 pixel by 1.
+- The 15 fighting stages against release 0.5.28: stage 11 changes
+  (18,107 pixels, the far floor); the other 14 are the same to the
+  pixel.
+- The Windows game under Proton on stage 11: DirectX 12 and Vulkan
+  the same to the pixel. Ray tracing on stage 11 runs.
+
+**Not covered.** The other two textures (not in the open in the
+frame), among them the 32 x 32 one whose second pass is blended by its
+alpha. A second frame of the board on stage 11: the level is fitted to
+one. Windows itself.

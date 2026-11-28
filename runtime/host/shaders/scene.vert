@@ -44,6 +44,9 @@ layout(location = 1) out vec4 v_ofs;
 layout(location = 2) out vec2 v_uv;
 layout(location = 3) noperspective out float v_z;
 layout(location = 4) flat out uint v_state;
+// a sprite's own texture coordinates: the lowest u and v, the highest u and v (x above z: not a
+// sprite). scene.frag holds a filtered pixel's texels to them (docs/design.md section 104)
+layout(location = 5) flat out vec4 v_rect;
 
 void light(out vec4 col, out vec4 ofs)
 {
@@ -145,4 +148,5 @@ void main()
     v_uv = a_uv;
     v_z = a_pos.z;
     v_state = a_state;
+    v_rect = a_lit == 0u && a_l.y != 0.0 ? vec4(a_n, a_l.x) : vec4(1.0, 0.0, 0.0, 0.0);
 }

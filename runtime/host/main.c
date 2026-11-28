@@ -3594,7 +3594,12 @@ static void ovl_backdrop(void *ud, const void *pixels, Uint32 w, Uint32 h)
 static Uint32 shape_w = PIC_W, shape_h = PIC_H;
 
 /* the picture's place in a w x h target: at its own shape (4:3, or a wide
- * screen's) in the middle, or all of it */
+ * screen's) in the middle, or all of it. A picture that misses the target's
+ * shape by less than half a hundredth fills it (docs/design.md section 104):
+ * the 16:9 picture is 854 wide over 480, a third of a pixel more than 16:9,
+ * and by its own shape it left a 3840 x 2160 screen a black row above and
+ * below (3840 x 2158), a 1920 x 1080 one a row below; the 21:9 picture
+ * (1,146 over 480) left a 3440 x 1440 screen a column at each side */
 static void picture_rect(Uint32 w, Uint32 h, Uint32 *x0, Uint32 *y0, Uint32 *dw, Uint32 *dh)
 {
     *dw = w;
@@ -3603,6 +3608,10 @@ static void picture_rect(Uint32 w, Uint32 h, Uint32 *x0, Uint32 *y0, Uint32 *dw,
         ;       /* the whole window */
     else if ((Uint64)w * shape_h > (Uint64)h * shape_w) *dw = (Uint32)((Uint64)h * shape_w / shape_h);
     else *dh = (Uint32)((Uint64)w * shape_h / shape_w);
+    if ((Uint64)(w - *dw) * 200 < w)
+        *dw = w;
+    if ((Uint64)(h - *dh) * 200 < h)
+        *dh = h;
     *x0 = (w - *dw) / 2;
     *y0 = (h - *dh) / 2;
 }

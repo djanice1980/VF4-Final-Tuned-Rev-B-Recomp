@@ -362,9 +362,15 @@ float game_shadow(vec3 O)
     return p.misc.w + (1.0 - p.misc.w) * vis;
 }
 
-// the game's sum for a point with normal N. n > 0: each light's share times what n rays from O find
-vec3 lights_sum(uint ls, vec3 P, vec3 N, vec3 O, int n, vec3 amb)
+// the game's sum for a point with normal N. n > 0: each light's share times what n rays from O find.
+// nf: the face's own normal, towards whoever looks at it (0: not asked). Where N points away from
+// the looker the face is cloth seen from behind (the inside of a sleeve): the game lights both
+// sides of it by the one normal, so the lights it counts there lie behind the face, and no ray
+// from the side looked at reaches such a light: the cloth itself is in its way, and then whatever
+// the cloth is wrapped around. Such a light's share is not cut (docs/design.md section 104)
+vec3 lights_sum(uint ls, vec3 P, vec3 N, vec3 nf, vec3 O, int n, vec3 amb)
 {
+    bool behind = dot(N, nf) < 0.0;
     vec3 sum = amb;
     for (int k = 0; k < 15; k++) {
         Light l = light_at(ls, k);
@@ -380,7 +386,7 @@ vec3 lights_sum(uint ls, vec3 P, vec3 N, vec3 O, int n, vec3 amb)
             continue;
         float vis = 1.0;
         bool point = (l.flags & 2) != 0;
-        if (n > 0 && (!point || p.opt.z != 0)) {
+        if (n > 0 && !(behind && dot(nf, t) < 0.0) && (!point || p.opt.z != 0)) {
             vis = 0.0;
             // n rays; where some pass and some do not (a shadow's soft edge), twice as many again
             int m = n, first = 0, use = ray_use0 + k;
@@ -455,7 +461,7 @@ vec3 water_seen(vec3 P, vec3 d)
         return c;
     uint ls = job[tri[q.tri].job].ls;
     // the product held to full, not the sum (docs/design.md section 98), as the picture's own light
-    return min(c * lights_sum(ls, Q, normal_at(q.tri, q.b), Q, 0, ambient_of(ls)), vec3(1.0));
+    return min(c * lights_sum(ls, Q, normal_at(q.tri, q.b), vec3(0.0), Q, 0, ambient_of(ls)), vec3(1.0));
 }
 
 // what a surface point sends back along a ray that met it: its color times the game's sum for it
@@ -474,7 +480,7 @@ vec3 radiance(Hit h, vec3 o, vec3 d)
     uint ls = job[tri[h.tri].job].ls;
     int was = ray_use0;
     ray_use0 = 32 + 16 * bounces++;
-    vec3 sum = lights_sum(ls, P, N, O, 1, ambient_of(ls));
+    vec3 sum = lights_sum(ls, P, N, nf, O, 1, ambient_of(ls));
     ray_use0 = was;
     return min(c * sum, vec3(1.0));     // the product held to full, not the sum (section 98)
 }
@@ -537,8 +543,8 @@ void main()
         }
         if (!baked) {
             float gs = takes ? game_shadow(O) : 1.0;
-            vec3 G = lights_sum(ls, P, N, O, 0, la);
-            T = lights_sum(ls, P, N, O, takes ? 0 : p.size.w, amb) * gs;
+            vec3 G = lights_sum(ls, P, N, nf, O, 0, la);
+            T = lights_sum(ls, P, N, nf, O, takes ? 0 : p.size.w, amb) * gs;
             ratio = T / max(G, vec3(1.0 / 255.0));
             ratio = min(ratio, vec3((fl & 3u) != 0u ? 1.0 : p.tune.z));
             T = min(G, vec3(1.0)) * ratio;

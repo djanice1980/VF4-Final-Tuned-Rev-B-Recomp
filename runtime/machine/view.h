@@ -73,7 +73,11 @@ typedef struct view_gpu_vertex {
     /* lighting on the GPU (view_host_gpu_lighting, docs/design.md section 67): lit not 0 says the
      * vertex was not lit here. Its colours are to be made from n, its normal, and l, the point it
      * is lit at (both in the game's view space), by the strip record lit - 1 and that record's
-     * light set; col and ofs are 0 */
+     * light set; col and ofs are 0.
+     * A sprite's corner (docs/design.md section 104): lit is 0 and l[1] is 1. n[0], n[1], n[2] and
+     * l[0] are then the texture coordinates the sprite's corners span (the lowest u and v, the
+     * highest u and v): on a picture larger than the game's a filtered pixel's four texels are
+     * held to those. Any other vertex with lit 0 has n and l 0 */
     float n[3], l[3];
     u32 lit;
 } view_gpu_vertex;
